@@ -67,7 +67,7 @@ void ptx_recognizer::read_parser_environment_variables() {
   if (dbg_level && strlen(dbg_level)) {
     int debug_execution = 0;
     sscanf(dbg_level, "%d", &debug_execution);
-    if (debug_execution >= 30) g_debug_ir_generation = true;
+    if (debug_execution >= 3) g_debug_ir_generation = true;
   }
 }
 
@@ -100,6 +100,7 @@ void ptx_recognizer::init_instruction_state() {
 }
 
 symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
+  printf("[Jiayi Test] init_parser\n");
   g_filename = strdup(ptx_filename);
   if (g_global_allfiles_symbol_table == NULL) {
     g_global_allfiles_symbol_table =
@@ -931,6 +932,7 @@ void ptx_recognizer::add_array_initializer() {
 }
 
 void ptx_recognizer::add_version_info(float ver, unsigned ext) {
+  PTX_PARSE_DPRINTF("add_version_info");
   g_global_symbol_table->set_ptx_version(ver, ext);
 }
 

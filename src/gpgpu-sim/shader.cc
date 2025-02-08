@@ -1018,7 +1018,7 @@ void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
     m_warp[warp_id]->set_membar();
   }
 
-  updateSIMTStack(warp_id, *pipe_reg);
+  updateSIMTStack_sid(warp_id, *pipe_reg, m_sid);
 
   m_scoreboard->reserveRegisters(*pipe_reg);
   m_warp[warp_id]->set_next_pc(next_inst->pc + next_inst->isize);

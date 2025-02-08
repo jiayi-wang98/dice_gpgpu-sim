@@ -97,6 +97,7 @@ void CUstream_st::cancel_front() {
 }
 
 void CUstream_st::print(FILE *fp) {
+  printf("Jiayi Test: CUstream_st::print\n");
   pthread_mutex_lock(&m_lock);
   fprintf(fp, "GPGPU-Sim API:    stream %u has %zu operations\n", m_uid,
           m_operations.size());

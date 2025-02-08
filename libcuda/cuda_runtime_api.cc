@@ -413,6 +413,7 @@ void setCuobjdumpsassfilename(
 //! executable instead of the application binary.
 //!
 std::string get_app_binary() {
+  printf("[Jiayi Test] get_app_binary(\n");
   char self_exe_path[1025];
 #ifdef __APPLE__
   uint32_t size = sizeof(self_exe_path);
@@ -435,6 +436,7 @@ std::string get_app_binary() {
 
 // above func gives abs path whereas this give just the name of application.
 char *get_app_binary_name(std::string abs_path) {
+  printf("[Jiayi Test] get_app_binary_name(\n");
   char *self_exe_path;
 #ifdef __APPLE__
   // TODO: get apple device and check the result.
@@ -489,6 +491,7 @@ void cuda_runtime_api::cuobjdumpRegisterFatBinary(unsigned int handle,
  * Add internal cuda runtime API call to accept gpgpu_context *
  *******************************************************************************/
 cudaError_t cudaSetDeviceInternal(int device, gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaSetDeviceInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -509,6 +512,7 @@ cudaError_t cudaSetDeviceInternal(int device, gpgpu_context *gpgpu_ctx = NULL) {
 
 cudaError_t cudaGetDeviceInternal(int *device,
                                   gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaGetDeviceInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -524,6 +528,7 @@ cudaError_t cudaGetDeviceInternal(int *device,
 
 __host__ cudaError_t CUDARTAPI cudaDeviceGetLimitInternal(
     size_t *pValue, cudaLimit limit, gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaDeviceGetLimitInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -572,6 +577,7 @@ __host__ cudaError_t CUDARTAPI cudaDeviceGetLimitInternal(
 
 void **cudaRegisterFatBinaryInternal(void *fatCubin,
                                      gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaRegisterFatBinaryInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -607,6 +613,7 @@ void **cudaRegisterFatBinaryInternal(void *fatCubin,
     if (pos == std::string::npos) {
       // Not pytorch app : checking cuda version
       int app_cuda_version = get_app_cuda_version();
+      printf("app_cuda_version: %d\n", app_cuda_version);
       assert(
           app_cuda_version == CUDART_VERSION / 1000 &&
           "The app must be compiled with same major version as the simulator.");
@@ -754,6 +761,7 @@ void cudaRegisterFunctionInternal(void **fatCubinHandle, const char *hostFun,
                                   int thread_limit, uint3 *tid, uint3 *bid,
                                   dim3 *bDim, dim3 *gDim,
                                   gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaRegisterFunctionInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -781,6 +789,7 @@ void cudaRegisterVarInternal(
     const char *deviceName,  // name of variable (same as above)
     int ext, int size, int constant, int global,
     gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaRegisterVarInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -818,6 +827,7 @@ void cudaRegisterVarInternal(
 cudaError_t cudaConfigureCallInternal(dim3 gridDim, dim3 blockDim,
                                       size_t sharedMem, cudaStream_t stream,
                                       gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaConfigureCallInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -835,6 +845,7 @@ cudaError_t cudaConfigureCallInternal(dim3 gridDim, dim3 blockDim,
 
 __host__ cudaError_t CUDARTAPI
 cudaGetDeviceCountInternal(int *count, gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaGetDeviceCountInternal(\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -851,6 +862,7 @@ cudaGetDeviceCountInternal(int *count, gpgpu_context *gpgpu_ctx = NULL) {
 
 __host__ cudaError_t CUDARTAPI cudaGetDevicePropertiesInternal(
     struct cudaDeviceProp *prop, int device, gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cudaGetDevicePropertiesInternal\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -912,6 +924,8 @@ cudaError_t cudaSetupArgumentInternal(const void *arg, size_t size,
 
 cudaError_t cudaLaunchInternal(const char *hostFun,
                                gpgpu_context *gpgpu_ctx = NULL) {
+  //Jiayi Test
+  printf("[Jiayi Test] cudaLaunchInternal\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -1955,6 +1969,7 @@ __host__ cudaError_t CUDARTAPI cudaUnbindTextureInternal(
 __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
     const char *hostFun, dim3 gridDim, dim3 blockDim, const void **args,
     size_t sharedMem, cudaStream_t stream, gpgpu_context *gpgpu_ctx = NULL) {
+  printf("[Jiayi Test] cuLaunchKernelInternal1957()\n");
   gpgpu_context *ctx;
   if (gpgpu_ctx) {
     ctx = gpgpu_ctx;
@@ -1974,7 +1989,6 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernelInternal(
     std::pair<size_t, unsigned> p = entry->get_param_config(i);
     cudaSetupArgumentInternal(args[i], p.first, p.second);
   }
-
   cudaLaunchInternal(hostFun);
   return g_last_cudaError = cudaSuccess;
 }
@@ -2762,6 +2776,7 @@ __host__ cudaError_t CUDARTAPI cudaLaunchKernel(const char *hostFun,
                                                 const void **args,
                                                 size_t sharedMem,
                                                 cudaStream_t stream) {
+  printf("[Jiayi Test] cudaLaunchKernel(2762)\n");
   return cudaLaunchKernelInternal(hostFun, gridDim, blockDim, args, sharedMem,
                                   stream);
 }
@@ -3490,6 +3505,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       std::string ptx_filename = *itr_s;
       printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
       symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+      //Jiayi Test
+      printf("[Jiayi Test] dump symbol table\n", ptx_filename.c_str());
+      symtab->dump();
+      printf("[Jiayi Test] finished dumping symbol table\n", ptx_filename.c_str());
     }
   }
   api->name_symtab[fname] = symtab;
@@ -3577,6 +3596,8 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
 extern "C" {
 
 void **CUDARTAPI __cudaRegisterFatBinary(void *fatCubin) {
+  printf("[Jiayi Test] __cudaRegisterFatBinary(\n");
+  printf("[Jiayi Test] g_debug_execution=%d\n",g_debug_execution);
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
@@ -3584,6 +3605,7 @@ void **CUDARTAPI __cudaRegisterFatBinary(void *fatCubin) {
 }
 
 void CUDARTAPI __cudaRegisterFatBinaryEnd(void **fatCubinHandle) {
+  printf("[Jiayi Test] __cudaRegisterFatBinaryEnd\n");
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
@@ -3612,6 +3634,7 @@ void CUDARTAPI __cudaRegisterFunction(void **fatCubinHandle,
                                       const char *deviceName, int thread_limit,
                                       uint3 *tid, uint3 *bid, dim3 *bDim,
                                       dim3 *gDim) {
+  printf("[Jiayi Test] CUDARTAPI __cudaRegisterFunction(\n");
   cudaRegisterFunctionInternal(fatCubinHandle, hostFun, deviceFun, deviceName,
                                thread_limit, tid, bid, bDim, gDim);
 }

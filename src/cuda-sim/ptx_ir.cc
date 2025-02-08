@@ -612,7 +612,7 @@ void function_info::do_pdom() {
     modified = connect_break_targets();
   } while (modified == true);
 
-  if (g_debug_execution >= 50) {
+  if (g_debug_execution >= 3) {
     print_basic_blocks();
     print_basic_block_links();
     print_basic_block_dot();
@@ -622,7 +622,7 @@ void function_info::do_pdom() {
   }
   find_postdominators();
   find_ipostdominators();
-  if (g_debug_execution >= 50) {
+  if (g_debug_execution >= 3) {
     print_postdominators();
     print_ipostdominators();
   }

@@ -406,7 +406,9 @@ class simt_stack {
   void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
               address_type recvg_pc, op_type next_inst_op,
               unsigned next_inst_size, address_type next_inst_pc);
-
+  void update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
+              address_type recvg_pc, op_type next_inst_op,
+              unsigned next_inst_size, address_type next_inst_pc);
   const simt_mask_t &get_active_mask() const;
   void get_pdom_stack_top_info(unsigned *pc, unsigned *rpc) const;
   unsigned get_rp() const;
@@ -1230,6 +1232,8 @@ class core_t {
     assert(m_warp_count * m_warp_size > 0);
     m_thread = (ptx_thread_info **)calloc(m_warp_count * m_warp_size,
                                           sizeof(ptx_thread_info *));
+    //Jiayi Test
+    printf("[Jiayi Test]  m_warp_count: %d, m_warp_size: %d\n", m_warp_count, m_warp_size);
     initilizeSIMTStack(m_warp_count, m_warp_size);
 
     for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
@@ -1249,6 +1253,8 @@ class core_t {
   void execute_warp_inst_t(warp_inst_t &inst, unsigned warpId = (unsigned)-1);
   bool ptx_thread_done(unsigned hw_thread_id) const;
   virtual void updateSIMTStack(unsigned warpId, warp_inst_t *inst);
+  //Jiayi Test
+  virtual void updateSIMTStack_sid(unsigned warpId, warp_inst_t *inst, unsigned sid);
   void initilizeSIMTStack(unsigned warp_count, unsigned warps_size);
   void deleteSIMTStack();
   warp_inst_t getExecuteWarp(unsigned warpId);

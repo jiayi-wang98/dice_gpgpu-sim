@@ -29,7 +29,7 @@
 
 # GPGPU-Sim Makefile
 
-DEBUG?=0
+DEBUG?=1
 TRACE?=1
 
 include ../version_detection.mk

@@ -28,7 +28,7 @@
 
 # GPGPU-Sim Makefile
 
-DEBUG?=0
+DEBUG?=1
 TRACE?=0
 
 ifeq ($(DEBUG),1)

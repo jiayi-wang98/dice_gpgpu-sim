@@ -31,7 +31,7 @@ CXX = g++
 CC = gcc
 CREATE_LIBRARY ?= 0
 INTERFACE = interconnect_interface.cpp
-DEBUG ?= 0
+DEBUG ?= 1
 
 LEX = flex
 YACC   = bison -y

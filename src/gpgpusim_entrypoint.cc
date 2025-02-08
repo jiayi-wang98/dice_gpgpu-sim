@@ -110,8 +110,10 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
       // no other kernel is currently running.
       if (ctx->the_gpgpusim->g_stream_manager->operation(&sim_cycles) &&
           !ctx->the_gpgpusim->g_the_gpu->active())
-        break;
-
+        {
+          printf("[Jiayi Test0]: if (ctx->the_gpgpusim->g_stream_manager->operation(&sim_cycles) && !ctx->the_gpgpusim->g_the_gpu->active())\n");
+          break;
+        }
       // functional simulation
       if (ctx->the_gpgpusim->g_the_gpu->is_functional_sim()) {
         kernel_info_t *kernel =
@@ -137,7 +139,6 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
 
       active = ctx->the_gpgpusim->g_the_gpu->active() ||
                !(ctx->the_gpgpusim->g_stream_manager->empty_protected());
-
     } while (active && !ctx->the_gpgpusim->g_sim_done);
     if (g_debug_execution >= 3) {
       printf("GPGPU-Sim: ** STOP simulation thread (no work) **\n");
@@ -233,6 +234,8 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
 }
 
 void gpgpu_context::start_sim_thread(int api) {
+  //Jiayi Test
+  printf("[Jiayi Test]: start_sim_thread\n");
   if (the_gpgpusim->g_sim_done) {
     the_gpgpusim->g_sim_done = false;
     if (api == 1) {
