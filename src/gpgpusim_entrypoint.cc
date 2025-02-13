@@ -200,6 +200,10 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
   print_splash();
   func_sim->read_sim_environment_variables();
   ptx_parser->read_parser_environment_variables();
+  //DICE-support
+  pptx_parser->read_parser_environment_variables();
+  dicemeta_parser->read_parser_environment_variables();
+  
   option_parser_t opp = option_parser_create();
 
   ptx_reg_options(opp);

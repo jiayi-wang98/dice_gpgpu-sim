@@ -42,7 +42,7 @@ include ../../version_detection.mk
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/cuda-sim
 
-OPT	:=  -O3 -g3 -Wall -Wno-unused-function -Wno-sign-compare
+OPT	:=  -O3 -g3 -Wall -Wno-unused-function -Wno-sign-compare -MMD -MP
 ifeq ($(DEBUG),1)
 	OPT := -g3 -Wall  -Wno-unused-function -Wno-sign-compare
 endif
@@ -62,7 +62,11 @@ ifeq ($(GNUC_CPP0X),1)
 endif
 endif
 
-OBJS	:= $(OUTPUT_DIR)/ptx_parser.o $(OUTPUT_DIR)/ptx_loader.o $(OUTPUT_DIR)/cuda_device_printf.o $(OUTPUT_DIR)/instructions.o $(OUTPUT_DIR)/cuda-sim.o $(OUTPUT_DIR)/ptx_ir.o $(OUTPUT_DIR)/ptx_sim.o  $(OUTPUT_DIR)/memory.o $(OUTPUT_DIR)/ptx-stats.o $(OUTPUT_DIR)/decuda_pred_table/decuda_pred_table.o $(OUTPUT_DIR)/ptx.tab.o $(OUTPUT_DIR)/lex.ptx_.o $(OUTPUT_DIR)/ptxinfo.tab.o $(OUTPUT_DIR)/lex.ptxinfo_.o $(OUTPUT_DIR)/cuda_device_runtime.o
+OBJS	:= $(OUTPUT_DIR)/ptx_parser.o $(OUTPUT_DIR)/ptx_loader.o $(OUTPUT_DIR)/cuda_device_printf.o \
+          $(OUTPUT_DIR)/instructions.o $(OUTPUT_DIR)/cuda-sim.o $(OUTPUT_DIR)/ptx_ir.o $(OUTPUT_DIR)/ptx_sim.o  \
+          $(OUTPUT_DIR)/memory.o $(OUTPUT_DIR)/ptx-stats.o $(OUTPUT_DIR)/decuda_pred_table/decuda_pred_table.o \
+          $(OUTPUT_DIR)/ptx.tab.o $(OUTPUT_DIR)/lex.ptx_.o $(OUTPUT_DIR)/ptxinfo.tab.o $(OUTPUT_DIR)/lex.ptxinfo_.o \
+          $(OUTPUT_DIR)/cuda_device_runtime.o $(OUTPUT_DIR)/dicemeta.tab.o $(OUTPUT_DIR)/lex.dicemeta_.o $(OUTPUT_DIR)/dice_metadata.o
 
 
 OPT += -DCUDART_VERSION=$(CUDART_VERSION)
@@ -81,11 +85,17 @@ libgpgpu_ptx_sim.a: $(OBJS)
 $(OUTPUT_DIR)/ptx.tab.o: $(OUTPUT_DIR)/ptx.tab.c
 	$(CPP) -c $(CXX_OPT) -DYYDEBUG $(OUTPUT_DIR)/ptx.tab.c -o $(OUTPUT_DIR)/ptx.tab.o
 
+$(OUTPUT_DIR)/lex.dicemeta_.o: $(OUTPUT_DIR)/lex.dicemeta_.c 
+	$(CPP) -c $(CXX_OPT) $(OUTPUT_DIR)/lex.dicemeta_.c -o $(OUTPUT_DIR)/lex.dicemeta_.o
+
 $(OUTPUT_DIR)/lex.ptx_.o: $(OUTPUT_DIR)/lex.ptx_.c 
 	$(CPP) -c $(CXX_OPT) $(OUTPUT_DIR)/lex.ptx_.c -o $(OUTPUT_DIR)/lex.ptx_.o
 
 $(OUTPUT_DIR)/ptxinfo.tab.o: $(OUTPUT_DIR)/ptxinfo.tab.c
 	$(CPP) -c $(CXX_OPT) -DYYDEBUG $(OUTPUT_DIR)/ptxinfo.tab.c -o $(OUTPUT_DIR)/ptxinfo.tab.o
+
+$(OUTPUT_DIR)/dicemeta.tab.o: $(OUTPUT_DIR)/dicemeta.tab.c
+	$(CPP) -c $(CXX_OPT) -DYYDEBUG $(OUTPUT_DIR)/dicemeta.tab.c -o $(OUTPUT_DIR)/dicemeta.tab.o
 
 $(OUTPUT_DIR)/lex.ptxinfo_.o: $(OUTPUT_DIR)/lex.ptxinfo_.c $(OUTPUT_DIR)/ptxinfo.tab.c
 	$(CPP) -c $(CXX_OPT) $(OUTPUT_DIR)/lex.ptxinfo_.c -o $(OUTPUT_DIR)/lex.ptxinfo_.o
@@ -93,19 +103,26 @@ $(OUTPUT_DIR)/lex.ptxinfo_.o: $(OUTPUT_DIR)/lex.ptxinfo_.c $(OUTPUT_DIR)/ptxinfo
 $(OUTPUT_DIR)/ptx.tab.c: ptx.y
 	bison --name-prefix=ptx_ -v -d ptx.y --file-prefix=$(OUTPUT_DIR)/ptx
 
+$(OUTPUT_DIR)/dicemeta.tab.c: dicemeta.y
+	bison --name-prefix=dicemeta_ -v -d dicemeta.y --file-prefix=$(OUTPUT_DIR)/dicemeta
+
 $(OUTPUT_DIR)/ptxinfo.tab.c: ptxinfo.y
 	bison --name-prefix=ptxinfo_ -v -d ptxinfo.y --file-prefix=$(OUTPUT_DIR)/ptxinfo
 
 $(OUTPUT_DIR)/lex.ptx_.c: ptx.l
 	flex --outfile=$(OUTPUT_DIR)/lex.ptx_.c ptx.l 
 
+$(OUTPUT_DIR)/lex.dicemeta_.c: dicemeta.l
+	flex --outfile=$(OUTPUT_DIR)/lex.dicemeta_.c dicemeta.l 
+
 $(OUTPUT_DIR)/lex.ptxinfo_.c: ptxinfo.l
 	flex --outfile=$(OUTPUT_DIR)/lex.ptxinfo_.c ptxinfo.l 
 
 clean:
 	rm -f *~ *.o *.gcda *.gcno *.gcov libgpgpu_ptx_sim.a \
-		ptx.tab.h ptx.tab.c ptx.output lex.ptx_.c \
+		ptx.tab.h ptx.tab.c ptx.output lex.ptx_.c\
 		ptxinfo.tab.h ptxinfo.tab.c ptxinfo.output lex.ptxinfo_.c \
+		dicemeta.tab.h dicemeta.tab.c dicemeta.output lex.dicemeta_.c \
 		instructions.h ptx_parser_decode.def directed_tests.log 
 	rm -f $(OUTPUT_DIR)/decuda_pred_table/*.o
 	rm -f $(OUTPUT_DIR)/Makefile.makedepend $(OUTPUT_DIR)/Makefile.makedepend.bak
@@ -137,13 +154,16 @@ endif
 $(OUTPUT_DIR)/instructions.o: $(OUTPUT_DIR)/instructions.h $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/cuda_device_printf.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/ptx_ir.o: $(OUTPUT_DIR)/ptx.tab.c $(OUTPUT_DIR)/ptx_parser_decode.def
+$(OUTPUT_DIR)/dice_metadata.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/ptx_loader.o: $(OUTPUT_DIR)/ptx.tab.c $(OUTPUT_DIR)/ptx_parser_decode.def
 $(OUTPUT_DIR)/ptx_parser.o: $(OUTPUT_DIR)/ptx.tab.c $(OUTPUT_DIR)/ptx_parser_decode.def
 $(OUTPUT_DIR)/ptxinfo.tab.o: $(OUTPUT_DIR)/ptx.tab.c
+$(OUTPUT_DIR)/dicemeta.tab.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/ptx-stats.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/ptx_sim.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/cuda-sim.o: $(OUTPUT_DIR)/ptx.tab.c $(SIM_OBJ_FILES_DIR)/detailed_version
 $(OUTPUT_DIR)/lex.ptxinfo_.o: $(OUTPUT_DIR)/ptx.tab.c
+$(OUTPUT_DIR)/lex.dicemeta_.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/lex.ptx_.o: $(OUTPUT_DIR)/ptx.tab.c
 $(OUTPUT_DIR)/cuda_device_runtime.o: $(OUTPUT_DIR)/ptx.tab.c
 

@@ -99,19 +99,19 @@ void ptx_recognizer::init_instruction_state() {
   init_directive_state();
 }
 
-symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
+symbol_table *gpgpu_context::init_parser(const char *ptx_filename, class ptx_recognizer *parser) {
   printf("[Jiayi Test] init_parser\n");
   g_filename = strdup(ptx_filename);
   if (g_global_allfiles_symbol_table == NULL) {
     g_global_allfiles_symbol_table =
         new symbol_table("global_allfiles", 0, NULL, this);
-    ptx_parser->g_global_symbol_table = ptx_parser->g_current_symbol_table =
+    parser->g_global_symbol_table = parser->g_current_symbol_table =
         g_global_allfiles_symbol_table;
+  } 
+  //DICE-support
+  else {
+    parser->g_global_symbol_table = parser->g_current_symbol_table = new symbol_table("dice",0,g_global_allfiles_symbol_table,this); //was not used and name was "global"
   }
-  /*else {
-      g_global_symbol_table = g_current_symbol_table = new
-  symbol_table("global",0,g_global_allfiles_symbol_table);
-  }*/
 
 #define DEF(X, Y) g_ptx_token_decode[X] = Y;
 #include "ptx_parser_decode.def"
@@ -131,18 +131,18 @@ symbol_table *gpgpu_context::init_parser(const char *ptx_filename) {
   g_ptx_token_decode[generic_space] = "generic_space";
   g_ptx_token_decode[instruction_space] = "instruction_space";
 
-  ptx_lex_init(&(ptx_parser->scanner));
-  ptx_parser->init_directive_state();
-  ptx_parser->init_instruction_state();
+  ptx_lex_init(&(parser->scanner));
+  parser->init_directive_state();
+  parser->init_instruction_state();
 
   FILE *ptx_in;
   ptx_in = fopen(ptx_filename, "r");
-  ptx_set_in(ptx_in, ptx_parser->scanner);
-  ptx_parse(ptx_parser->scanner, ptx_parser);
-  ptx_in = ptx_get_in(ptx_parser->scanner);
-  ptx_lex_destroy(ptx_parser->scanner);
+  ptx_set_in(ptx_in, parser->scanner);
+  ptx_parse(parser->scanner, parser);
+  ptx_in = ptx_get_in(parser->scanner);
+  ptx_lex_destroy(parser->scanner);
   fclose(ptx_in);
-  return ptx_parser->g_global_symbol_table;
+  return parser->g_global_symbol_table;
 }
 
 void ptx_recognizer::start_function(int entry_point) {

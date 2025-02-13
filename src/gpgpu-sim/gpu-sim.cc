@@ -596,6 +596,12 @@ void gpgpu_sim_config::reg_options(option_parser_t opp) {
       opp, "-gpgpu_ptx_sim_mode", OPT_INT32,
       &(gpgpu_ctx->func_sim->g_ptx_sim_mode),
       "Select between Performance (default) or Functional simulation (1)", "0");
+  //DICE-support
+  option_parser_register(
+      opp, "-dice", OPT_INT32,
+      &(gpgpu_ctx->g_dice_enabled),
+      "Choose if run on DICE mode", "0");
+
   option_parser_register(opp, "-gpgpu_clock_domains", OPT_CSTR,
                          &gpgpu_clock_domains,
                          "Clock Domain Frequencies in MhZ {<Core Clock>:<ICNT "
@@ -822,6 +828,9 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
   m_shader_config = &m_config.m_shader_config;
   m_memory_config = &m_config.m_memory_config;
   ctx->ptx_parser->set_ptx_warp_size(m_shader_config);
+  //DICE-support (maybe not needed)
+  ctx->pptx_parser->set_ptx_warp_size(m_shader_config);
+  
   ptx_file_line_stats_create_exposed_latency_tracker(m_config.num_shader());
 
 #ifdef GPGPUSIM_POWER_MODEL

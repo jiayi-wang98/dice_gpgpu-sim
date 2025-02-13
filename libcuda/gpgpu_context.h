@@ -7,6 +7,8 @@
 #include "../src/cuda-sim/ptx_parser.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "cuda_api_object.h"
+//DICE-support
+#include "../src/cuda-sim/dice_metadata.h"
 
 class gpgpu_context {
  public:
@@ -23,7 +25,10 @@ class gpgpu_context {
     debug_tensorcore = 0;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
+    dicemeta = new dice_metadata(this);
+    dicemeta_parser = new dice_metadata_parser(this);
     ptx_parser = new ptx_recognizer(this);
+    pptx_parser = new ptx_recognizer(this);
     the_gpgpusim = new GPGPUsim_ctx(this);
     func_sim = new cuda_sim(this);
     device_runtime = new cuda_device_runtime(this);
@@ -48,6 +53,12 @@ class gpgpu_context {
   cuda_runtime_api *api;
   ptxinfo_data *ptxinfo;
   ptx_recognizer *ptx_parser;
+
+  //DICE-support
+  dice_metadata_parser *dicemeta_parser;
+  dice_metadata *dicemeta;
+  ptx_recognizer *pptx_parser;
+
   GPGPUsim_ctx *the_gpgpusim;
   cuda_sim *func_sim;
   cuda_device_runtime *device_runtime;
@@ -62,14 +73,20 @@ class gpgpu_context {
                                                          unsigned source_num);
   class symbol_table *gpgpu_ptx_sim_load_ptx_from_filename(
       const char *filename);
+
   void gpgpu_ptx_info_load_from_filename(const char *filename,
                                          unsigned sm_version);
   void gpgpu_ptxinfo_load_from_string(const char *p_for_info,
                                       unsigned source_num,
                                       unsigned sm_version = 20,
                                       int no_of_ptx = 0);
+  //DICE-support
+  int g_dice_enabled;
+  class symbol_table *dice_pptx_load_from_filename(const char *filename);
+  void dice_metadata_load_from_filename(const char *filename);
+
   void print_ptx_file(const char *p, unsigned source_num, const char *filename);
-  class symbol_table *init_parser(const char *);
+  class symbol_table *init_parser(const char *, ptx_recognizer *parser);
   class gpgpu_sim *gpgpu_ptx_sim_init_perf();
   void start_sim_thread(int api);
   struct _cuda_device_id *GPGPUSim_Init();

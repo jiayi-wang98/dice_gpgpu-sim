@@ -175,7 +175,7 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
     fprintf(fp, "%s", p);
     fclose(fp);
   }
-  symbol_table *symtab = init_parser(buf);
+  symbol_table *symtab = init_parser(buf,ptx_parser);
   ptx_lex_init(&(ptx_parser->scanner));
   ptx__scan_string(p, ptx_parser->scanner);
   int errors = ptx_parse(ptx_parser->scanner, ptx_parser);
@@ -204,8 +204,15 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
 
 symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename(
     const char *filename) {
-  symbol_table *symtab = init_parser(filename);
+  symbol_table *symtab = init_parser(filename,ptx_parser);
   printf("GPGPU-Sim PTX: finished parsing EMBEDDED .ptx file %s\n", filename);
+  return symtab;
+}
+
+symbol_table *gpgpu_context::dice_pptx_load_from_filename(
+    const char *filename) {
+  symbol_table *symtab = init_parser(filename,pptx_parser);
+  printf("GPGPU-Sim PTX: finished parsing DICE .pptx file %s\n", filename);
   return symtab;
 }
 
