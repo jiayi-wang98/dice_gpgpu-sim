@@ -57,10 +57,10 @@ void yyerror(dice_metadata_parser *dicemeta_parser, const char *s) {
   Declare tokens.
 ----------------------------------------------------------------------------*/
 %token DBB_ID UNROLLING_FACTOR UNROLLING_STRATEGY LAT IN_REGS OUT_REGS LD_DEST_REGS STORE 
-%token BRANCH BRANCH_UNI BRANCH_PRED BRANCH_TARGET BRANCH_RECVPC RET
+%token BRANCH BRANCH_UNI BRANCH_PRED BRANCH_TARGET BRANCH_RECVPC RET BITSTREAM_ADDR BITSTREAM_LENGTH FUNCTION
 %token <int_value> NUMBER
 %token <int_value> SPECIAL_REGISTER
-%token <string_value> REGOPERAND
+%token <string_value> REGOPERAND LABEL FUNCTION_IDENTIFIER
 %token <int_value> DIMENSION_MODIFIER
 %token COMMA LEFT_PAREN RIGHT_PAREN SEMI_COLON EXCLAMATION EQUALS
 
@@ -81,9 +81,27 @@ void yyerror(dice_metadata_parser *dicemeta_parser, const char *s) {
 /* A meta file is simply a series of blocks */
 metadata_file:
       /* empty */
-    | metadata_file block
+    | metadata_file function
     ;
 
+function:
+    function_decl block_series {
+        printf("DICE METADATA PARSER: Finished current FUNCTION.\n"); fflush(stdout);
+        dicemeta_parser->commit_function();
+    }
+    ;
+
+block_series:
+      /* empty */
+    | block_series block
+
+/* A function block is a FUNCTION field followed by a series of DBB blocks */
+function_decl:
+    FUNCTION EQUALS FUNCTION_IDENTIFIER SEMI_COLON {
+        printf("DICE METADATA PARSER: FUNCTION_IDENTIFIER = %s\n", $3); fflush(stdout);
+        dicemeta_parser->set_function_name($3);
+    }
+    ;
 /* 
    Each block starts with a DBB_ID field and ends with a ';'. When the block is complete,
    the just‐filled dice_metadata (pointed to by current_metadata) is added to the parser list.
@@ -126,57 +144,64 @@ field_list:
 ----------------------------------------------------------------------------*/
 field:
       UNROLLING_FACTOR EQUALS NUMBER {
-         printf("DICE METADATA PARSER: UNROLLING_FACTOR = %d\n", $3); fflush(stdout);
+         //printf("DICE METADATA PARSER: UNROLLING_FACTOR = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_unrolling_factor($3);
       }
     | UNROLLING_STRATEGY EQUALS NUMBER {
-         printf("DICE METADATA PARSER: UNROLLING_STRATEGY = %d\n", $3); fflush(stdout);
+         //printf("DICE METADATA PARSER: UNROLLING_STRATEGY = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_unrolling_strategy($3);
       }
     | LAT EQUALS NUMBER {
-        printf("DICE METADATA PARSER: LAT = %d\n", $3); fflush(stdout);
+        //printf("DICE METADATA PARSER: LAT = %d\n", $3); fflush(stdout);
         dicemeta_parser->set_latency($3);
       }
     | IN_REGS EQUALS reg_list {
-         printf("DICE METADATA PARSER: IN_REGS\n"); fflush(stdout);
-         //current_metadata->in_regs = *$3; delete $3;
+         //printf("DICE METADATA PARSER: IN_REGS\n"); fflush(stdout);
+         dicemeta_parser->set_in_regs();
       }
     | OUT_REGS EQUALS reg_list {
-        printf("DICE METADATA PARSER: OUT_REGS\n"); fflush(stdout);
-         //current_metadata->out_regs = *$3; delete $3;
+        //printf("DICE METADATA PARSER: OUT_REGS\n"); fflush(stdout);
+        dicemeta_parser->set_out_regs();
       }
     | LD_DEST_REGS EQUALS reg_list {
-        printf("DICE METADATA PARSER: LD_DEST_REGS\n"); fflush(stdout);
-         //current_metadata->load_destination_regs = *$3; delete $3;
+        //printf("DICE METADATA PARSER: LD_DEST_REGS\n"); fflush(stdout);
+        dicemeta_parser->set_ld_dest_regs();
       }
     | STORE EQUALS NUMBER {
-         printf("DICE METADATA PARSER: STORE = %d\n", $3); fflush(stdout);
+         //printf("DICE METADATA PARSER: STORE = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_num_store($3);
       }
     | BRANCH EQUALS NUMBER {
-            printf("DICE METADATA PARSER: BRANCH = %d\n", $3); fflush(stdout);
+            //printf("DICE METADATA PARSER: BRANCH = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_branch($3);
       }
     | BRANCH_UNI EQUALS NUMBER {
-         printf("DICE METADATA PARSER: BRANCH_UNI = %d\n", $3); fflush(stdout);
+         //printf("DICE METADATA PARSER: BRANCH_UNI = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_branch_uni($3);
       }
-    | BRANCH_PRED EQUALS REGOPERAND {
-        printf("DICE METADATA PARSER: BRANCH_PRED\n"); fflush(stdout);
-         //current_metadata->branch_pred = operand_info($3);
-         //free($3);
+    | BRANCH_PRED EQUALS reg_list {
+        //printf("DICE METADATA PARSER: BRANCH_PRED\n"); fflush(stdout);
+        dicemeta_parser->set_branch_pred();
       }
     | BRANCH_TARGET EQUALS NUMBER {
-            printf("DICE METADATA PARSER: BRANCH_TARGET = %d\n", $3); fflush(stdout);
+            //printf("DICE METADATA PARSER: BRANCH_TARGET = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_branch_target_dbb($3);
       }
     | BRANCH_RECVPC EQUALS NUMBER {
-            printf("DICE METADATA PARSER: BRANCH_RECVPC = %d\n", $3); fflush(stdout);
+            //printf("DICE METADATA PARSER: BRANCH_RECVPC = %d\n", $3); fflush(stdout);
          dicemeta_parser->set_reconvergence_dbb($3);
       }
     | RET {
-            printf("DICE METADATA PARSER: RET\n"); fflush(stdout);
+            //printf("DICE METADATA PARSER: RET\n"); fflush(stdout);
          dicemeta_parser->set_is_ret();
+      }
+    | BITSTREAM_ADDR EQUALS LABEL {
+            //printf("DICE METADATA PARSER: BITSTREAM_LABEL = %s\n",$3); fflush(stdout);
+         dicemeta_parser->set_bitstream_label($3);
+      }
+    | BITSTREAM_LENGTH EQUALS NUMBER {
+            //printf("DICE METADATA PARSER: BITSTREAM_LENGTH = %d\n", $3); fflush(stdout);
+         dicemeta_parser->set_bitstream_length($3);
       }
     ;
 
@@ -192,16 +217,15 @@ reg_list:
   We build a std::list<operand_info> on the heap. (Free the temporary strings later.)
 ----------------------------------------------------------------------------*/
 reg_operands:
-      operands {printf("DICE METADATA PARSER: reg_operands: %s\n", $1); fflush(stdout);} 
-    | reg_operands COMMA operands {printf("DICE METADATA PARSER: reg_operands: %s\n", $3); fflush(stdout);}
+      operands
+    | reg_operands COMMA operands
     ;
 
 operands:
-      REGOPERAND {$$=$1;}
+      REGOPERAND {$$=$1; dicemeta_parser->add_operand($1);}
     | SPECIAL_REGISTER DIMENSION_MODIFIER {
+        dicemeta_parser->add_builtin_operand($1, $2);
         $$=special_reg_names[$1]; 
-        printf("DICE METADATA PARSER: special_operands:%s\n",special_reg_names[$1]);
-        fflush(stdout);
     }
     ;
 

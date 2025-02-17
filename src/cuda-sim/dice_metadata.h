@@ -9,6 +9,9 @@ typedef void* yyscan_t;
 
 
 class operand_info;
+class ptx_instruction;
+struct dice_block_t;
+
 
 class dice_metadata {
   public:
@@ -34,6 +37,8 @@ class dice_metadata {
     int unrolling_factor;
     int unrolling_strategy;
     int latency;
+    std::string bitstream_label;
+    int bitstream_length;
     std::list<operand_info> in_regs;
     std::list<operand_info> out_regs;
     std::list<operand_info> load_destination_regs;
@@ -47,6 +52,7 @@ class dice_metadata {
     bool is_exit;
     bool is_ret;
     bool is_entry;
+    dice_block_t *dice_block;
 
     void dump();
 };
@@ -55,13 +61,16 @@ class dice_metadata_parser {
  private:
   bool g_debug_dicemeta_generation;
   dice_metadata* g_current_dbb;
-  std::list<dice_metadata*> g_dice_metadata_list;
   std::list<operand_info> g_operands;
+  gpgpu_context* gpgpu_ctx;
+  std::string g_current_function_name;
+  function_info* g_current_function_info;
+
  public:
   dice_metadata_parser(gpgpu_context* ctx)
-      : g_dice_metadata_list(),  
-        g_operands()
+      : g_operands()
   {
+    assert(ctx != NULL);
     gpgpu_ctx = ctx;
     g_current_dbb = NULL;
     g_error_detected = 0;
@@ -72,14 +81,11 @@ class dice_metadata_parser {
   unsigned col;
   const char* g_dice_metadata_filename;
   int g_error_detected;
-  class gpgpu_context* gpgpu_ctx;
 
-
-  void add_scalar_operand(const char *identifier);
-  void dump();
+  void add_operand(const char *identifier);
+  void add_builtin_operand(int builtin, int dim_modifier);
   void read_parser_environment_variables();
   void create_new_dbb(int dbb_id);
-  int metadata_list_size();
   void set_unrolling_factor(int factor){
     g_current_dbb->unrolling_factor = factor;
   }
@@ -110,6 +116,32 @@ class dice_metadata_parser {
   void set_is_ret(){
     g_current_dbb->is_ret = true;
   }
+  void set_bitstream_label(const char* label){
+    g_current_dbb->bitstream_label = std::string(label);
+  }
+  void set_bitstream_length(int length){
+    g_current_dbb->bitstream_length = length;
+  }
+
+  void set_function_name(const char* name);
+
+  void set_in_regs();
+  void set_out_regs();
+  void set_ld_dest_regs();
+  void set_branch_pred();
+  void commit_function();
 };
 
+struct dice_block_t {
+  dice_block_t(const std::string &block_label, unsigned ID, ptx_instruction *begin, ptx_instruction *end, 
+                bool entry, bool ex)
+    : label(block_label), dbb_id(ID), ptx_begin(begin), ptx_end(end), is_entry(entry), is_exit(ex) {}
+
+  ptx_instruction *ptx_begin;
+  ptx_instruction *ptx_end;
+  bool is_entry;
+  bool is_exit;
+  unsigned dbb_id;
+  std::string label;
+};
 #endif

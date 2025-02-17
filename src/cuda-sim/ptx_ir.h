@@ -30,7 +30,7 @@
 #define ptx_ir_INCLUDED
 
 #include "../abstract_hardware_model.h"
-
+#include "dice_metadata.h"
 #include <assert.h>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +43,41 @@
 #include "ptx_sim.h"
 
 #include "memory.h"
+#include "dice_metadata.h"
+
+//DICE-support
+struct dice_block_t;
+class dice_metadata;
+
+static const char* special_reg_map[] = {
+    "CLOCK_REG",
+    "HALFCLOCK_ID",
+    "CLOCK64_REG",
+    "ctaid",
+    "ENVREG_REG",
+    "GRIDID_REG",
+    "LANEID_REG",
+    "LANEMASK_EQ_REG",
+    "LANEMASK_LE_REG",
+    "LANEMASK_LT_REG",
+    "LANEMASK_GE_REG",
+    "LANEMASK_GT_REG",
+    "nctaid",
+    "ntid",
+    "NSMID_REG",
+    "NWARPID_REG",
+    "PM_REG",
+    "SMID_REG",
+    "tid",
+    "WARPID_REG",
+    "WARPSZ_REG"
+};
+
+static const char* dimension_map[] = {
+    "x",
+    "y",
+    "z"
+};
 
 class gpgpu_context;
 
@@ -659,9 +694,17 @@ class operand_info {
   void set_return() { m_is_return_var = true; }
   void set_immediate_addr() { m_immediate_address = true; }
   const std::string &name() const {
-    assert(m_type == symbolic_t || m_type == reg_t || m_type == address_t ||
-           m_type == memory_t || m_type == label_t);
-    return m_value.m_symbolic->name();
+    if(m_type == symbolic_t || m_type == reg_t || m_type == address_t ||
+           m_type == memory_t || m_type == label_t){
+      return m_value.m_symbolic->name();
+    } else if(m_type == builtin_t){
+      static thread_local std::string s_temp;
+      s_temp = "%"+std::string(special_reg_map[m_value.m_int]) + "." + std::string(dimension_map[m_addr_offset]);
+      return s_temp;
+    } else {
+      printf("operand_info::name() not implemented for type %d\n", m_type);
+      abort();
+    }
   }
 
   unsigned get_vect_nelem() const {
@@ -1059,7 +1102,15 @@ class ptx_instruction : public warp_inst_t {
   {
     m_basic_block = basic_block;
   }
+
+  //DICE-support
+  void assign_dbb(
+      dice_block_t *dice_block)  // assign instruction to a dice block
+  {
+    m_dice_block = dice_block;
+  }
   basic_block_t *get_bb() { return m_basic_block; }
+  dice_block_t *get_dbb() { return m_dice_block; }
   void set_m_instr_mem_index(unsigned index) { m_instr_mem_index = index; }
   void set_PC(addr_t PC) { m_PC = PC; }
   addr_t get_PC() const { return m_PC; }
@@ -1126,7 +1177,10 @@ class ptx_instruction : public warp_inst_t {
   void set_fp_or_int_archop();
   void set_mul_div_or_other_archop();
 
+  //DICE-support
   basic_block_t *m_basic_block;
+  dice_block_t *m_dice_block;
+
   unsigned m_uid;
   addr_t m_PC;
   std::string m_source_file;
@@ -1380,6 +1434,21 @@ class function_info {
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
+  //DICE-support
+  void set_dice_blocks();
+  void print_dice_blocks();
+  void add_dice_metadata(dice_metadata *metadata) {
+    m_dice_metadata.push_back(metadata);
+  }
+  void clear_dice_metadata() {
+    for (std::vector<dice_metadata *>::iterator it = m_dice_metadata.begin();
+         it != m_dice_metadata.end(); ++it) {
+      delete *it;
+    }
+    m_dice_metadata.clear();
+  }
+  void link_block_in_dicemeta();
+  void dump_dice_metadata();
  protected:
   // Registers/shmem/etc. used (from ptxas -v), loaded from ___.ptxinfo along
   // with ___.ptx
@@ -1404,6 +1473,10 @@ class function_info {
   std::vector<const symbol *> m_args;
   std::list<ptx_instruction *> m_instructions;
   std::vector<basic_block_t *> m_basic_blocks;
+  //DICE-support
+  std::vector<dice_block_t *> m_dice_blocks;
+  std::vector<dice_metadata *> m_dice_metadata;
+
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
   std::map<std::string, unsigned> labels;
   unsigned num_reconvergence_pairs;

@@ -211,7 +211,7 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_filename(
 
 symbol_table *gpgpu_context::dice_pptx_load_from_filename(
     const char *filename) {
-  symbol_table *symtab = init_parser(filename,pptx_parser);
+  symbol_table *symtab = init_parser(filename,ptx_parser);
   printf("GPGPU-Sim PTX: finished parsing DICE .pptx file %s\n", filename);
   return symtab;
 }

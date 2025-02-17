@@ -204,6 +204,11 @@ void ptx_recognizer::end_function() {
                                 (g_current_symbol_table->next_reg_num() - 1));
   g_func_info->add_inst(g_instructions);
   g_instructions.clear();
+  //DICE-support
+  if(gpgpu_ctx->g_dice_enabled){
+    g_func_info->set_dice_blocks();
+    if(g_debug_ir_generation) g_func_info->print_dice_blocks();
+  }
   gpgpu_ptx_assemble(g_func_info->get_name(), g_func_info);
   g_current_symbol_table = g_global_symbol_table;
 
@@ -263,7 +268,7 @@ const ptx_instruction *ptx_recognizer::ptx_instruction_lookup(
 
 void ptx_recognizer::add_instruction() {
   PTX_PARSE_DPRINTF("add_instruction: %s",
-                    ((g_opcode > 0) ? g_opcode_string[g_opcode] : "<label>"));
+                    ((g_opcode > 0) ? g_opcode_string[g_opcode] : g_label->name().c_str()));
   assert(g_shader_core_config != 0);
   ptx_instruction *i = new ptx_instruction(
       g_opcode, g_pred, g_neg_pred, g_pred_mod, g_label, g_operands,

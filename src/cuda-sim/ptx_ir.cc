@@ -41,6 +41,7 @@ typedef void *yyscan_t;
 
 #include "../../libcuda/gpgpu_context.h"
 #include "cuda-sim.h"
+#include "dice_metadata.h"
 
 #define STR_SIZE 1024
 
@@ -406,6 +407,71 @@ void function_info::create_basic_blocks() {
       /*exit basic block*/ new basic_block_t(bb_id, NULL, NULL, 0, 1));
 }
 
+//DICE-support
+void function_info::print_dice_blocks() {
+  printf("Printing DICE blocks for function \'%s\':\n", m_name.c_str());
+  std::list<ptx_instruction *>::iterator ptx_itr;
+  unsigned last_dbb = 0;
+  for (ptx_itr = m_instructions.begin(); ptx_itr != m_instructions.end();
+       ptx_itr++) {
+    if ((*ptx_itr)->get_dbb()) {
+      if ((*ptx_itr)->get_dbb()->dbb_id != last_dbb) {
+        printf("\n");
+        last_dbb = (*ptx_itr)->get_dbb()->dbb_id;
+      }
+      printf("%s: ", (*ptx_itr)->get_dbb()->label.c_str());
+      (*ptx_itr)->print_insn();
+      printf("\n");
+    }
+  }
+}
+
+void function_info::link_block_in_dicemeta() {
+  printf("Linking DICE blocks to metadata of function\'%s\':\n", m_name.c_str());
+  //iterate over m_dice_metadata
+  std::vector<dice_metadata *>::iterator dice_itr;
+  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
+       dice_itr++) {
+    //get their bitstream_label
+    std::string bitstream_label = std::string((*dice_itr)->bitstream_label);
+    printf("DICE METADATA Linking: %s\n",bitstream_label.c_str());
+    //find dice_basic_block with the same label
+    std::vector<dice_block_t *>::iterator dice_block_itr;
+    bool found = false;
+    for (dice_block_itr = m_dice_blocks.begin();
+         dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
+      if ((*dice_block_itr)->label == bitstream_label) {
+        //link the dice_basic_block to the dice_metadata
+        (*dice_itr)->dice_block = *dice_block_itr;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      printf("DICE METADATA Error: Could not find dice code block with label %s\n",
+        ((*dice_itr)->bitstream_label).c_str());
+      //print available dice block labels
+      printf("Available dice block labels: ");
+      for (dice_block_itr = m_dice_blocks.begin();
+             dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
+        printf(" %s", (*dice_block_itr)->label.c_str());
+      }
+      printf("\n");
+      fflush(stdout);
+      assert(0);
+    }
+  }
+}
+
+void function_info::dump_dice_metadata() {
+  printf("Dumping DICE metadata for function \'%s\':\n", m_name.c_str());
+  std::vector<dice_metadata *>::iterator dice_itr;
+  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
+       dice_itr++) {
+    (*dice_itr)->dump();
+  }
+}
+
 void function_info::print_basic_blocks() {
   printf("Printing basic blocks for function \'%s\':\n", m_name.c_str());
   std::list<ptx_instruction *>::iterator ptx_itr;
@@ -602,6 +668,61 @@ bool function_info::connect_break_targets()  // connecting break instructions
 
   return modified;
 }
+//DICE-support
+void function_info::set_dice_blocks(){
+  printf("GDICE PPTX: Setting dice blocks for \'%s\'...\n", m_name.c_str());
+  std::list<ptx_instruction *> leaders;
+  std::list<ptx_instruction *>::iterator i, l;
+
+  // first instruction is a leader
+  i = m_instructions.begin();
+  leaders.push_back(*i);
+  i++;
+  while (i != m_instructions.end()) {
+    ptx_instruction *pI = *i;
+    if (pI->is_label()) leaders.push_back(pI);
+    i++;
+  }
+
+  if (leaders.empty()) {
+    printf("DICE PPTX: Function \'%s\' has no dice blocks\n",
+           m_name.c_str());
+    return;
+  }
+
+  unsigned dbb_id = 0;
+  l = leaders.begin();
+  assert((*l)->is_label());
+  i = m_instructions.begin();
+  std::string block_name = (*l)->get_label()->name();
+  printf("DICE PPTX: Creating dice block %s\n", block_name.c_str());
+  m_dice_blocks.push_back(
+      new dice_block_t(block_name,dbb_id++, *find_next_real_instruction(i), NULL, 1, 0));
+  ptx_instruction *last_real_inst = *(l++);
+
+  for (; i != m_instructions.end(); i++) {
+    ptx_instruction *pI = *i;
+    if (l != leaders.end() && *i == *l) {
+      // found start of next dice block
+      m_dice_blocks.back()->ptx_end = last_real_inst;
+      if (find_next_real_instruction(i) !=
+          m_instructions.end()) {  // if not bogus trailing label
+        block_name = (*l)->get_label()->name();
+        printf("DICE PPTX: Creating dice block %s\n", block_name.c_str());
+        m_dice_blocks.push_back(new dice_block_t(block_name,dbb_id++, *find_next_real_instruction(i), NULL, 0, 0));
+        last_real_inst = *find_next_real_instruction(i);
+      }
+      // start search for next leader
+      l++;
+    }
+    pI->assign_dbb(m_dice_blocks.back());
+    if (!pI->is_label()) last_real_inst = pI;
+  }
+  m_dice_blocks.back()->ptx_end = last_real_inst;
+  m_dice_blocks.push_back(
+      /*exit dice block*/ new dice_block_t("RET",dbb_id, NULL, NULL, 0, 1));
+}
+
 void function_info::do_pdom() {
   create_basic_blocks();
   connect_basic_blocks();

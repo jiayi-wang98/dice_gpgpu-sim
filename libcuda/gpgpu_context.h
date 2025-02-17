@@ -25,10 +25,8 @@ class gpgpu_context {
     debug_tensorcore = 0;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
-    dicemeta = new dice_metadata(this);
     dicemeta_parser = new dice_metadata_parser(this);
     ptx_parser = new ptx_recognizer(this);
-    pptx_parser = new ptx_recognizer(this);
     the_gpgpusim = new GPGPUsim_ctx(this);
     func_sim = new cuda_sim(this);
     device_runtime = new cuda_device_runtime(this);
@@ -56,8 +54,6 @@ class gpgpu_context {
 
   //DICE-support
   dice_metadata_parser *dicemeta_parser;
-  dice_metadata *dicemeta;
-  ptx_recognizer *pptx_parser;
 
   GPGPUsim_ctx *the_gpgpusim;
   cuda_sim *func_sim;

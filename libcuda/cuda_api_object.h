@@ -7,9 +7,9 @@
 #include <string>
 
 #include "builtin_types.h"
-
-#include "../src/abstract_hardware_model.h"
 #include "../src/cuda-sim/ptx_ir.h"
+#include "../src/abstract_hardware_model.h"
+
 #include "../src/gpgpu-sim/gpu-sim.h"
 #include "cuobjdump.h"
 

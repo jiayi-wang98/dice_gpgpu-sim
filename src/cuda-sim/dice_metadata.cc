@@ -9,19 +9,12 @@
 #include "ptx_parser.h"
 #include "dicemeta.tab.h"
 
-/// extern prototypes
-
-extern std::map<unsigned, const char *> get_duplicate();
-
 typedef void *yyscan_t;
 extern int dicemeta_get_lineno(yyscan_t yyscanner);
 extern int dicemeta_lex_init(yyscan_t *scanner);
 extern void dicemeta_set_in(FILE *_in_str, yyscan_t yyscanner);
 extern int dicemeta_parse(yyscan_t scanner, dice_metadata *dicemeta);
 extern int dicemeta_lex_destroy(yyscan_t scanner);
-
-static bool g_save_embedded_ptx;
-static int g_occupancy_sm_number;
 
 #define DICE_PARSE_DPRINTF(...)                                                 \
   if (g_debug_dicemeta_generation) {                                            \
@@ -60,68 +53,75 @@ void gpgpu_context::dice_metadata_load_from_filename(const char *filename) {
   fclose(dicemeta_in);
 }
 
-
-void dice_metadata_parser::dump(){
-  printf("DICE Metadata:\n"); fflush(stdout);
-  printf("Total Number of DICE Blocks: %d\n", g_dice_metadata_list.size()); fflush(stdout);
-  //loop over std::list<dice_metadata*> g_dice_metadata_list;
-  assert(g_dice_metadata_list.size()!=0);
-  for (std::list<dice_metadata*>::iterator it = g_dice_metadata_list.begin(); it != g_dice_metadata_list.end(); ++it){
-    printf("DICE Metadata: DUMPING !!!\n"); fflush(stdout);
-    assert((*it)!=NULL);
-    (*it)->dump();
-  }
-}
-
 void dice_metadata::dump(){
   printf("DICE Metadata:\n");
   printf("DBB ID: %d\n", dbb_id);
+  printf("BITSTREAM_ADDR: %s\n", bitstream_label.c_str());
+  printf("BITSTREAM_LENGTH: %d\n", bitstream_length);
   printf("Unrolling Factor: %d\n", unrolling_factor);
   printf("Unrolling Strategy: %d\n", unrolling_strategy);
   printf("Latency: %d\n", latency);fflush(stdout);
-  printf("In Registers:\n"); fflush(stdout);
+  printf("In Registers:"); fflush(stdout);
   if(in_regs.size()>0){
     for (std::list<operand_info>::iterator it = in_regs.begin(); it != in_regs.end(); ++it){
-      printf((it->name()).c_str());
+      std::cout<<(it->name()).c_str();
       printf(" ");
     }
+    printf("\n");
+  } else {
+    printf("None\n");
   }
-  printf("Out Registers:\n");
+  printf("Out Registers:");
   if(out_regs.size()>0){
     for (std::list<operand_info>::iterator it = out_regs.begin(); it != out_regs.end(); ++it){
-      printf((it->name()).c_str());
+      std::cout<<(it->name()).c_str();
       printf(" ");
     }
+    printf("\n");
+  } else {
+    printf("None\n");
   }
-  printf("Load Destination Registers:\n");
+  printf("Load Destination Registers:");
   if(load_destination_regs.size()>0){
     for (std::list<operand_info>::iterator it = load_destination_regs.begin(); it != load_destination_regs.end(); ++it){
-      printf((it->name()).c_str());
+      std::cout<<(it->name()).c_str();
       printf(" ");
     }
+    printf("\n");
+  } else {
+    printf("None\n");
   }
   printf("Number of Store: %d\n", num_store);
   printf("Branch: %d\n", branch);
-  printf("Uni Branch: %d\n", uni_bra);
-  printf("Branch Prediction:"); fflush(stdout);
-  if (branch_pred!=NULL) printf((branch_pred->name()).c_str());
-  printf("\n");
-  printf("Branch Target DBB: %d\n", branch_target_dbb);
-  printf("Reconvergence DBB: %d\n", reconvergence_dbb);
+  if (branch) {
+    printf("Uni Branch: %d\n", uni_bra);
+    printf("Branch Prediction:"); 
+    if (branch_pred!=NULL) std::cout<<(branch_pred->name());
+    printf("\n");
+    printf("Branch Target DBB: %d\n", branch_target_dbb);
+    printf("Reconvergence DBB: %d\n", reconvergence_dbb);
+  }
   printf("Is Exit: %d\n", is_exit);
   printf("Is Ret: %d\n", is_ret);
   printf("Is Entry: %d\n", is_entry);
-  printf("In Registers:\n"); fflush(stdout);
+  printf("\n\n");
+  fflush(stdout);
 }
 
-void dice_metadata_parser::add_scalar_operand(const char *identifier) {
-  DICE_PARSE_DPRINTF("add_scalar_operand");
-  const symbol *s = gpgpu_ctx->pptx_parser->g_current_symbol_table->lookup(identifier);
+void dice_metadata_parser::add_operand(const char *identifier) {
+  //DICE_PARSE_DPRINTF("add_operand");
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: add operand %s\n", identifier); fflush(stdout);
+  assert(gpgpu_ctx != NULL);
+  fflush(stdout);
+  //function_info *func_info = gpgpu_ctx->ptx_parser->g_global_symbol_table->lookup_function(g_current_function_name);
+  symbol_table* symtab = g_current_function_info->get_symtab();
+  const symbol *s = symtab->lookup(identifier);
   if (s == NULL) {
     std::string msg = std::string("operand \"") + identifier + "\" has no declaration.";
-    printf("DICE Metadata Parser: Error %s\n", msg.c_str());
+    printf("DICE Metadata Parser: Error %s\n", msg.c_str()); fflush(stdout);
     abort();
   }
+  if(g_debug_dicemeta_generation) s->print_info(stdout);
   g_operands.push_back(operand_info(s, gpgpu_ctx));
 }
 
@@ -143,25 +143,72 @@ void dice_metadata_parser::commit_dbb(){
     printf("DICE Metadata Parser: Empty DBB, abort\n"); fflush(stdout);
     abort();
   }
-  printf("DICE Metadata Parser: Commit DBB %d\n", g_current_dbb->dbb_id); fflush(stdout); 
-  g_dice_metadata_list.push_back(g_current_dbb);
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Commit DBB %d\n", g_current_dbb->dbb_id); 
+  g_current_function_info->add_dice_metadata(g_current_dbb);
   //g_current_dbb = new dice_metadata(gpgpu_ctx);
 }
 
 void dice_metadata_parser::create_new_dbb(int dbb_id){
-  printf("DICE Metadata Parser: Create New DBB %d\n", dbb_id); fflush(stdout); 
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Create New DBB %d\n", dbb_id); 
   g_current_dbb = new dice_metadata(gpgpu_ctx);
   g_current_dbb->dbb_id = dbb_id;
 }
 
-int dice_metadata_parser::metadata_list_size(){
-  int num=0;
-  for (std::list<dice_metadata*>::iterator it = g_dice_metadata_list.begin(); it != g_dice_metadata_list.end(); ++it){
-    num++;
-    if (num>1000){
-      printf("DICE Metadata Parser: ERROR size > %d\n", num); fflush(stdout); 
-      break;
+void dice_metadata_parser::set_in_regs(){
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Set In Registers\n"); 
+  g_current_dbb->in_regs = g_operands;
+  g_operands = std::list<operand_info>();
+}
+
+void dice_metadata_parser::set_out_regs(){
+  if(g_debug_dicemeta_generation)  printf("DICE Metadata Parser: Set out Registers\n");  
+  g_current_dbb->out_regs = g_operands;
+  g_operands = std::list<operand_info>();
+}
+
+void dice_metadata_parser::set_ld_dest_regs(){
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Set LD destination Registers\n");  
+  g_current_dbb->load_destination_regs = g_operands;
+  g_operands = std::list<operand_info>();
+}
+
+void dice_metadata_parser::set_branch_pred(){
+  printf("DICE Metadata Parser: Set Branch Predication\n"); fflush(stdout); 
+  int num_operands = 0;
+  for (std::list<operand_info>::iterator it = g_operands.begin(); it != g_operands.end(); ++it){
+    num_operands++;
+    if(num_operands>1){
+      printf("DICE Metadata Parser: ERROR: Branch Predicate Regs more than 1\n"); fflush(stdout); 
+      abort();
     }
   }
-  return num;
+  if (num_operands == 0){
+    printf("DICE Metadata Parser: ERROR: No Branch Predicate Regs\n"); fflush(stdout); 
+    abort();
+  }
+  g_current_dbb->branch_pred = &(g_operands.front());
+  g_operands = std::list<operand_info>();
+}
+
+void dice_metadata_parser::add_builtin_operand(int builtin, int dim_modifier) {
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Add builtin operand\n");
+  g_operands.push_back(operand_info(builtin, dim_modifier, gpgpu_ctx));
+}
+
+void dice_metadata_parser::set_function_name(const char *name){
+  if(g_debug_dicemeta_generation)  printf("DICE Metadata Parser: Set Function Name\n"); 
+  g_current_function_name = name;
+  g_current_function_info = gpgpu_ctx->ptx_parser->g_global_symbol_table->lookup_function(g_current_function_name);
+}
+
+void dice_metadata_parser::commit_function(){
+  g_current_function_info->link_block_in_dicemeta();
+  if (g_debug_dicemeta_generation) {
+    g_current_function_info->dump_dice_metadata();
+    fflush(stdout); 
+  }
+  g_current_function_info = NULL;
+  g_current_dbb = NULL;
+  g_current_function_name = "";
+  printf("DICE Metadata Parser: Commited Function\n"); fflush(stdout); 
 }

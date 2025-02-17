@@ -3495,7 +3495,6 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     return;
   }
   symbol_table *symtab;
-  symbol_table *symtab_pptx;
 
 #if (CUDART_VERSION >= 6000)
   // loops through all ptx files from smallest sm version to largest
@@ -3505,23 +3504,23 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     std::set<std::string>::iterator itr_s;
     for (itr_s = itr_m->second.begin(); itr_s != itr_m->second.end(); itr_s++) {
       std::string ptx_filename = *itr_s;
-      printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
-      symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
-      //Jiayi Test
-      printf("[Jiayi Test] dump symbol table\n");
-      symtab->dump();
-      printf("[Jiayi Test] finished dumping symbol table\n");
-
       //DICE read pptx
       //replace the last ".ptx" with ".pptx"
       if (g_dice_enabled) {
         std::string pptx_filename = ptx_filename.substr(0, ptx_filename.size() - 3) + "pptx"; //replace ".ptx" with ".meta"
         printf("DICE PPTX: Parsing %s\n", pptx_filename.c_str());
-        symtab_pptx = dice_pptx_load_from_filename(pptx_filename.c_str()); 
+        symtab = dice_pptx_load_from_filename(pptx_filename.c_str()); 
         //Jiayi Test
         printf("DICE PPTX: dump symbol table\n");
-        symtab_pptx->dump();
+        symtab->dump();
         printf("DICE PPTX: finished dumping symbol table\n");
+      } else {
+        printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
+        symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+        //Jiayi Test
+        printf("[Jiayi Test] dump symbol table\n");
+        symtab->dump();
+        printf("[Jiayi Test] finished dumping symbol table\n");
       }
     }
   }
@@ -3544,10 +3543,6 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
         printf("DICE METADATA: Loading Metadata from %s\n", metadata_filename.c_str());
         dice_metadata_load_from_filename(metadata_filename.c_str());
         printf("DICE METADATA: Finished Loading Metadata from %s\n", metadata_filename.c_str());
-        //Jiayi Test
-        printf("DICE METADATA: dump metadata\n"); fflush(stdout);
-        dicemeta_parser->dump();
-        printf("DICE METADATA: finished dumping metadata\n");
       }
     }
   }

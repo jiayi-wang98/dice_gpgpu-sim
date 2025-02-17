@@ -116,6 +116,7 @@ void *gpgpu_sim_thread_concurrent(void *ctx_ptr) {
         }
       // functional simulation
       if (ctx->the_gpgpusim->g_the_gpu->is_functional_sim()) {
+        printf("[Jiayi Test1]: if (ctx->the_gpgpusim->g_the_gpu->is_functional_sim())\n");
         kernel_info_t *kernel =
             ctx->the_gpgpusim->g_the_gpu->get_functional_kernel();
         assert(kernel);
@@ -201,8 +202,9 @@ gpgpu_sim *gpgpu_context::gpgpu_ptx_sim_init_perf() {
   func_sim->read_sim_environment_variables();
   ptx_parser->read_parser_environment_variables();
   //DICE-support
-  pptx_parser->read_parser_environment_variables();
-  dicemeta_parser->read_parser_environment_variables();
+  if (g_dice_enabled) {
+    dicemeta_parser->read_parser_environment_variables();
+  }
   
   option_parser_t opp = option_parser_create();
 

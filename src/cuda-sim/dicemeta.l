@@ -46,6 +46,9 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 "BRANCH_RECVPC" TC; return BRANCH_RECVPC; 
 "BRANCH" TC; return BRANCH; 
 "RET" TC; return RET; 
+"BITSTREAM_ADDR" TC; return BITSTREAM_ADDR;
+"BITSTREAM_LENGTH" TC; return BITSTREAM_LENGTH;
+"FUNCTION" TC; return FUNCTION;
 
 
 
@@ -71,7 +74,9 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 "%warpid"  TC; yylval->int_value = WARPID_REG; return SPECIAL_REGISTER;
 "WARP_SZ"  TC; yylval->int_value = WARPSZ_REG; return SPECIAL_REGISTER;
 
+[a-zA-Z_][a-zA-Z0-9_$]*  TC; yylval->string_value = strdup(yytext); return FUNCTION_IDENTIFIER;
 [%][a-zA-Z0-9_$]+  TC; yylval->string_value = strdup(yytext); return REGOPERAND;
+[$][a-zA-Z0-9_]+  TC; yylval->string_value = strdup(yytext); return LABEL;
 
 [0-9]+  TC; yylval->int_value = atoi(yytext); return NUMBER;
 \.x	TC; yylval->int_value = 0; return DIMENSION_MODIFIER;
@@ -100,7 +105,7 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 	dicemeta_parser->g_error_detected = 1;
 	fflush(stdout);
 	if( s != NULL )
-		printf("%s:%u Syntax error:\n\n", dicemeta_parser->gpgpu_ctx->g_filename, yylineno );
+		printf("%s:%u Syntax error:\n\n", dicemeta_parser->g_dice_metadata_filename, yylineno );
 	printf("   %s\n", dicemeta_parser->linebuf );
 	printf("   ");
 	for( i=0; i < dicemeta_parser->col-1; i++ ) {
@@ -110,6 +115,6 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 			
 	printf("^\n\n");
 	fflush(stdout);
-	//exit(1);
+	exit(1);
 	return 0;
 }
