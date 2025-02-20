@@ -172,13 +172,36 @@ void video_mem_instruction(const ptx_instruction *pI, ptx_thread_info *thread, i
 void sign_extend(ptx_reg_t &data, unsigned src_size, const operand_info &dst);
 
 void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
+  //Jiayi Test
+  printf("[Jiayi Test] tid= %d, set_reg\n",m_hw_tid); fflush(stdout);
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
   assert(reg->uid() > 0);
+  //check size of m_regs
+  printf("[Jiayi Test] m_regs.size()=%d, m_regs.back().size()=%d\n",m_regs.size(),m_regs.back().size()); fflush(stdout);
+  printf("[Jiayi Test] symbol=%s\n",reg->name().c_str()); fflush(stdout);
+  printf("[Jiayi Test] value.u64=%llu\n",value.u64); fflush(stdout);
+  //printout the address of this
+  printf("[Jiayi Test] address this=%p\n",this); fflush(stdout);
+  //printout the address of m_regs
+  printf("[Jiayi Test] address m_regs=%p\n",&m_regs); fflush(stdout);
+  //printout the address of m_regs.back()
+  printf("[Jiayi Test] address m_regs.back()=%p\n",&(m_regs.back())); fflush(stdout);
+  printf("[Jiayi Test] address reg = %p\n",reg); fflush(stdout);
+  //find if the reg is in the m_regs.back()
+  reg_map_t::iterator regs_iter = m_regs.back().find(reg);
+  if (regs_iter == m_regs.back().end()) {
+    printf("[Jiayi Test] not find reg in map, regs_iter = %p\n",regs_iter); fflush(stdout);
+    m_regs.back()[reg] = ptx_reg_t(0);
+    printf("[Jiayi Test] adding new map in\n"); fflush(stdout);
+  }
   m_regs.back()[reg] = value;
+  printf("[Jiayi Test] m_regs.back()[reg]=%llu\n",m_regs.back()[reg].u64); fflush(stdout);
   if (m_enable_debug_trace) m_debug_trace_regs_modified.back()[reg] = value;
   m_last_set_operand_value = value;
+  //Jiayi Test
+  printf("[Jiayi Test] tid= %d, exiting set_reg\n",m_hw_tid);  fflush(stdout);
 }
 
 void ptx_thread_info::print_reg_thread(char *fname) {
@@ -592,6 +615,7 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
 
   type_info_key::type_decode(type, size, t);
 
+
   /*complete this section for other cases*/
   if (dst.get_addr_space() == undefined_space) {
     ptx_reg_t setValue;
@@ -614,7 +638,6 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
       set_reg(name1, setValue);
       set_reg(name2, setValue2);
     }
-
     // Double destination in cvt,shr,mul,etc. instruction ($p0|$r4) - second
     // register operand receives data, first predicate operand is set as
     // $p0=($r4!=0) Also for Double destination in set instruction ($p0/$r1)
@@ -738,10 +761,11 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
             ((m_regs.back()[dst.get_symbol()].u64) & (~(0xFFFF0000))) +
             ((data.u64 << 16) & 0xFFFF0000);
       }
+    
       set_reg(dst.get_symbol(), setValue);
+
     }
   }
-
   // global memory - g[4], g[$r0]
   else if (dst.get_addr_space() == global_space) {
     dstData = thread->get_operand_value(dst, dst, type, thread, 0);
@@ -752,7 +776,6 @@ void ptx_thread_info::set_operand_value(const operand_info &dst,
     thread->m_last_effective_address = dstData.u32;
     thread->m_last_memory_space = global_space;
   }
-
   // shared memory - s[4], s[$r0]
   else if (dst.get_addr_space() == shared_space) {
     dstData = thread->get_operand_value(dst, dst, type, thread, 0);
@@ -3356,6 +3379,7 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
 }
 
 void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
+
   const operand_info &dst = pI->dst();
   const operand_info &src1 = pI->src1();
 
@@ -3375,11 +3399,17 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   int t;
   data.u64 = 0;
   type_info_key::type_decode(type, size, t);
+  
   if (!vector_spec) {
+    
     mem->read(addr, size / 8, &data.s64);
+    
     if (type == S16_TYPE || type == S32_TYPE) sign_extend(data, size, dst);
+
     thread->set_operand_value(dst, data, type, thread, pI);
+    
   } else {
+    
     ptx_reg_t data1, data2, data3, data4;
     mem->read(addr, size / 8, &data1.s64);
     mem->read(addr + size / 8, size / 8, &data2.s64);
@@ -3392,13 +3422,17 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
         thread->set_vector_operand_values(dst, data1, data2, data3, data3);
     } else  // v2
       thread->set_vector_operand_values(dst, data1, data2, data2, data2);
+    
   }
   thread->m_last_effective_address = addr;
   thread->m_last_memory_space = space;
+  
 }
 
 void ld_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  
   ld_exec(pI, thread);
+
 }
 void ldu_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ld_exec(pI, thread);

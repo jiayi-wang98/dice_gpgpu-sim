@@ -1702,7 +1702,6 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   const ptx_instruction *pI = m_func_info->get_instruction(pc);
 
   set_npc(pc + pI->inst_size());
-
   try {
     clearRPC();
     m_last_set_operand_value.u64 = 0;
@@ -1714,6 +1713,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       assert(0);
     }
 
+
     if (g_debug_execution >= 6 ||
         m_gpu->get_config().get_ptx_inst_debug_to_file()) {
       if ((m_gpu->gpgpu_ctx->func_sim->g_debug_thread_uid == 0) ||
@@ -1723,6 +1723,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
         enable_debug_trace();
       }
     }
+    
 
     if (pI->has_pred()) {
       const operand_info &pred = pI->get_pred();
@@ -1735,7 +1736,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       }
     }
     int inst_opcode = pI->get_opcode();
-
+    
     if (skip) {
       inst.set_not_active(lane_id);
     } else {
@@ -1784,7 +1785,6 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       }
       delete pJ;
       pI = pI_saved;
-
       // Run exit instruction if exit option included
       if (pI->is_exit()) exit_impl(pI, this);
     }
@@ -1802,7 +1802,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
       // write=%d\n", pI->has_memory_read(), pI->has_memory_write());
       fflush(m_gpu->get_ptx_inst_debug_file());
     }
-
+    
+    
     if (m_gpu->gpgpu_ctx->func_sim->ptx_debug_exec_dump_cond<5>(get_uid(),
                                                                 pc)) {
       dim3 ctaid = get_ctaid();
@@ -1816,6 +1817,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
           m_last_set_operand_value.u64);
       fflush(stdout);
     }
+
+    
 
     addr_t insn_memaddr = 0xFEEBDAED;
     memory_space_t insn_space = undefined_space;
@@ -1854,6 +1857,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
           this);  // texture obtain its data granularity from the texture info
     }
 
+    
+
     // Output register information to file and stdout
     if (config.get_ptx_inst_debug_to_file() != 0 &&
         (config.get_ptx_inst_debug_thread_uid() == 0 ||
@@ -1872,6 +1877,9 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
                                                                    pc))
         dump_regs(stdout);
     }
+
+    
+
     update_pc();
     m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn++;
 
@@ -1920,6 +1928,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
                         [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
                     (int)pI->get_opcode());
     }
+
+    
     if ((m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn % 100000) == 0) {
       dim3 ctaid = get_ctaid();
       dim3 tid = get_tid();
@@ -1930,7 +1940,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
               ctaid.z, tid.x, tid.y, tid.z);
       fflush(stdout);
     }
-
+    
     // "Return values"
     if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
@@ -1940,6 +1950,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
         assert(inst.memory_op == insn_memory_op);
       }
     }
+  
 
   } catch (int x) {
     printf("GPGPU-Sim PTX: ERROR (%d) executing intruction (%s:%u)\n", x,
@@ -2011,7 +2022,6 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
   if (threads_left < kernel.threads_per_cta()) {
     return 0;
   }
-
   if (g_debug_execution == -1) {
     printf("GPGPU-Sim PTX simulator:  STARTING THREAD ALLOCATION --> \n");
     fflush(stdout);
@@ -2434,10 +2444,17 @@ void cuda_sim::gpgpu_cuda_ptx_sim_main_func(kernel_info_t &kernel,
          kernel.get_uid() == cp_kernel) ||
         kernel.get_uid() < cp_kernel)  // just fro testing
     {
-      functionalCoreSim cta(
-          &kernel, gpgpu_ctx->the_gpgpusim->g_the_gpu,
-          gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->warp_size);
-      cta.execute(cp_count, temp);
+      //DICE-support
+      if(gpgpu_ctx->g_dice_enabled){
+        DICEfunctionalCoreSim cta(
+          &kernel, gpgpu_ctx->the_gpgpusim->g_the_gpu);
+        cta.execute(cp_count, temp);
+      } else {
+        functionalCoreSim cta(
+            &kernel, gpgpu_ctx->the_gpgpusim->g_the_gpu,
+            gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->warp_size);
+        cta.execute(cp_count, temp);
+      }
 
 #if (CUDART_VERSION >= 5000)
       gpgpu_ctx->device_runtime->launch_all_device_kernels();
@@ -2529,7 +2546,8 @@ void functionalCoreSim::initializeCTA(unsigned ctaid_cp) {
 }
 
 void functionalCoreSim::createWarp(unsigned warpId) {
-  simt_mask_t initialMask;
+  //simt_mask_t initialMask;
+  simt_mask_t initialMask(m_warp_size);
   unsigned liveThreadsCount = 0;
   initialMask.set();
   for (int i = warpId * m_warp_size; i < warpId * m_warp_size + m_warp_size;
@@ -2557,6 +2575,131 @@ void functionalCoreSim::createWarp(unsigned warpId) {
     }
   }
   m_liveThreadCount[warpId] = liveThreadsCount;
+}
+
+//DICE-support
+void DICEfunctionalCoreSim::createCTAsimt_stack() {
+  printf("DICE functional simulator: createCTAsimt_stack\n");
+  fflush(stdout);
+  simt_mask_t initialMask(m_warp_size);
+  unsigned liveThreadsCount = 0;
+  initialMask.set();
+  for (int i = 0; i < m_warp_size;i++) {
+    if (m_thread[i] == NULL)
+      initialMask.reset(i);
+    else
+      liveThreadsCount++;
+  }
+
+  assert(m_thread[0] != NULL);
+  m_simt_stack[0]->launch(m_thread[0]->get_pc(),initialMask);
+  char fname[2048];
+  snprintf(fname, 2048, "checkpoint_files/warp_0_0_simt.txt");
+
+  if (m_gpu->gpgpu_ctx->func_sim->cp_cta_resume == 1) {
+    unsigned pc, rpc;
+    m_simt_stack[0]->resume(fname);
+    m_simt_stack[0]->get_pdom_stack_top_info(&pc, &rpc);
+    for (int i = 0; i < m_warp_size;i++) {
+      m_thread[i]->set_npc(pc);
+      m_thread[i]->update_pc();
+    }
+  }
+  m_liveThreadCount[0] = liveThreadsCount;
+  printf("DICE functional simulator: exiting createCTAsimt_stack\n");
+  fflush(stdout);
+}
+
+void DICEfunctionalCoreSim::initializeCTA(unsigned ctaid_cp) {
+  printf("DICE functional simulator initialize CTA: %d\n", ctaid_cp);
+  fflush(stdout);
+  assert(m_warp_count == 1); //no warp hierarchy in DICE, only one warp per CTA
+  int ctaLiveThreads = 0;
+  symbol_table *symtab = m_kernel->entry()->get_symtab();
+  for (int i = 0; i < m_warp_count; i++) {
+    m_liveThreadCount[i] = 0;
+  }
+  for (int i = 0; i < m_warp_count * m_warp_size; i++) m_thread[i] = NULL;
+  // get threads for a cta
+  for (unsigned i = 0; i < m_kernel->threads_per_cta(); i++) {
+    ptx_sim_init_thread(*m_kernel, &m_thread[i], 0, i,
+                        m_kernel->threads_per_cta() - i,
+                        m_kernel->threads_per_cta(), this, 0, i / m_warp_size,
+                        (gpgpu_t *)m_gpu, true);
+    assert(m_thread[i] != NULL && !m_thread[i]->is_done());
+    char fname[2048];
+    snprintf(fname, 2048, "checkpoint_files/thread_%d_0_reg.txt", i);
+    if (m_gpu->gpgpu_ctx->func_sim->cp_cta_resume == 1)
+      m_thread[i]->resume_reg_thread(fname, symtab);
+    ctaLiveThreads++;
+  }
+  createCTAsimt_stack();
+  printf("DICE functional simulator: exiting initialize CTA: %d\n", ctaid_cp);
+  fflush(stdout);
+}
+
+void DICEfunctionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
+  printf("DICE functional simulator: execute: %d\n", ctaid_cp);
+  fflush(stdout);
+  m_gpu->gpgpu_ctx->func_sim->cp_count = m_gpu->checkpoint_insn_Y;
+  m_gpu->gpgpu_ctx->func_sim->cp_cta_resume = m_gpu->checkpoint_CTA_t;
+  initializeCTA(ctaid_cp);
+
+  int count = 0;
+  while (true) {
+    bool someOneLive = false;
+    executeCTA(someOneLive);
+    count++;
+    if (inst_count > 0 && count > inst_count &&
+        (m_kernel->get_uid() == m_gpu->checkpoint_kernel) &&
+        (ctaid_cp >= m_gpu->checkpoint_CTA) &&
+        (ctaid_cp < m_gpu->checkpoint_CTA_t) && m_gpu->checkpoint_option == 1) {
+      someOneLive = false;
+      break;
+    }
+    if (!someOneLive) break;
+  }
+
+  checkpoint *g_checkpoint;
+  g_checkpoint = new checkpoint();
+
+  ptx_reg_t regval;
+  regval.u64 = 123;
+
+  unsigned ctaid = m_kernel->get_next_cta_id_single();
+  if (m_gpu->checkpoint_option == 1 &&
+      (m_kernel->get_uid() == m_gpu->checkpoint_kernel) &&
+      (ctaid_cp >= m_gpu->checkpoint_CTA) &&
+      (ctaid_cp < m_gpu->checkpoint_CTA_t)) {
+    char fname[2048];
+    snprintf(fname, 2048, "checkpoint_files/shared_mem_%d.txt", ctaid - 1);
+    g_checkpoint->store_global_mem(m_thread[0]->m_shared_mem, fname,
+                                   (char *)"%08x");
+    assert(m_warp_count == 1); //no warp hierarchy in DICE, only one warp per CTA
+    for (int i = 0; i < 32 * m_warp_count; i++) {
+      char fname[2048];
+      snprintf(fname, 2048, "checkpoint_files/thread_%d_%d_reg.txt", i,
+               ctaid - 1);
+      m_thread[i]->print_reg_thread(fname);
+      char f1name[2048];
+      snprintf(f1name, 2048, "checkpoint_files/local_mem_thread_%d_%d_reg.txt",
+               i, ctaid - 1);
+      g_checkpoint->store_global_mem(m_thread[i]->m_local_mem, f1name,
+                                     (char *)"%08x");
+      m_thread[i]->set_done();
+      m_thread[i]->exitCore();
+      m_thread[i]->registerExit();
+    }
+    for (int i = 0; i < m_warp_count; i++) {
+      char fname[2048];
+      snprintf(fname, 2048, "checkpoint_files/warp_%d_%d_simt.txt", i,
+               ctaid - 1);
+      FILE *fp = fopen(fname, "w");
+      assert(fp != NULL);
+      m_simt_stack[i]->print_checkpoint(fp);
+      fclose(fp);
+    }
+  }
 }
 
 void functionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
@@ -2640,6 +2783,20 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
   }
   if (m_liveThreadCount[i] > 0) someOneLive = true;
   if (!m_warpAtBarrier[i] && m_liveThreadCount[i] > 0) allAtBarrier = false;
+}
+
+
+void DICEfunctionalCoreSim::executeCTA(bool &someOneLive) {
+  printf("DICE functional simulator: executeCTA\n"); fflush(stdout);
+  if (*m_liveThreadCount != 0) {
+    warp_inst_t inst = getExecuteWarp(0);
+    printf("DICE functional simulator: execute_warp_inst_t(inst, 0);\n"); fflush(stdout);
+    execute_warp_inst_t(inst, 0);
+    if (inst.isatomic()) inst.do_atomic(true);
+    updateSIMTStack(0, &inst);
+  }
+  if (m_liveThreadCount[0] > 0) someOneLive = true;
+  printf("DICE functional simulator: Exit executeCTA\n"); fflush(stdout);
 }
 
 unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc) {
@@ -2817,6 +2974,17 @@ address_type cuda_sim::get_converge_point(address_type pc) {
 }
 
 void functionalCoreSim::warp_exit(unsigned warp_id) {
+  for (int i = 0; i < m_warp_count * m_warp_size; i++) {
+    if (m_thread[i] != NULL) {
+      m_thread[i]->m_cta_info->register_deleted_thread(m_thread[i]);
+      delete m_thread[i];
+    }
+  }
+}
+
+//DICE-support
+void DICEfunctionalCoreSim::warp_exit(unsigned warp_id) {
+  assert(warp_id == 0); //no warp hierarchy in DICE, only one warp per CTA
   for (int i = 0; i < m_warp_count * m_warp_size; i++) {
     if (m_thread[i] != NULL) {
       m_thread[i]->m_cta_info->register_deleted_thread(m_thread[i]);

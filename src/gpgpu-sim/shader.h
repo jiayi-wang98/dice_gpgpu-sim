@@ -123,7 +123,7 @@ class shd_warp_t {
     m_cdp_dummy = false;
   }
   void init(address_type start_pc, unsigned cta_id, unsigned wid,
-            const std::bitset<MAX_WARP_SIZE> &active,
+            const simt_mask_t &active,
             unsigned dynamic_warp_id) {
     m_cta_id = cta_id;
     m_warp_id = wid;
@@ -249,7 +249,7 @@ class shd_warp_t {
 
   address_type m_next_pc;
   unsigned n_completed;  // number of threads in warp completed
-  std::bitset<MAX_WARP_SIZE> m_active_threads;
+  simt_mask_t m_active_threads;
 
   bool m_imiss_pending;
 

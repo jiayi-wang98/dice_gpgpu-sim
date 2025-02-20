@@ -507,7 +507,7 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
                         ((end_thread % m_config->warp_size) ? 1 : 0);
     for (unsigned i = start_warp; i < end_warp; ++i) {
       unsigned n_active = 0;
-      simt_mask_t active_threads;
+      simt_mask_t active_threads(m_config->warp_size);
       for (unsigned t = 0; t < m_config->warp_size; t++) {
         unsigned hwtid = i * m_config->warp_size + t;
         if (hwtid < end_thread) {
