@@ -365,6 +365,8 @@ class core_config {
 
   bool m_valid;
   unsigned warp_size;
+  //DICE-support
+  unsigned get_warp_size() const ;
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
@@ -412,14 +414,23 @@ class simt_mask_t {
           : bits(n, false) {}
   
       // Copy and move constructors/assignments (defaulted)
-      simt_mask_t(const simt_mask_t&) = default;
-      simt_mask_t(simt_mask_t&&) = default;
+      simt_mask_t(const simt_mask_t &other)
+        : bits(other.bits) {
+        // Optionally add logging here if needed:
+        //printf("simt_mask_t copied (size: %zu)\n", bits.size()); fflush(stdout);
+      }
+
+      // Move Constructor
+      simt_mask_t(simt_mask_t &&other) noexcept
+      : bits(std::move(other.bits)) {}
+
       simt_mask_t& operator=(const simt_mask_t&) = default;
       simt_mask_t& operator=(simt_mask_t&&) = default;
   
       // Set the bit at position pos to true (or a given value)
       void set(std::size_t pos, bool value = true) {
           if (pos >= bits.size()) {
+              printf("simt_mask_t::set: %d index out of range %d\n", pos, bits.size());fflush(stdout);
               throw std::out_of_range("simt_mask_t::set: index out of range");
           }
           bits[pos] = value;
@@ -614,6 +625,14 @@ class simt_mask_t {
           return result;
       }
   
+      void dump() const {
+        printf("SIMT MASK (%d) DUMPING: \n", size());
+          for (std::size_t i = 0; i < size(); ++i) {
+              printf("%d", test(i));
+          }
+          printf("\n");
+          fflush(stdout);
+      }
   private:
       std::vector<bool> bits;
   };
@@ -652,10 +671,10 @@ class simt_stack {
     address_type m_recvg_pc;
     unsigned long long m_branch_div_cycle;
     stack_entry_type m_type;
-    simt_stack_entry()
+    simt_stack_entry(unsigned warpSize)
         : m_pc(-1),
           m_calldepth(0),
-          m_active_mask(),
+          m_active_mask(warpSize),
           m_recvg_pc(-1),
           m_branch_div_cycle(0),
           m_type(STACK_ENTRY_TYPE_NORMAL){};
@@ -1226,7 +1245,8 @@ class warp_inst_t : public inst_t {
   }
   warp_inst_t(const core_config *config) {
     m_uid = 0;
-    assert(config->warp_size <= MAX_WARP_SIZE);
+    //DICE-support
+    assert(config->get_warp_size() <= MAX_WARP_SIZE);
     m_config = config;
     m_empty = true;
     m_isatomic = false;
@@ -1254,14 +1274,14 @@ class warp_inst_t : public inst_t {
 
   void set_addr(unsigned n, new_addr_type addr) {
     if (!m_per_scalar_thread_valid) {
-      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread.resize(m_config->get_warp_size());
       m_per_scalar_thread_valid = true;
     }
     m_per_scalar_thread[n].memreqaddr[0] = addr;
   }
   void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
     if (!m_per_scalar_thread_valid) {
-      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread.resize(m_config->get_warp_size());
       m_per_scalar_thread_valid = true;
     }
     assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
@@ -1309,7 +1329,7 @@ class warp_inst_t : public inst_t {
                     const inst_t *inst, class ptx_thread_info *thread,
                     bool atomic) {
     if (!m_per_scalar_thread_valid) {
-      m_per_scalar_thread.resize(m_config->warp_size);
+      m_per_scalar_thread.resize(m_config->get_warp_size());
       m_per_scalar_thread_valid = true;
       if (atomic) m_isatomic = true;
     }
@@ -1325,7 +1345,7 @@ class warp_inst_t : public inst_t {
   // accessors
   virtual void print_insn(FILE *fp) const {
     fprintf(fp, " [inst @ pc=0x%04x] ", pc);
-    for (int i = (int)m_config->warp_size - 1; i >= 0; i--)
+    for (int i = (int)m_config->get_warp_size() - 1; i >= 0; i--)
       fprintf(fp, "%c", ((m_warp_active_mask[i]) ? '1' : '0'));
   }
   bool active(unsigned thread) const { return m_warp_active_mask.test(thread); }
@@ -1358,7 +1378,7 @@ class warp_inst_t : public inst_t {
 
   bool isatomic() const { return m_isatomic; }
 
-  unsigned warp_size() const { return m_config->warp_size; }
+  unsigned warp_size() const { return m_config->get_warp_size(); }
 
   bool accessq_empty() const { return m_accessq.empty(); }
   unsigned accessq_count() const { return m_accessq.size(); }
@@ -1455,8 +1475,6 @@ class core_t {
     assert(m_warp_count * m_warp_size > 0);
     m_thread = (ptx_thread_info **)calloc(m_warp_count * m_warp_size,
                                           sizeof(ptx_thread_info *));
-    //Jiayi Test
-    printf("[Jiayi Test]  m_warp_count: %d, m_warp_size: %d\n", m_warp_count, m_warp_size);
     initilizeSIMTStack(m_warp_count, m_warp_size);
 
     for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) {
@@ -1515,6 +1533,9 @@ class core_t {
 class register_set {
  public:
   register_set(unsigned num, const char *name) {
+    //Jiayi Test
+    //printf("[Jiayi Test] register_set constructor, num = %d\n", num);
+    fflush(stdout);
     for (unsigned i = 0; i < num; i++) {
       regs.push_back(new warp_inst_t());
     }

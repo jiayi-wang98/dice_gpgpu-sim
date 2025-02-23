@@ -107,31 +107,32 @@ class DICEfunctionalCoreSim : public core_t {
        : core_t(g, kernel, kernel->threads_per_cta(), kernel->threads_per_cta()) {
      assert(m_warp_count == 1);  // no warp hierarchy in DICE, only one warp per
                                  // CTA
-     m_liveThreadCount = new unsigned[m_warp_count];
+     m_liveThreadCount = 0;
    }
    virtual ~DICEfunctionalCoreSim() {
-     delete[] m_liveThreadCount;
+      warp_exit(0);
    }
    //! executes all warps till completion
    void execute(int inst_count, unsigned ctaid_cp);
  
   private:
+   dice_metadata* getExecuteMetadata();
    void executeCTA(bool &);
+   void execute_metadata(dice_metadata* metadata);
    // initializes threads in the CTA block which we are executing
    void initializeCTA(unsigned ctaid_cp);
    virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,unsigned tid) {
-    fflush(stdout);
     if (m_thread[tid] == NULL || m_thread[tid]->is_done()) {
-       m_liveThreadCount[tid / m_warp_size]--;
+       m_liveThreadCount--;
      }
-    fflush(stdout);
   }
+   void dice_checkExecutionStatusAndUpdate(unsigned tid);
  
    // lunches the stack and set the threads count
    void createCTAsimt_stack();
- 
+   void updateSIMTStack_dice(dice_metadata *metadata);
    // each warp live thread count and barrier indicator
-   unsigned *m_liveThreadCount;
+   unsigned m_liveThreadCount;
    //bool *m_warpAtBarrier;
    virtual bool warp_waiting_at_barrier(unsigned warp_id) const {
     assert(warp_id == 0);
@@ -143,6 +144,7 @@ class DICEfunctionalCoreSim : public core_t {
 #define RECONVERGE_RETURN_PC ((address_type)-2)
 #define NO_BRANCH_DIVERGENCE ((address_type)-1)
 address_type get_return_pc(void *thd);
+address_type get_return_meta_pc(void *thd);
 const char *get_ptxinfo_kname();
 void print_ptxinfo();
 void clear_ptxinfo();

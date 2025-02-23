@@ -225,6 +225,13 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-gpgpu_shader_core_pipeline", OPT_CSTR,
       &gpgpu_shader_core_pipeline_opt,
       "shader core pipeline config, i.e., {<nthread>:<warpsize>}", "1024:32");
+
+  //DICE-support
+  option_parser_register(
+      opp, "-dice_cgra_core_max_threads", OPT_UINT32,
+      &dice_cgra_core_max_threads,
+      "DICE cgra core max number of threads config, i.e.,","2048, 1024, 512, 256");
+      
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
                          &m_L1T_config.m_config_string,
                          "per-shader L1 texture cache  (READ-ONLY) config "

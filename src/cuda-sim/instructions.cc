@@ -172,36 +172,13 @@ void video_mem_instruction(const ptx_instruction *pI, ptx_thread_info *thread, i
 void sign_extend(ptx_reg_t &data, unsigned src_size, const operand_info &dst);
 
 void ptx_thread_info::set_reg(const symbol *reg, const ptx_reg_t &value) {
-  //Jiayi Test
-  printf("[Jiayi Test] tid= %d, set_reg\n",m_hw_tid); fflush(stdout);
   assert(reg != NULL);
   if (reg->name() == "_") return;
   assert(!m_regs.empty());
   assert(reg->uid() > 0);
-  //check size of m_regs
-  printf("[Jiayi Test] m_regs.size()=%d, m_regs.back().size()=%d\n",m_regs.size(),m_regs.back().size()); fflush(stdout);
-  printf("[Jiayi Test] symbol=%s\n",reg->name().c_str()); fflush(stdout);
-  printf("[Jiayi Test] value.u64=%llu\n",value.u64); fflush(stdout);
-  //printout the address of this
-  printf("[Jiayi Test] address this=%p\n",this); fflush(stdout);
-  //printout the address of m_regs
-  printf("[Jiayi Test] address m_regs=%p\n",&m_regs); fflush(stdout);
-  //printout the address of m_regs.back()
-  printf("[Jiayi Test] address m_regs.back()=%p\n",&(m_regs.back())); fflush(stdout);
-  printf("[Jiayi Test] address reg = %p\n",reg); fflush(stdout);
-  //find if the reg is in the m_regs.back()
-  reg_map_t::iterator regs_iter = m_regs.back().find(reg);
-  if (regs_iter == m_regs.back().end()) {
-    printf("[Jiayi Test] not find reg in map, regs_iter = %p\n",regs_iter); fflush(stdout);
-    m_regs.back()[reg] = ptx_reg_t(0);
-    printf("[Jiayi Test] adding new map in\n"); fflush(stdout);
-  }
   m_regs.back()[reg] = value;
-  printf("[Jiayi Test] m_regs.back()[reg]=%llu\n",m_regs.back()[reg].u64); fflush(stdout);
   if (m_enable_debug_trace) m_debug_trace_regs_modified.back()[reg] = value;
   m_last_set_operand_value = value;
-  //Jiayi Test
-  printf("[Jiayi Test] tid= %d, exiting set_reg\n",m_hw_tid);  fflush(stdout);
 }
 
 void ptx_thread_info::print_reg_thread(char *fname) {
@@ -1774,9 +1751,20 @@ void bra_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   const operand_info &target = pI->dst();
   ptx_reg_t target_pc =
       thread->get_operand_value(target, target, U32_TYPE, thread, 1);
+  
+  //DICE-support
+  //get current metadata pc
+  addr_t metadata_pc = thread->get_meta_pc();
+  //get metadata
+  dice_metadata *metadata = thread->get_gpu()->gpgpu_ctx->get_meta_from_pc(metadata_pc);
+  assert(metadata != NULL);
+  assert(metadata->branch == true);
+  //get target
+  addr_t target_meta_addr = metadata->branch_target_meta_pc;
 
   thread->m_branch_taken = true;
   thread->set_npc(target_pc);
+  thread->set_next_meta_pc(target_meta_addr);
 }
 
 void brx_impl(const ptx_instruction *pI, ptx_thread_info *thread) {

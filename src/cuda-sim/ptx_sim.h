@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include "../abstract_hardware_model.h"
 #include "../tr1_hash_map.h"
+#include "../gpgpu-sim/cgra_core.h"
 #include "half.h"
 
 #include <assert.h>
@@ -303,9 +304,9 @@ class ptx_thread_info {
     m_hw_tid = tid;
     m_functionalSimulationMode = fsim;
   }
-
   void ptx_fetch_inst(inst_t &inst) const;
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
+  void dice_exec_inst_light(class dice_metadata * metadata, ptx_instruction *pI, unsigned tid);
 
   const ptx_version &get_ptx_version() const;
   void set_reg(const symbol *reg, const ptx_reg_t &value);
@@ -389,10 +390,24 @@ class ptx_thread_info {
     m_branch_taken = false;
     return m_PC;
   }
+
+  //DICE-support
+  unsigned next_metadata() {
+    m_meta_count++;
+    m_branch_taken = false;
+    return m_meta_pc;
+  }
+
+
   bool branch_taken() const { return m_branch_taken; }
   unsigned get_pc() const { return m_PC; }
   void set_npc(unsigned npc) { m_NPC = npc; }
   void set_npc(const function_info *f);
+  
+  //DICE-support
+  unsigned get_meta_pc() const { return m_meta_pc; }
+  void set_next_meta_pc(unsigned n_mpc) { m_next_meta_pc = n_mpc;}
+
   void callstack_push(unsigned npc, unsigned rpc, const symbol *return_var_src,
                       const symbol *return_var_dst, unsigned call_uid);
   bool callstack_pop();
@@ -412,7 +427,16 @@ class ptx_thread_info {
     m_RPC_updated = false;
     m_last_was_call = false;
   }
+  //DICE-support
+  void clear_metadata_RPC() {
+    m_meta_reconvergence_pc = -1;
+    m_meta_reconvergence_pc_updated = false;
+    m_last_was_call = false;
+  }
+  void update_metadata_pc() { m_meta_pc = m_next_meta_pc; }
+
   unsigned get_return_PC() { return m_callstack.back().m_PC; }
+  unsigned get_return_meta_PC() { return m_callstack.back().m_PC; } //DICE-support TODO: handle callstack
   void update_pc() { m_PC = m_NPC; }
   void dump_regs(FILE *fp);
   void dump_modifiedregs(FILE *fp);
@@ -459,6 +483,8 @@ class ptx_thread_info {
   // Jin: get corresponding kernel grid for CDP purpose
   kernel_info_t &get_kernel() { return m_kernel; }
 
+  //DICE-support
+  void dice_exec_block(class dice_metadata* metadata, unsigned tid);
  public:
   addr_t m_last_effective_address;
   bool m_branch_taken;
@@ -472,6 +498,10 @@ class ptx_thread_info {
   ptx_reg_t m_last_set_operand_value;
 
  private:
+  //DICE-support
+  cgra_core_ctx *m_cgra_core;
+
+
   bool m_functionalSimulationMode;
   unsigned m_uid;
   kernel_info_t &m_kernel;
@@ -496,6 +526,13 @@ class ptx_thread_info {
   bool m_RPC_updated;
   bool m_last_was_call;
   unsigned m_cycle_done;
+
+  //DICE-support
+  unsigned m_meta_count;
+  unsigned m_meta_pc;
+  unsigned m_next_meta_pc;
+  unsigned m_meta_reconvergence_pc;
+  bool m_meta_reconvergence_pc_updated;
 
   int m_barrier_num;
   bool m_at_barrier;

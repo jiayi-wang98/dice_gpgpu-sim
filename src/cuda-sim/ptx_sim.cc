@@ -308,6 +308,8 @@ void ptx_thread_info::set_info(function_info *func) {
   m_symbol_table = func->get_symtab();
   m_func_info = func;
   m_PC = func->get_start_PC();
+  //DICE-support
+  m_meta_pc = func->get_metadata_start_pc();
 }
 
 void ptx_thread_info::cpy_tid_to_reg(dim3 tid) {

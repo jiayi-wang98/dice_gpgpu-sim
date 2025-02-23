@@ -40,6 +40,7 @@ typedef void *yyscan_t;
 #include "../../libcuda/gpgpu_context.h"
 #include "../abstract_hardware_model.h"
 #include "../gpgpu-sim/gpu-sim.h"
+#include "../cuda-sim/dice_metadata.h"
 #include "../gpgpusim_entrypoint.h"
 #include "../statwrapper.h"
 #include "../stream_manager.h"
@@ -378,6 +379,77 @@ void function_info::ptx_assemble() {
 
    m_assembled = true;
 #endif
+}
+
+#define MAX_METADATA_SIZE 32 /*bytes*/
+
+void function_info::metadata_assemble() {
+  if (m_metadata_assembled) {
+    return;
+  }
+
+  // get the metadata into metadata memory...
+  unsigned num_metadata = m_dice_metadata.size();
+  m_metadata_mem_size = MAX_METADATA_SIZE * (num_metadata + 1);
+  m_metadata_mem = new dice_metadata *[m_metadata_mem_size];
+
+  printf("DICE Metadata: Metadata assembly for function \'%s\'... ",
+         m_name.c_str());
+  fflush(stdout);
+
+  addr_t PC = gpgpu_ctx->func_sim->g_assemble_code_next_pc;  // globally unique address
+                                                     // (across functions)
+  // start function on an aligned address
+  //for (unsigned i = 0; i < (PC % MAX_METADATA_SIZE); i++)
+  //  gpgpu_ctx->s_g_pc_to_meta.push_back((dice_metadata *)NULL);
+  PC += PC % MAX_METADATA_SIZE;
+  m_metadata_start_pc = PC;
+
+  //set metadata_start_pc for saving in s_g_pc_to_meta
+  if (gpgpu_ctx->metadata_start_pc == 0) //not set yet
+    gpgpu_ctx->metadata_start_pc = PC;
+
+  addr_t n = 0;  // offset in m_metadata_mem
+  gpgpu_ctx->s_g_pc_to_meta.reserve(MAX_METADATA_SIZE * m_dice_metadata.size());
+
+  std::vector<dice_metadata *>::iterator i;
+  for (i = m_dice_metadata.begin(); i != m_dice_metadata.end(); i++) {
+    //add mapping from metadata_id to metadata
+    int metadata_id=(*i)->meta_id;
+    m_id_to_metadata[metadata_id] = *i;
+    //put into metadata memory
+    dice_metadata *mI = *i;
+    gpgpu_ctx->func_sim->g_pc_to_finfo[PC] = this;
+    m_metadata_mem[n] = mI;
+    gpgpu_ctx->s_g_pc_to_meta.push_back(mI);
+    assert(mI == gpgpu_ctx->s_g_pc_to_meta[PC-gpgpu_ctx->metadata_start_pc]);
+    mI->set_m_metadata_mem_index(n);
+    mI->set_PC(PC);
+    assert(mI->metadata_size() <= MAX_METADATA_SIZE);
+    for (unsigned i = 1; i < mI->metadata_size(); i++) {
+      gpgpu_ctx->s_g_pc_to_meta.push_back((dice_metadata *)NULL);
+      m_metadata_mem[n + i] = NULL;
+    }
+    n += mI->metadata_size(); //if we have varible size metadata in the future
+    PC += mI->metadata_size(); //if we have varible size metadata in the future
+  }
+  gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
+
+  //handle reconvergence pc and branch target pc
+  for (unsigned ii = 0; ii < n; ii += m_metadata_mem[ii]->metadata_size()) {  // handle branch instructions
+    dice_metadata *mI = m_metadata_mem[ii];
+    if (mI->branch) {
+      int target_id = mI->branch_target_meta_id;
+      unsigned PC = m_id_to_metadata[target_id]->get_PC();
+      mI->branch_target_meta_pc = PC;
+      int reconvergence_id = mI->reconvergence_meta_id;
+      PC = m_id_to_metadata[reconvergence_id]->get_PC();
+      mI->reconvergence_meta_pc = PC;
+    }
+  }
+  m_metadata_assembled = true;
+  printf("  done.\n");
+  fflush(stdout);
 }
 
 addr_t shared_to_generic(unsigned smid, addr_t addr) {
@@ -1960,6 +2032,214 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   }
 }
 
+void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruction *pI, unsigned tid) {
+  bool skip = false;
+  int op_classification = 0;
+  try {
+    m_last_set_operand_value.u64 = 0;
+    if (is_done()) {
+      printf(
+          "attempted to execute instruction on a thread that is already "
+          "done.\n");
+      assert(0);
+    }
+
+    if (pI->has_pred()) {
+      const operand_info &pred = pI->get_pred();
+      ptx_reg_t pred_value = get_operand_value(pred, pred, PRED_TYPE, this, 0);
+      if (pI->get_pred_mod() == -1) {
+        skip = (pred_value.pred & 0x0001) ^
+               pI->get_pred_neg();  // ptxplus inverts the zero flag
+      } else {
+        skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
+      }
+    }
+    int inst_opcode = pI->get_opcode();
+    
+    if (skip) {
+      metadata->set_not_active(tid);
+    } else {
+      //const ptx_instruction *pI_saved = pI;
+      //ptx_instruction *pJ = NULL;
+
+      //Not support in current dice
+      if (pI->get_opcode() == VOTE_OP || pI->get_opcode() == ACTIVEMASK_OP) {
+          printf("DICE Sim: VOTE and ACTIVEMASK are not supported in dice\n");
+          fflush(stdout);
+          assert(0);
+      //  pJ = new ptx_instruction(*pI);
+      //  *((warp_inst_t *)pJ) = inst;  // copy active mask information
+      //  pI = pJ;
+      }
+
+      //Not supported in current dice
+      if (((inst_opcode == MMA_OP || inst_opcode == MMA_LD_OP ||
+            inst_opcode == MMA_ST_OP))) {
+          printf("DICE Sim: MMA operations are not supported in dice\n");
+          fflush(stdout);
+          assert(0);
+      //  if (metadata.active_count() != MAX_WARP_SIZE) {
+      //    printf(
+      //        "Tensor Core operation are warp synchronous operation. All the "
+      //        "threads needs to be active.");
+      //    assert(0);
+      //  }
+      }
+
+      // Tensorcore is warp synchronous operation. So these instructions needs
+      // to be executed only once. To make the simulation faster removing the
+      // redundant tensorcore operation
+      if (!tensorcore_op(inst_opcode) ||
+          ((tensorcore_op(inst_opcode)) && (tid == 0))) {
+        switch (inst_opcode) {
+#define OP_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
+  case OP:                                         \
+    FUNC(pI, this);                                \
+    op_classification = CLASSIFICATION;            \
+    break;
+#define OP_W_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
+  case OP:                                           \
+    printf("DICE Sim: Operation not supported now!"); abort();  
+    //FUNC(pI, get_core(), NULL);                      \
+    op_classification = CLASSIFICATION;              \
+    break;
+#include "opcodes.def"
+#undef OP_DEF
+#undef OP_W_DEF
+          default:
+            printf("Execution error: Invalid opcode (0x%x)\n",
+                   pI->get_opcode());
+            break;
+        }
+      }
+      //delete pJ;
+      //pI = pI_saved;
+      // Run exit instruction if exit option included
+      if (pI->is_exit()) exit_impl(pI, this);
+    }
+
+    const gpgpu_functional_sim_config &config = m_gpu->get_config();
+
+    addr_t insn_memaddr = 0xFEEBDAED;
+    memory_space_t insn_space = undefined_space;
+    _memory_op_t insn_memory_op = no_memory_op;
+    unsigned insn_data_size = 0;
+    if ((pI->has_memory_read() || pI->has_memory_write())) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+        insn_memaddr = last_eaddr();
+        insn_space = last_space();
+        unsigned to_type = pI->get_type();
+        insn_data_size = datatype2size(to_type);
+        insn_memory_op = pI->has_memory_read() ? memory_load : memory_store;
+      }
+    }
+
+    if (pI->get_opcode() == BAR_OP && pI->barrier_op() == RED_OPTION) {
+      printf("DICE Sim: BAR_OP is not supported in dice\n");
+      fflush(stdout);
+      assert(0);
+    //  inst.add_callback(lane_id, last_callback().function,
+    //                    last_callback().instruction, this,
+    //                    false /*not atomic*/);
+    }
+
+    if (pI->get_opcode() == ATOM_OP) {
+      printf("DICE Sim: BAR_OP is not supported in dice\n");
+      fflush(stdout);
+      assert(0);
+      //insn_memaddr = last_eaddr();
+      //insn_space = last_space();
+      //inst.add_callback(lane_id, last_callback().function,
+      //                  last_callback().instruction, this, true /*atomic*/);
+      //unsigned to_type = pI->get_type();
+      //insn_data_size = datatype2size(to_type);
+    }
+
+    if (pI->get_opcode() == TEX_OP) {
+      metadata->set_addr(tid, last_eaddr());
+      assert(metadata->space == last_space());
+      insn_data_size = get_tex_datasize(
+          pI,
+          this);  // texture obtain its data granularity from the texture info
+    }
+
+    m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn++;
+
+    // not using it with functional simulation mode
+    if (!(this->m_functionalSimulationMode))
+      ptx_file_line_stats_add_exec_count(pI);
+
+    if (m_gpu->gpgpu_ctx->func_sim->gpgpu_ptx_instruction_classification) {
+      m_gpu->gpgpu_ctx->func_sim->init_inst_classification_stat();
+      unsigned space_type = 0;
+      switch (pI->get_space().get_type()) {
+        case global_space:
+          space_type = 10;
+          break;
+        case local_space:
+          space_type = 11;
+          break;
+        case tex_space:
+          space_type = 12;
+          break;
+        case surf_space:
+          space_type = 13;
+          break;
+        case param_space_kernel:
+        case param_space_local:
+          space_type = 14;
+          break;
+        case shared_space:
+          space_type = 15;
+          break;
+        case const_space:
+          space_type = 16;
+          break;
+        default:
+          space_type = 0;
+          break;
+      }
+      StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
+                        [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
+                    op_classification);
+      if (space_type)
+        StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_classification_stat
+                          [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
+                      (int)space_type);
+      StatAddSample(m_gpu->gpgpu_ctx->func_sim->g_inst_op_classification_stat
+                        [m_gpu->gpgpu_ctx->func_sim->g_ptx_kernel_count],
+                    (int)pI->get_opcode());
+    }
+
+    
+    if ((m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn % 100000) == 0) {
+      dim3 ctaid = get_ctaid();
+      dim3 tid = get_tid();
+      DPRINTF(LIVENESS,
+              "GPGPU-Sim PTX: %u instructions simulated : ctaid=(%u,%u,%u) "
+              "tid=(%u,%u,%u)\n",
+              m_gpu->gpgpu_ctx->func_sim->g_ptx_sim_num_insn, ctaid.x, ctaid.y,
+              ctaid.z, tid.x, tid.y, tid.z);
+      fflush(stdout);
+    }
+    
+    // "Return values"
+    if (!skip) {
+      if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
+        metadata->space = insn_space;
+        metadata->set_addr(tid, insn_memaddr);
+        //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
+        //assert(inst.memory_op == insn_memory_op);
+      }
+    }
+  } catch (int x) {
+    printf("GPGPU-Sim PTX: ERROR (%d) executing intruction (%s:%u)\n", x,
+           pI->source_file(), pI->source_line());
+    printf("GPGPU-Sim PTX:       '%s'\n", pI->get_source());
+    abort();
+  }
+}
+
 void cuda_sim::set_param_gpgpu_num_shaders(int num_shaders) {
   gpgpu_param_num_shaders = num_shaders;
 }
@@ -2579,7 +2859,6 @@ void functionalCoreSim::createWarp(unsigned warpId) {
 
 //DICE-support
 void DICEfunctionalCoreSim::createCTAsimt_stack() {
-  printf("DICE functional simulator: createCTAsimt_stack\n");
   fflush(stdout);
   simt_mask_t initialMask(m_warp_size);
   unsigned liveThreadsCount = 0;
@@ -2592,7 +2871,7 @@ void DICEfunctionalCoreSim::createCTAsimt_stack() {
   }
 
   assert(m_thread[0] != NULL);
-  m_simt_stack[0]->launch(m_thread[0]->get_pc(),initialMask);
+  m_simt_stack[0]->launch(m_thread[0]->get_meta_pc(),initialMask);
   char fname[2048];
   snprintf(fname, 2048, "checkpoint_files/warp_0_0_simt.txt");
 
@@ -2605,21 +2884,16 @@ void DICEfunctionalCoreSim::createCTAsimt_stack() {
       m_thread[i]->update_pc();
     }
   }
-  m_liveThreadCount[0] = liveThreadsCount;
-  printf("DICE functional simulator: exiting createCTAsimt_stack\n");
-  fflush(stdout);
+  m_liveThreadCount = liveThreadsCount;
 }
 
 void DICEfunctionalCoreSim::initializeCTA(unsigned ctaid_cp) {
-  printf("DICE functional simulator initialize CTA: %d\n", ctaid_cp);
   fflush(stdout);
   assert(m_warp_count == 1); //no warp hierarchy in DICE, only one warp per CTA
   int ctaLiveThreads = 0;
   symbol_table *symtab = m_kernel->entry()->get_symtab();
-  for (int i = 0; i < m_warp_count; i++) {
-    m_liveThreadCount[i] = 0;
-  }
-  for (int i = 0; i < m_warp_count * m_warp_size; i++) m_thread[i] = NULL;
+  m_liveThreadCount = 0;
+  for (int i = 0; i < m_warp_size; i++) m_thread[i] = NULL;
   // get threads for a cta
   for (unsigned i = 0; i < m_kernel->threads_per_cta(); i++) {
     ptx_sim_init_thread(*m_kernel, &m_thread[i], 0, i,
@@ -2634,13 +2908,9 @@ void DICEfunctionalCoreSim::initializeCTA(unsigned ctaid_cp) {
     ctaLiveThreads++;
   }
   createCTAsimt_stack();
-  printf("DICE functional simulator: exiting initialize CTA: %d\n", ctaid_cp);
-  fflush(stdout);
 }
 
 void DICEfunctionalCoreSim::execute(int inst_count, unsigned ctaid_cp) {
-  printf("DICE functional simulator: execute: %d\n", ctaid_cp);
-  fflush(stdout);
   m_gpu->gpgpu_ctx->func_sim->cp_count = m_gpu->checkpoint_insn_Y;
   m_gpu->gpgpu_ctx->func_sim->cp_cta_resume = m_gpu->checkpoint_CTA_t;
   initializeCTA(ctaid_cp);
@@ -2785,18 +3055,70 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
   if (!m_warpAtBarrier[i] && m_liveThreadCount[i] > 0) allAtBarrier = false;
 }
 
+void DICEfunctionalCoreSim::updateSIMTStack_dice(dice_metadata *metadata) {
+  simt_mask_t thread_done(m_warp_size);
+  addr_vector_t next_pc;
+  for (unsigned i = 0; i < m_warp_size; i++) {
+    if (ptx_thread_done(i)) {
+      thread_done.set(i);
+      next_pc.push_back((address_type)-1);
+    } else {
+      if (metadata->reconvergence_meta_pc == RECONVERGE_RETURN_PC)
+      metadata->reconvergence_meta_pc = get_return_meta_pc(m_thread[i]);
+      next_pc.push_back(m_thread[i]->get_meta_pc());
+    }
+  }
+  m_simt_stack[0]->update(thread_done, next_pc, metadata->reconvergence_meta_pc,
+                               metadata->dice_block->ptx_end->op, metadata->m_size, metadata->m_PC);
+}
 
 void DICEfunctionalCoreSim::executeCTA(bool &someOneLive) {
-  printf("DICE functional simulator: executeCTA\n"); fflush(stdout);
-  if (*m_liveThreadCount != 0) {
-    warp_inst_t inst = getExecuteWarp(0);
-    printf("DICE functional simulator: execute_warp_inst_t(inst, 0);\n"); fflush(stdout);
-    execute_warp_inst_t(inst, 0);
-    if (inst.isatomic()) inst.do_atomic(true);
-    updateSIMTStack(0, &inst);
+  if (m_liveThreadCount != 0) {
+    dice_metadata* metadata = getExecuteMetadata();
+    execute_metadata(metadata);
+    //TODO atomic operation //if (metadata.isatomic()) metadata.do_atomic(true);
+    updateSIMTStack_dice(metadata);
   }
-  if (m_liveThreadCount[0] > 0) someOneLive = true;
-  printf("DICE functional simulator: Exit executeCTA\n"); fflush(stdout);
+  if (m_liveThreadCount > 0) someOneLive = true;
+}
+
+void DICEfunctionalCoreSim::execute_metadata(dice_metadata* metadata) {
+  for (unsigned t = 0; t < m_warp_size; t++) {
+    if (metadata->active(t)) {
+      m_thread[t]->dice_exec_block(metadata,t);
+      dice_checkExecutionStatusAndUpdate(t);
+    }
+  }
+}
+
+void DICEfunctionalCoreSim::dice_checkExecutionStatusAndUpdate(unsigned tid) {
+  if (m_thread[tid] == NULL || m_thread[tid]->is_done()) {
+    m_liveThreadCount--;
+  }
+}
+
+//DICE-support
+void ptx_thread_info::dice_exec_block(dice_metadata* metadata, unsigned tid) {
+  bool skip = false;
+  int op_classification = 0;
+  addr_t metadata_pc = next_metadata();
+  //printf("DICE: next_metadata pc= %p, while giving %p\n", metadata_pc,metadata->get_PC());fflush(stdout);
+  assert(metadata_pc == metadata->get_PC());   // make sure timing model and functional model are in sync
+  set_next_meta_pc(metadata_pc + metadata->metadata_size());
+  if (is_done()) {
+    printf(
+        "attempted to execute metadata on a thread that is already "
+        "done.\n");
+    assert(0);
+  }
+  //clear_metadata_reconvergence_pc
+  clear_metadata_RPC();
+  //run each instructions in the block
+  std::vector<ptx_instruction*>::iterator i=metadata->dice_block->ptx_instructions.begin();
+  for(;i != metadata->dice_block->ptx_instructions.end();i++){
+    dice_exec_inst_light(metadata, *i,tid);
+  }
+  update_metadata_pc();
 }
 
 unsigned gpgpu_context::translate_pc_to_ptxlineno(unsigned pc) {
@@ -2949,6 +3271,13 @@ address_type get_return_pc(void *thd) {
   return the_thread->get_return_PC();
 }
 
+address_type get_return_meta_pc(void *thd) {
+  // function call return
+  ptx_thread_info *the_thread = (ptx_thread_info *)thd;
+  assert(the_thread != NULL);
+  return the_thread->get_return_meta_PC();
+}
+
 address_type cuda_sim::get_converge_point(address_type pc) {
   // the branch could encode the reconvergence point and/or a bit that indicates
   // the reconvergence point is the return PC on the call stack in the case the
@@ -2985,7 +3314,7 @@ void functionalCoreSim::warp_exit(unsigned warp_id) {
 //DICE-support
 void DICEfunctionalCoreSim::warp_exit(unsigned warp_id) {
   assert(warp_id == 0); //no warp hierarchy in DICE, only one warp per CTA
-  for (int i = 0; i < m_warp_count * m_warp_size; i++) {
+  for (int i = 0; i < m_warp_size; i++) {
     if (m_thread[i] != NULL) {
       m_thread[i]->m_cta_info->register_deleted_thread(m_thread[i]);
       delete m_thread[i];

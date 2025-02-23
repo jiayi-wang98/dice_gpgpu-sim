@@ -40,6 +40,18 @@
 #include "gpgpusim_entrypoint.h"
 #include "option_parser.h"
 
+
+//DICE-support
+unsigned core_config::get_warp_size() const {
+  if(gpgpu_ctx->g_dice_enabled){
+    return 256;
+  }
+  else{
+    return warp_size;
+  }
+}
+
+
 void mem_access_t::init(gpgpu_context *ctx) {
   gpgpu_ctx = ctx;
   m_uid = ++(gpgpu_ctx->sm_next_access_uid);
@@ -241,7 +253,7 @@ void warp_inst_t::set_not_active(unsigned lane_id) {
 void warp_inst_t::set_active(const active_mask_t &active) {
   m_warp_active_mask = active;
   if (m_isatomic) {
-    for (unsigned i = 0; i < m_config->warp_size; i++) {
+    for (unsigned i = 0; i < m_config->get_warp_size(); i++) {
       if (!m_warp_active_mask.test(i)) {
         m_per_scalar_thread[i].callback.function = NULL;
         m_per_scalar_thread[i].callback.instruction = NULL;
@@ -258,7 +270,7 @@ void warp_inst_t::do_atomic(bool forceDo) {
 void warp_inst_t::do_atomic(const active_mask_t &access_mask, bool forceDo) {
   assert(m_isatomic && (!m_empty || forceDo));
   if (!should_do_atomic) return;
-  for (unsigned i = 0; i < m_config->warp_size; i++) {
+  for (unsigned i = 0; i < m_config->get_warp_size(); i++) {
     if (access_mask.test(i)) {
       dram_callback_t &cb = m_per_scalar_thread[i].callback;
       if (cb.thread) cb.function(cb.instruction, cb.thread);
@@ -268,7 +280,7 @@ void warp_inst_t::do_atomic(const active_mask_t &access_mask, bool forceDo) {
 
 void warp_inst_t::broadcast_barrier_reduction(
     const active_mask_t &access_mask) {
-  for (unsigned i = 0; i < m_config->warp_size; i++) {
+  for (unsigned i = 0; i < m_config->get_warp_size(); i++) {
     if (access_mask.test(i)) {
       dram_callback_t &cb = m_per_scalar_thread[i].callback;
       if (cb.thread) {
@@ -323,7 +335,7 @@ void warp_inst_t::generate_mem_accesses() {
   switch (space.get_type()) {
     case shared_space:
     case sstarr_space: {
-      unsigned subwarp_size = m_config->warp_size / m_config->mem_warp_parts;
+      unsigned subwarp_size = m_config->get_warp_size() / m_config->mem_warp_parts;
       unsigned total_accesses = 0;
       for (unsigned subwarp = 0; subwarp < m_config->mem_warp_parts;
            subwarp++) {
@@ -406,7 +418,7 @@ void warp_inst_t::generate_mem_accesses() {
           total_accesses += max_bank_accesses;
         }
       }
-      assert(total_accesses > 0 && total_accesses <= m_config->warp_size);
+      assert(total_accesses > 0 && total_accesses <= m_config->get_warp_size());
       cycles = total_accesses;  // shared memory conflicts modeled as larger
                                 // initiation interval
       m_config->gpgpu_ctx->stats->ptx_file_line_stats_add_smem_bank_conflict(
@@ -445,7 +457,7 @@ void warp_inst_t::generate_mem_accesses() {
     std::map<new_addr_type, active_mask_t>
         accesses;  // block address -> set of thread offsets in warp
     std::map<new_addr_type, active_mask_t>::iterator a;
-    for (unsigned thread = 0; thread < m_config->warp_size; thread++) {
+    for (unsigned thread = 0; thread < m_config->get_warp_size(); thread++) {
       if (!active(thread)) continue;
       new_addr_type addr = m_per_scalar_thread[thread].memreqaddr[0];
       unsigned block_address = line_size_based_tag_func(addr, cache_block_size);
@@ -499,7 +511,7 @@ void warp_inst_t::memory_coalescing_arch(bool is_write,
       segment_size = sector_segment_size ? 32 : 128;
       break;
   }
-  unsigned subwarp_size = m_config->warp_size / warp_parts;
+  unsigned subwarp_size = m_config->get_warp_size() / warp_parts;
 
   for (unsigned subwarp = 0; subwarp < warp_parts; subwarp++) {
     std::map<new_addr_type, transaction_info> subwarp_transactions;
@@ -613,7 +625,7 @@ void warp_inst_t::memory_coalescing_arch_atomic(bool is_write,
       segment_size = sector_segment_size ? 32 : 128;
       break;
   }
-  unsigned subwarp_size = m_config->warp_size / warp_parts;
+  unsigned subwarp_size = m_config->get_warp_size() / warp_parts;
 
   for (unsigned subwarp = 0; subwarp < warp_parts; subwarp++) {
     std::map<new_addr_type, std::list<transaction_info> >
@@ -925,7 +937,7 @@ void simt_stack::reset() { m_stack.clear(); }
 
 void simt_stack::launch(address_type start_pc, const simt_mask_t &active_mask) {
   reset();
-  simt_stack_entry new_stack_entry;
+  simt_stack_entry new_stack_entry(m_warp_size);
   new_stack_entry.m_pc = start_pc;
   new_stack_entry.m_calldepth = 1;
   new_stack_entry.m_active_mask = active_mask;
@@ -943,7 +955,7 @@ void simt_stack::resume(char *fname) {
 
   while (fgets(line, sizeof line, fp2) != NULL) /* read a line */
   {
-    simt_stack_entry new_stack_entry;
+    simt_stack_entry new_stack_entry(m_warp_size);
     char *pch;
     pch = strtok(line, " ");
     for (unsigned j = 0; j < m_warp_size; j++) {
@@ -1056,7 +1068,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
     // extract a group of threads with the same next PC among the active threads
     // in the warp
     address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
+    simt_mask_t tmp_active_mask(m_warp_size);
     for (int i = m_warp_size - 1; i >= 0; i--) {
       if (top_active_mask.test(i)) {  // is this thread active?
         if (thread_done.test(i)) {
@@ -1085,7 +1097,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
   assert(num_divergent_paths <= 2);
   for (unsigned i = 0; i < num_divergent_paths; i++) {
     address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
+    simt_mask_t tmp_active_mask(m_warp_size);
     tmp_active_mask.reset();
     if (divergent_paths.find(not_taken_pc) != divergent_paths.end()) {
       assert(i == 0);
@@ -1106,7 +1118,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
       // executed a call instruction
       assert(num_divergent_paths == 1);
 
-      simt_stack_entry new_stack_entry;
+      simt_stack_entry new_stack_entry(m_warp_size);
       new_stack_entry.m_pc = tmp_next_pc;
       new_stack_entry.m_active_mask = tmp_active_mask;
       new_stack_entry.m_branch_div_cycle =
@@ -1159,7 +1171,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
         if (m_warp_id == 0) print(stdout);
         if (m_warp_id == 0) printf("[Jiayi Test Stack] push new entry because of diverged\n");
-        m_stack.push_back(simt_stack_entry());
+        m_stack.push_back(simt_stack_entry(m_warp_size));
       }
     }
 
@@ -1186,7 +1198,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
     }
     if (m_warp_id == 0) print(stdout);
     if (m_warp_id == 0) printf("[Jiayi Test Stack] push new entry\n");
-    m_stack.push_back(simt_stack_entry());
+    m_stack.push_back(simt_stack_entry(m_warp_size));
   }
   assert(m_stack.size() > 0);
   if (m_warp_id == 0) printf("[Jiayi Test Stack] pop back \n");
@@ -1228,7 +1240,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     // extract a group of threads with the same next PC among the active threads
     // in the warp
     address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
+    simt_mask_t tmp_active_mask(m_warp_size);
     for (int i = m_warp_size - 1; i >= 0; i--) {
       if (top_active_mask.test(i)) {  // is this thread active?
         if (thread_done.test(i)) {
@@ -1257,7 +1269,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
   assert(num_divergent_paths <= 2);
   for (unsigned i = 0; i < num_divergent_paths; i++) {
     address_type tmp_next_pc = null_pc;
-    simt_mask_t tmp_active_mask;
+    simt_mask_t tmp_active_mask(m_warp_size);
     tmp_active_mask.reset();
     if (divergent_paths.find(not_taken_pc) != divergent_paths.end()) {
       assert(i == 0);
@@ -1278,7 +1290,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
       // executed a call instruction
       assert(num_divergent_paths == 1);
 
-      simt_stack_entry new_stack_entry;
+      simt_stack_entry new_stack_entry(m_warp_size);
       new_stack_entry.m_pc = tmp_next_pc;
       new_stack_entry.m_active_mask = tmp_active_mask;
       new_stack_entry.m_branch_div_cycle =
@@ -1323,7 +1335,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
         m_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
         
-        m_stack.push_back(simt_stack_entry());
+        m_stack.push_back(simt_stack_entry(m_warp_size));
       }
     }
 
@@ -1341,7 +1353,7 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
     } else {
       m_stack.back().m_recvg_pc = top_recvg_pc;
     }
-    m_stack.push_back(simt_stack_entry());
+    m_stack.push_back(simt_stack_entry(m_warp_size));
   }
   assert(m_stack.size() > 0);
   m_stack.pop_back();
@@ -1352,20 +1364,15 @@ void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,
 }
 
 void core_t::execute_warp_inst_t(warp_inst_t &inst, unsigned warpId) {
-  fflush(stdout);
   for (unsigned t = 0; t < m_warp_size; t++) {
-    fflush(stdout);
     if (inst.active(t)) {
       if (warpId == (unsigned(-1))) warpId = inst.warp_id();
       unsigned tid = m_warp_size * warpId + t;
-      fflush(stdout);
       m_thread[tid]->ptx_exec_inst(inst, t);
-      fflush(stdout);
       // virtual function
       checkExecutionStatusAndUpdate(inst, t, tid);
     }
   }
-  fflush(stdout);
 }
 
 bool core_t::ptx_thread_done(unsigned hw_thread_id) const {
@@ -1374,7 +1381,7 @@ bool core_t::ptx_thread_done(unsigned hw_thread_id) const {
 }
 
 void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
-  simt_mask_t thread_done;
+  simt_mask_t thread_done(m_warp_size);
   addr_vector_t next_pc;
   unsigned wtid = warpId * m_warp_size;
   for (unsigned i = 0; i < m_warp_size; i++) {
@@ -1393,7 +1400,7 @@ void core_t::updateSIMTStack(unsigned warpId, warp_inst_t *inst) {
 
 //Jiayi Test
 void core_t::updateSIMTStack_sid(unsigned warpId, warp_inst_t *inst, unsigned sid) {
-  simt_mask_t thread_done;
+  simt_mask_t thread_done(m_warp_size);
   addr_vector_t next_pc;
   unsigned wtid = warpId * m_warp_size;
   for (unsigned i = 0; i < m_warp_size; i++) {

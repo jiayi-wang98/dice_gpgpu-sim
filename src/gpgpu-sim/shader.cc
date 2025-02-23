@@ -77,7 +77,7 @@ std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
 void exec_shader_core_ctx::create_shd_warp() {
   m_warp.resize(m_config->max_warps_per_shader);
   for (unsigned k = 0; k < m_config->max_warps_per_shader; ++k) {
-    m_warp[k] = new shd_warp_t(this, m_config->warp_size);
+    m_warp[k] = new shd_warp_t(this, m_config->get_warp_size());
   }
 }
 
@@ -487,8 +487,8 @@ void shader_core_ctx::reinit(unsigned start_thread, unsigned end_thread,
     m_threadState[i].n_insn = 0;
     m_threadState[i].m_cta_id = -1;
   }
-  for (unsigned i = start_thread / m_config->warp_size;
-       i < end_thread / m_config->warp_size; ++i) {
+  for (unsigned i = start_thread / m_config->get_warp_size();
+       i < end_thread / m_config->get_warp_size(); ++i) {
     m_warp[i]->reset();
     m_simt_stack[i]->reset();
   }
@@ -501,15 +501,15 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
   address_type start_pc = next_pc(start_thread);
   unsigned kernel_id = kernel.get_uid();
   if (m_config->model == POST_DOMINATOR) {
-    unsigned start_warp = start_thread / m_config->warp_size;
-    unsigned warp_per_cta = cta_size / m_config->warp_size;
-    unsigned end_warp = end_thread / m_config->warp_size +
-                        ((end_thread % m_config->warp_size) ? 1 : 0);
+    unsigned start_warp = start_thread / m_config->get_warp_size();
+    unsigned warp_per_cta = cta_size / m_config->get_warp_size();
+    unsigned end_warp = end_thread / m_config->get_warp_size() +
+                        ((end_thread % m_config->get_warp_size()) ? 1 : 0);
     for (unsigned i = start_warp; i < end_warp; ++i) {
       unsigned n_active = 0;
-      simt_mask_t active_threads(m_config->warp_size);
-      for (unsigned t = 0; t < m_config->warp_size; t++) {
-        unsigned hwtid = i * m_config->warp_size + t;
+      simt_mask_t active_threads(m_config->get_warp_size());
+      for (unsigned t = 0; t < m_config->get_warp_size(); t++) {
+        unsigned hwtid = i * m_config->get_warp_size() + t;
         if (hwtid < end_thread) {
           n_active++;
           assert(!m_active_threads.test(hwtid));
@@ -527,10 +527,10 @@ void shader_core_ctx::init_warps(unsigned cta_id, unsigned start_thread,
         unsigned pc, rpc;
         m_simt_stack[i]->resume(fname);
         m_simt_stack[i]->get_pdom_stack_top_info(&pc, &rpc);
-        for (unsigned t = 0; t < m_config->warp_size; t++) {
+        for (unsigned t = 0; t < m_config->get_warp_size(); t++) {
           if (m_thread != NULL) {
-            m_thread[i * m_config->warp_size + t]->set_npc(pc);
-            m_thread[i * m_config->warp_size + t]->update_pc();
+            m_thread[i * m_config->get_warp_size() + t]->set_npc(pc);
+            m_thread[i * m_config->get_warp_size() + t]->update_pc();
           }
         }
         start_pc = pc;
@@ -562,7 +562,7 @@ void gpgpu_sim::get_pdom_stack_top_info(unsigned sid, unsigned tid,
 
 void shader_core_ctx::get_pdom_stack_top_info(unsigned tid, unsigned *pc,
                                               unsigned *rpc) const {
-  unsigned warp_id = tid / m_config->warp_size;
+  unsigned warp_id = tid / m_config->get_warp_size();
   m_simt_stack[warp_id]->get_pdom_stack_top_info(pc, rpc);
 }
 
@@ -691,7 +691,7 @@ void shader_core_stats::print(FILE *fout) const {
   fprintf(fout, "Stall:%d\t", shader_cycle_distro[2]);
   fprintf(fout, "W0_Idle:%d\t", shader_cycle_distro[0]);
   fprintf(fout, "W0_Scoreboard:%d", shader_cycle_distro[1]);
-  for (unsigned i = 3; i < m_config->warp_size + 3; i++)
+  for (unsigned i = 3; i < m_config->get_warp_size() + 3; i++)
     fprintf(fout, "\tW%d:%d", i - 2, shader_cycle_distro[i]);
   fprintf(fout, "\n");
   fprintf(fout, "single_issue_nums: ");
@@ -735,11 +735,11 @@ void shader_core_stats::visualizer_print(gzFile visualizer_file) {
            (shader_cycle_distro[1] - last_shader_cycle_distro[1]) / cf);
   gzprintf(visualizer_file, " %d",
            (shader_cycle_distro[2] - last_shader_cycle_distro[2]) / cf);
-  for (unsigned i = 0; i < m_config->warp_size + 3; i++) {
+  for (unsigned i = 0; i < m_config->get_warp_size() + 3; i++) {
     if (i >= 3) {
       total += (shader_cycle_distro[i] - last_shader_cycle_distro[i]);
-      if (((i - 3) % (m_config->warp_size / 8)) ==
-          ((m_config->warp_size / 8) - 1)) {
+      if (((i - 3) % (m_config->get_warp_size() / 8)) ==
+          ((m_config->get_warp_size() / 8) - 1)) {
         gzprintf(visualizer_file, " %d", total / cf);
         total = 0;
       }
@@ -910,8 +910,8 @@ void shader_core_ctx::fetch() {
             !m_scoreboard->pendingWrites(warp_id) &&
             !m_warp[warp_id]->done_exit()) {
           bool did_exit = false;
-          for (unsigned t = 0; t < m_config->warp_size; t++) {
-            unsigned tid = warp_id * m_config->warp_size + t;
+          for (unsigned t = 0; t < m_config->get_warp_size(); t++) {
+            unsigned tid = warp_id * m_config->get_warp_size() + t;
             if (m_threadState[tid].m_active == true) {
               m_threadState[tid].m_active = false;
               unsigned cta_id = m_warp[warp_id]->get_cta_id();
@@ -1725,7 +1725,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
     m_stats->m_num_mem_committed[m_sid]++;
 
   if (m_config->gpgpu_clock_gated_lanes == false)
-    m_stats->m_num_sim_insn[m_sid] += m_config->warp_size;
+    m_stats->m_num_sim_insn[m_sid] += m_config->get_warp_size();
   else
     m_stats->m_num_sim_insn[m_sid] += inst.active_count();
 
@@ -1736,7 +1736,7 @@ void shader_core_ctx::warp_inst_complete(const warp_inst_t &inst) {
 
 void shader_core_ctx::writeback() {
   unsigned max_committed_thread_instructions =
-      m_config->warp_size *
+      m_config->get_warp_size() *
       (m_config->pipe_widths[EX_WB]);  // from the functional units
   m_stats->m_pipeline_duty_cycle[m_sid] =
       ((float)(m_stats->m_num_sim_insn[m_sid] -
@@ -2958,7 +2958,7 @@ void warp_inst_t::print(FILE *fout) const {
   } else
     fprintf(fout, "0x%04x ", pc);
   fprintf(fout, "w%02d[", m_warp_id);
-  for (unsigned j = 0; j < m_config->warp_size; j++)
+  for (unsigned j = 0; j < m_config->get_warp_size(); j++)
     fprintf(fout, "%c", (active(j) ? '1' : '0'));
   fprintf(fout, "]: ");
   m_config->gpgpu_ctx->func_sim->ptx_print_insn(pc, fout);
@@ -3020,11 +3020,11 @@ void shader_core_ctx::print_stage(unsigned int stage, FILE *fout) const {
 void shader_core_ctx::display_simt_state(FILE *fout, int mask) const {
   if ((mask & 4) && m_config->model == POST_DOMINATOR) {
     fprintf(fout, "per warp SIMT control-flow state:\n");
-    unsigned n = m_config->n_thread_per_shader / m_config->warp_size;
+    unsigned n = m_config->n_thread_per_shader / m_config->get_warp_size();
     for (unsigned i = 0; i < n; i++) {
       unsigned nactive = 0;
-      for (unsigned j = 0; j < m_config->warp_size; j++) {
-        unsigned tid = i * m_config->warp_size + j;
+      for (unsigned j = 0; j < m_config->get_warp_size(); j++) {
+        unsigned tid = i * m_config->get_warp_size() + j;
         int done = ptx_thread_done(tid);
         nactive += (ptx_thread_done(tid) ? 0 : 1);
         if (done && (mask & 8)) {
@@ -3181,11 +3181,11 @@ void shader_core_ctx::display_pipeline(FILE *fout, int print_mem,
       "Last EX/WB writeback @ %llu + %llu (gpu_sim_cycle+gpu_tot_sim_cycle)\n",
       m_last_inst_gpu_sim_cycle, m_last_inst_gpu_tot_sim_cycle);
 
-  if (m_active_threads.count() <= 2 * m_config->warp_size) {
+  if (m_active_threads.count() <= 2 * m_config->get_warp_size()) {
     fprintf(fout, "Active Threads : ");
     unsigned last_warp_id = -1;
     for (unsigned tid = 0; tid < m_active_threads.size(); tid++) {
-      unsigned warp_id = tid / m_config->warp_size;
+      unsigned warp_id = tid / m_config->get_warp_size();
       if (m_active_threads.test(tid)) {
         if (warp_id != last_warp_id) {
           fprintf(fout, "\n  warp %u : ", warp_id);
@@ -3685,8 +3685,8 @@ void shader_core_ctx::set_max_cta(const kernel_info_t &kernel) {
   kernel_max_cta_per_shader = m_config->max_cta(kernel);
   unsigned int gpu_cta_size = kernel.threads_per_cta();
   kernel_padded_threads_per_cta =
-      (gpu_cta_size % m_config->warp_size)
-          ? m_config->warp_size * ((gpu_cta_size / m_config->warp_size) + 1)
+      (gpu_cta_size % m_config->get_warp_size())
+          ? m_config->get_warp_size() * ((gpu_cta_size / m_config->get_warp_size()) + 1)
           : gpu_cta_size;
 }
 
@@ -4459,9 +4459,9 @@ void exec_shader_core_ctx::checkExecutionStatusAndUpdate(warp_inst_t &inst,
   // PC-Histogram Update
   unsigned warp_id = inst.warp_id();
   unsigned pc = inst.pc;
-  for (unsigned t = 0; t < m_config->warp_size; t++) {
+  for (unsigned t = 0; t < m_config->get_warp_size(); t++) {
     if (inst.active(t)) {
-      int tid = warp_id * m_config->warp_size + t;
+      int tid = warp_id * m_config->get_warp_size() + t;
       cflog_update_thread_pc(m_sid, tid, pc);
     }
   }

@@ -7,7 +7,6 @@
 #include "../src/cuda-sim/ptx_parser.h"
 #include "../src/gpgpusim_entrypoint.h"
 #include "cuda_api_object.h"
-//DICE-support
 #include "../src/cuda-sim/dice_metadata.h"
 
 class gpgpu_context {
@@ -23,6 +22,7 @@ class gpgpu_context {
     symbol_sm_next_uid = 1;
     function_info_sm_next_uid = 1;
     debug_tensorcore = 0;
+    metadata_start_pc = 0;
     api = new cuda_runtime_api(this);
     ptxinfo = new ptxinfo_data(this);
     dicemeta_parser = new dice_metadata_parser(this);
@@ -43,8 +43,7 @@ class gpgpu_context {
   unsigned long long g_ptx_cta_info_uid;
   unsigned symbol_sm_next_uid;  // uid for symbol
   unsigned function_info_sm_next_uid;
-  std::vector<ptx_instruction *>
-      s_g_pc_to_insn;  // a direct mapping from PC to instruction
+  std::vector<ptx_instruction *> s_g_pc_to_insn;  // a direct mapping from PC to instruction
   bool debug_tensorcore;
 
   // objects pointers for each file
@@ -54,12 +53,15 @@ class gpgpu_context {
 
   //DICE-support
   dice_metadata_parser *dicemeta_parser;
+  std::vector<dice_metadata* > s_g_pc_to_meta;  // a direct mapping from PC to dice_metadata
+  unsigned metadata_start_pc;
 
   GPGPUsim_ctx *the_gpgpusim;
   cuda_sim *func_sim;
   cuda_device_runtime *device_runtime;
   ptx_stats *stats;
   // member function list
+  dice_metadata* get_meta_from_pc(unsigned pc){return s_g_pc_to_meta[pc-metadata_start_pc];}
   void synchronize();
   void exit_simulation();
   void print_simulation_time();
@@ -89,6 +91,10 @@ class gpgpu_context {
   void ptx_reg_options(option_parser_t opp);
   const ptx_instruction *pc_to_instruction(unsigned pc);
   const warp_inst_t *ptx_fetch_inst(address_type pc);
+  //DICE support
+  dice_metadata *dice_fetch_metadata(addr_t pc);
+  dice_metadata *pc_to_metadata(unsigned pc);
+  
   unsigned translate_pc_to_ptxlineno(unsigned pc);
 };
 gpgpu_context *GPGPU_Context();

@@ -1433,7 +1433,11 @@ class shader_core_config : public core_config {
      */
     int num_config_to_read = N_PIPELINE_STAGES - 2 * (!gpgpu_tensor_core_avail);
 
-    for (int i = 0; i < num_config_to_read; i++) {
+    for (int i = 0; i < N_PIPELINE_STAGES; i++) {
+      if (i>=num_config_to_read){
+        pipe_widths[i] = 0;
+        continue;
+      }
       assert(toks);
       ntok = sscanf(toks, "%d", &pipe_widths[i]);
       assert(ntok == 1);
@@ -1599,6 +1603,9 @@ class shader_core_config : public core_config {
   char *specialized_unit_string[SPECIALIZED_UNIT_NUM];
   mutable std::vector<specialized_unit_params> m_specialized_unit;
   unsigned m_specialized_unit_num;
+
+  //DICE
+  unsigned dice_cgra_core_max_threads;
 };
 
 struct shader_core_stats_pod {
@@ -1777,7 +1784,7 @@ class shader_core_stats : public shader_core_stats_pod {
     shader_cycle_distro =
         (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
     last_shader_cycle_distro =
-        (unsigned *)calloc(m_config->warp_size + 3, sizeof(unsigned));
+        (unsigned *)calloc(m_config->get_warp_size() + 3, sizeof(unsigned));
     single_issue_nums =
         (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
     dual_issue_nums =

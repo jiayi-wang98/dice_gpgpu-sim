@@ -289,6 +289,15 @@ void ptx_file_line_stats_commit_exposed_latency(int sc_id,
 // attribute the number of warp divergence to a ptx instruction
 void ptx_stats::ptx_file_line_stats_add_warp_divergence(
     unsigned pc, unsigned n_way_divergence) {
+  
+  if(gpgpu_ctx->g_dice_enabled) {
+    //const dice_metadata *metadata = gpgpu_ctx->pc_to_metadata(pc);
+    //TODO add tracker for block divergence
+    //ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(
+    //    pInsn->source_file(), pInsn->source_line())];
+    //line_stats.warp_divergence += n_way_divergence;
+    return;
+  }
   const ptx_instruction *pInsn = gpgpu_ctx->pc_to_instruction(pc);
 
   ptx_file_line_stats &line_stats = ptx_file_line_stats_tracker[ptx_file_line(

@@ -30,7 +30,6 @@
 #define ptx_ir_INCLUDED
 
 #include "../abstract_hardware_model.h"
-#include "dice_metadata.h"
 #include <assert.h>
 #include <cstdlib>
 #include <cstring>
@@ -43,7 +42,6 @@
 #include "ptx_sim.h"
 
 #include "memory.h"
-#include "dice_metadata.h"
 
 //DICE-support
 struct dice_block_t;
@@ -1356,6 +1354,8 @@ class function_info {
   unsigned get_function_size() { return m_instructions.size(); }
 
   void ptx_assemble();
+  //DICE-support
+  void metadata_assemble();
 
   unsigned ptx_get_inst_op(ptx_thread_info *thread);
   void add_param(const char *name, struct param_t value) {
@@ -1384,6 +1384,17 @@ class function_info {
     if (index < m_instr_mem_size) return m_instr_mem[index];
     return NULL;
   }
+
+  //DICE-support
+  class dice_metadata *get_metadata(unsigned metadata_pc) const {
+    unsigned index = metadata_pc - m_metadata_start_pc;
+    if (index < m_metadata_mem_size) return m_metadata_mem[index];
+    return NULL;
+  }
+
+  addr_t get_metadata_start_pc() const { return m_metadata_start_pc; }
+
+
   addr_t get_start_PC() const { return m_start_PC; }
 
   void finalize(memory_space *param_mem);
@@ -1437,11 +1448,11 @@ class function_info {
   //DICE-support
   void set_dice_blocks();
   void print_dice_blocks();
-  void add_dice_metadata(dice_metadata *metadata) {
+  void add_dice_metadata(class dice_metadata *metadata) {
     m_dice_metadata.push_back(metadata);
   }
   void clear_dice_metadata() {
-    for (std::vector<dice_metadata *>::iterator it = m_dice_metadata.begin();
+    for (std::vector<class dice_metadata *>::iterator it = m_dice_metadata.begin();
          it != m_dice_metadata.end(); ++it) {
       delete *it;
     }
@@ -1461,11 +1472,16 @@ class function_info {
   bool m_entry_point;
   bool m_extern;
   bool m_assembled;
+
+  //DICE-support
+  bool m_metadata_assembled;
+
   bool pdom_done;  // flag to check whether pdom is completed or not
   std::string m_name;
   ptx_instruction **m_instr_mem;
   unsigned m_start_PC;
   unsigned m_instr_mem_size;
+
   std::map<std::string, param_t> m_kernel_params;
   std::map<unsigned, param_info> m_ptx_kernel_param_info;
   std::vector<std::pair<size_t, unsigned> > m_param_configs;
@@ -1473,9 +1489,14 @@ class function_info {
   std::vector<const symbol *> m_args;
   std::list<ptx_instruction *> m_instructions;
   std::vector<basic_block_t *> m_basic_blocks;
+
   //DICE-support
-  std::vector<dice_block_t *> m_dice_blocks;
-  std::vector<dice_metadata *> m_dice_metadata;
+  std::vector<class dice_block_t *> m_dice_blocks;
+  std::vector<class dice_metadata *> m_dice_metadata;
+  unsigned m_metadata_start_pc;
+  unsigned m_metadata_mem_size;
+  class dice_metadata ** m_metadata_mem;
+  std::map<unsigned, class dice_metadata *> m_id_to_metadata;
 
   std::list<std::pair<unsigned, unsigned> > m_back_edges;
   std::map<std::string, unsigned> labels;

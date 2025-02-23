@@ -41,7 +41,6 @@ typedef void *yyscan_t;
 
 #include "../../libcuda/gpgpu_context.h"
 #include "cuda-sim.h"
-#include "dice_metadata.h"
 
 #define STR_SIZE 1024
 
@@ -426,52 +425,6 @@ void function_info::print_dice_blocks() {
   }
 }
 
-void function_info::link_block_in_dicemeta() {
-  printf("Linking DICE blocks to metadata of function\'%s\':\n", m_name.c_str());
-  //iterate over m_dice_metadata
-  std::vector<dice_metadata *>::iterator dice_itr;
-  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
-       dice_itr++) {
-    //get their bitstream_label
-    std::string bitstream_label = std::string((*dice_itr)->bitstream_label);
-    printf("DICE METADATA Linking: %s\n",bitstream_label.c_str());
-    //find dice_basic_block with the same label
-    std::vector<dice_block_t *>::iterator dice_block_itr;
-    bool found = false;
-    for (dice_block_itr = m_dice_blocks.begin();
-         dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
-      if ((*dice_block_itr)->label == bitstream_label) {
-        //link the dice_basic_block to the dice_metadata
-        (*dice_itr)->dice_block = *dice_block_itr;
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      printf("DICE METADATA Error: Could not find dice code block with label %s\n",
-        ((*dice_itr)->bitstream_label).c_str());
-      //print available dice block labels
-      printf("Available dice block labels: ");
-      for (dice_block_itr = m_dice_blocks.begin();
-             dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
-        printf(" %s", (*dice_block_itr)->label.c_str());
-      }
-      printf("\n");
-      fflush(stdout);
-      assert(0);
-    }
-  }
-}
-
-void function_info::dump_dice_metadata() {
-  printf("Dumping DICE metadata for function \'%s\':\n", m_name.c_str());
-  std::vector<dice_metadata *>::iterator dice_itr;
-  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
-       dice_itr++) {
-    (*dice_itr)->dump();
-  }
-}
-
 void function_info::print_basic_blocks() {
   printf("Printing basic blocks for function \'%s\':\n", m_name.c_str());
   std::list<ptx_instruction *>::iterator ptx_itr;
@@ -715,12 +668,16 @@ void function_info::set_dice_blocks(){
       // start search for next leader
       l++;
     }
+    //if not label, push to current dice block
+    if(!pI->is_label()){
+      m_dice_blocks.back()->ptx_instructions.push_back(pI);
+    }
     pI->assign_dbb(m_dice_blocks.back());
     if (!pI->is_label()) last_real_inst = pI;
   }
   m_dice_blocks.back()->ptx_end = last_real_inst;
-  m_dice_blocks.push_back(
-      /*exit dice block*/ new dice_block_t("RET",dbb_id, NULL, NULL, 0, 1));
+  //m_dice_blocks.push_back(
+  //    /*exit dice block*/ new dice_block_t("RET",dbb_id, NULL, NULL, 0, 1));
 }
 
 void function_info::do_pdom() {
@@ -1609,6 +1566,7 @@ function_info::function_info(int entry_point, gpgpu_context *ctx) {
   num_reconvergence_pairs = 0;
   m_symtab = NULL;
   m_assembled = false;
+  m_metadata_assembled = false;
   m_return_var_sym = NULL;
   m_kernel_info.cmem = 0;
   m_kernel_info.lmem = 0;

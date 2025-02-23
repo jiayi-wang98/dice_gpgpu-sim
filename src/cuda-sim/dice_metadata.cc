@@ -25,6 +25,52 @@ extern int dicemeta_lex_destroy(yyscan_t scanner);
     fflush(stdout);                                                             \
   } //has bugs here causing segfault when trying to print out the debug message
 
+void function_info::link_block_in_dicemeta() {
+  printf("Linking DICE blocks to metadata of function\'%s\':\n", m_name.c_str());
+  //iterate over m_dice_metadata
+  std::vector<dice_metadata *>::iterator dice_itr;
+  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
+       dice_itr++) {
+    //get their bitstream_label
+    std::string bitstream_label = std::string((*dice_itr)->bitstream_label);
+    printf("DICE METADATA Linking: %s\n",bitstream_label.c_str());
+    //find dice_basic_block with the same label
+    std::vector<dice_block_t *>::iterator dice_block_itr;
+    bool found = false;
+    for (dice_block_itr = m_dice_blocks.begin();
+         dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
+      if ((*dice_block_itr)->label == bitstream_label) {
+        //link the dice_basic_block to the dice_metadata
+        (*dice_itr)->dice_block = *dice_block_itr;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      printf("DICE METADATA Error: Could not find dice code block with label %s\n",
+        ((*dice_itr)->bitstream_label).c_str());
+      //print available dice block labels
+      printf("Available dice block labels: ");
+      for (dice_block_itr = m_dice_blocks.begin();
+             dice_block_itr != m_dice_blocks.end(); dice_block_itr++) {
+        printf(" %s", (*dice_block_itr)->label.c_str());
+      }
+      printf("\n");
+      fflush(stdout);
+      assert(0);
+    }
+  }
+}
+
+void function_info::dump_dice_metadata() {
+  printf("Dumping DICE metadata for function \'%s\':\n", m_name.c_str());
+  std::vector<dice_metadata *>::iterator dice_itr;
+  for (dice_itr = m_dice_metadata.begin(); dice_itr != m_dice_metadata.end();
+       dice_itr++) {
+    (*dice_itr)->dump();
+  }
+}
+
 void gpgpu_context::dice_metadata_load_from_filename(const char *filename) {
   std::string metadata_filename(filename);
   char buff[1024], extra_flags[1024];
@@ -55,8 +101,11 @@ void gpgpu_context::dice_metadata_load_from_filename(const char *filename) {
 
 void dice_metadata::dump(){
   printf("DICE Metadata:\n");
-  printf("DBB ID: %d\n", dbb_id);
-  printf("BITSTREAM_ADDR: %s\n", bitstream_label.c_str());
+  printf("Metadata ID: %d\n", meta_id);
+  printf("PC: %p\n", m_PC);
+  printf("Metadata Mem Index: %d\n", m_dicemeta_mem_index);
+  printf("Size: %d\n", m_size);
+  printf("BITSTREAM_ADDR: %s : %p\n", bitstream_label.c_str(),dice_block->get_start_pc());
   printf("BITSTREAM_LENGTH: %d\n", bitstream_length);
   printf("Unrolling Factor: %d\n", unrolling_factor);
   printf("Unrolling Strategy: %d\n", unrolling_strategy);
@@ -98,8 +147,8 @@ void dice_metadata::dump(){
     printf("Branch Prediction:"); 
     if (branch_pred!=NULL) std::cout<<(branch_pred->name());
     printf("\n");
-    printf("Branch Target DBB: %d\n", branch_target_dbb);
-    printf("Reconvergence DBB: %d\n", reconvergence_dbb);
+    printf("Branch Target Metadata ID: %d, PC = %p\n", branch_target_meta_id, branch_target_meta_pc);
+    printf("Reconvergence Metadata ID: %d, PC = %p\n", reconvergence_meta_id, reconvergence_meta_pc);
   }
   printf("Is Exit: %d\n", is_exit);
   printf("Is Ret: %d\n", is_ret);
@@ -143,15 +192,15 @@ void dice_metadata_parser::commit_dbb(){
     printf("DICE Metadata Parser: Empty DBB, abort\n"); fflush(stdout);
     abort();
   }
-  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Commit DBB %d\n", g_current_dbb->dbb_id); 
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Commit Meta %d\n", g_current_dbb->meta_id); 
   g_current_function_info->add_dice_metadata(g_current_dbb);
   //g_current_dbb = new dice_metadata(gpgpu_ctx);
 }
 
-void dice_metadata_parser::create_new_dbb(int dbb_id){
-  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Create New DBB %d\n", dbb_id); 
+void dice_metadata_parser::create_new_dbb(int meta_id){
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Create New Meta %d\n", meta_id); 
   g_current_dbb = new dice_metadata(gpgpu_ctx);
-  g_current_dbb->dbb_id = dbb_id;
+  g_current_dbb->meta_id = meta_id;
 }
 
 void dice_metadata_parser::set_in_regs(){
@@ -186,8 +235,8 @@ void dice_metadata_parser::set_branch_pred(){
     printf("DICE Metadata Parser: ERROR: No Branch Predicate Regs\n"); fflush(stdout); 
     abort();
   }
-  g_current_dbb->branch_pred = &(g_operands.front());
-  g_operands = std::list<operand_info>();
+  g_current_dbb->branch_pred = new operand_info(std::move(g_operands.front()));
+  g_operands.clear();
 }
 
 void dice_metadata_parser::add_builtin_operand(int builtin, int dim_modifier) {
@@ -203,6 +252,7 @@ void dice_metadata_parser::set_function_name(const char *name){
 
 void dice_metadata_parser::commit_function(){
   g_current_function_info->link_block_in_dicemeta();
+  dice_metadata_assemble(g_current_function_name, g_current_function_info);
   if (g_debug_dicemeta_generation) {
     g_current_function_info->dump_dice_metadata();
     fflush(stdout); 
@@ -211,4 +261,83 @@ void dice_metadata_parser::commit_function(){
   g_current_dbb = NULL;
   g_current_function_name = "";
   printf("DICE Metadata Parser: Commited Function\n"); fflush(stdout); 
+}
+
+void dice_metadata_assemble(std::string kname, void *kinfo){
+  printf("DICE Metadata Assemble\n"); fflush(stdout); 
+  function_info *func_info = (function_info *)kinfo;
+  if ((function_info *)kinfo == NULL) {
+    printf("GPGPU-Sim PTX: Warning - missing function definition \'%s\'\n",
+           kname.c_str());
+    return;
+  }
+  if (func_info->is_extern()) {
+    printf(
+        "GPGPU-Sim PTX: skipping assembly for extern declared function "
+        "\'%s\'\n",
+        func_info->get_name().c_str());
+    return;
+  }
+  func_info->metadata_assemble();
+}
+
+unsigned dice_block_t::get_start_pc(){
+  return ptx_begin->get_PC(); 
+}
+
+unsigned dice_block_t::get_end_pc(){
+  return ptx_end->get_PC(); 
+}
+
+
+//DICE-support
+dice_metadata *gpgpu_context::dice_fetch_metadata(addr_t pc) {
+  printf("DICE Metadata Fetch: %p\n", pc); fflush(stdout);
+  return pc_to_metadata(pc);
+}
+
+//DICE-support
+dice_metadata *gpgpu_context::pc_to_metadata(unsigned pc) {
+  if ((pc-metadata_start_pc) < 0) {
+    printf("DICE Metadata Fetch: ERROR: PC to Metadata\n"); fflush(stdout);
+    abort();
+  }
+  if ((pc-metadata_start_pc) < s_g_pc_to_meta.size())
+    return s_g_pc_to_meta[pc-metadata_start_pc];
+  else{
+    printf("DICE Metadata Fetch: Warning: PC to Metadata pointing to NULL address!\n"); fflush(stdout);
+    return NULL;
+  }
+}
+
+
+dice_metadata* DICEfunctionalCoreSim::getExecuteMetadata(){
+  unsigned pc, rpc;
+  m_simt_stack[0]->get_pdom_stack_top_info(&pc, &rpc);
+  printf("DICE pdom_stack_top_info: %p, %p\n", pc, rpc); fflush(stdout);
+  dice_metadata* metadata = m_gpu->gpgpu_ctx->dice_fetch_metadata(pc);
+  assert(metadata != NULL);
+  metadata->set_active(m_simt_stack[0]->get_active_mask());
+  return metadata;
+}
+
+void dice_metadata::set_active(const active_mask_t &active) {
+  assert(active.size() > 0);
+  //active.dump();
+  simt_mask_t *active_mask = new simt_mask_t(active);
+  m_block_active_mask = active_mask;
+  //Atomic TODO
+  //if (m_isatomic) {
+  //  for (unsigned i = 0; i < m_config->get_warp_size(); i++) {
+  //    if (!m_warp_active_mask.test(i)) {
+  //      m_per_scalar_thread[i].callback.function = NULL;
+  //      m_per_scalar_thread[i].callback.instruction = NULL;
+  //      m_per_scalar_thread[i].callback.thread = NULL;
+  //    }
+  //  }
+  //}
+}
+
+void dice_metadata::set_not_active(unsigned tid) {
+  m_block_active_mask->reset(tid);
 }

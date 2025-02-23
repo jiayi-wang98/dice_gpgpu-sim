@@ -204,12 +204,12 @@ void ptx_recognizer::end_function() {
                                 (g_current_symbol_table->next_reg_num() - 1));
   g_func_info->add_inst(g_instructions);
   g_instructions.clear();
+  gpgpu_ptx_assemble(g_func_info->get_name(), g_func_info);
   //DICE-support
   if(gpgpu_ctx->g_dice_enabled){
     g_func_info->set_dice_blocks();
     if(g_debug_ir_generation) g_func_info->print_dice_blocks();
   }
-  gpgpu_ptx_assemble(g_func_info->get_name(), g_func_info);
   g_current_symbol_table = g_global_symbol_table;
 
   PTX_PARSE_DPRINTF("function %s, PC = %d\n", g_func_info->get_name().c_str(),

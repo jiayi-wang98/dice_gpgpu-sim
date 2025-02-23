@@ -1,9 +1,8 @@
 #ifndef DICE_METADATA_H_INCLUDED
 #define DICE_METADATA_H_INCLUDED
 #include <string>
-#include "ptx_ir.h"
-
-#define DICE_METADATA_LINEBUF_SIZE 1024
+#include "../abstract_hardware_model.h"
+#define DICE_METADATA_LINEBUF_SIZE 4096
 class gpgpu_context;
 typedef void* yyscan_t;
 
@@ -12,28 +11,49 @@ class operand_info;
 class ptx_instruction;
 struct dice_block_t;
 
+const unsigned MAX_ACCESSES_PER_BLOCK_PER_THREAD = 8;
 
 class dice_metadata {
   public:
     dice_metadata(class gpgpu_context* ctx) {
       gpgpu_ctx = ctx;
-      dbb_id = 0;
+      m_source_file = "";
+      meta_id = 0;
       unrolling_factor = 0;
       unrolling_strategy = 0;
       latency = 0;
+      bitstream_label = "";
+      bitstream_length = 0;
       num_store = 0;
       branch = false;
       uni_bra = false;
       branch_pred = NULL;
-      branch_target_dbb = 0;
-      reconvergence_dbb = 0;
+      branch_target_meta_id = 0;
+      reconvergence_meta_id = 0;
       is_exit = false;
       is_ret = false;
       is_entry = false;
+      m_dicemeta_mem_index = 0;
+      m_PC = 0;
+      m_size = 32; //bytes
+      m_per_scalar_thread_valid = false;
     }
 
+    ~dice_metadata() {
+      delete m_block_active_mask;
+    }
+    void set_m_metadata_mem_index(unsigned index) { m_dicemeta_mem_index = index; }
+    void set_PC(addr_t PC) { m_PC = PC; }
+    addr_t get_PC() const { return m_PC; }
+  
+    unsigned get_m_metadata_mem_index() { return m_dicemeta_mem_index; }
+    unsigned metadata_size() { return m_size; }
+
     class gpgpu_context* gpgpu_ctx;
-    int dbb_id;
+    std::string m_source_file;
+    unsigned m_source_line;
+
+    int meta_id;
     int unrolling_factor;
     int unrolling_strategy;
     int latency;
@@ -46,15 +66,60 @@ class dice_metadata {
     bool branch;
     bool uni_bra;
     operand_info* branch_pred;
-    int branch_target_dbb;
-    int reconvergence_dbb;
+    int branch_target_meta_id;
+    int reconvergence_meta_id;
+    unsigned branch_target_meta_pc;
+    unsigned reconvergence_meta_pc;
 
     bool is_exit;
     bool is_ret;
     bool is_entry;
     dice_block_t *dice_block;
 
+    unsigned m_dicemeta_mem_index;
+    addr_t m_PC;
+    unsigned m_size;  // bytes
+    
+    simt_mask_t* m_block_active_mask;
+    memory_space_t space;
+    bool m_per_scalar_thread_valid;
+    struct per_thread_info {
+      per_thread_info() {
+        for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++)
+          memreqaddr[i] = 0;
+      }
+      dram_callback_t callback;
+      new_addr_type
+          memreqaddr[MAX_ACCESSES_PER_BLOCK_PER_THREAD];  // effective address,
+                                                         // upto 8 different
+                                                         // requests (to support
+                                                         // 32B access in 8 chunks
+                                                         // of 4B each)
+    };
+    std::vector<per_thread_info> m_per_scalar_thread;
+    
     void dump();
+    void set_active(const active_mask_t &active);
+    void set_not_active(unsigned tid);
+    bool active(unsigned thread) const { return m_block_active_mask->test(thread); }
+
+    void set_addr(unsigned n, new_addr_type addr) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(1536);//TODO: use config
+        m_per_scalar_thread_valid = true;
+      }
+      m_per_scalar_thread[n].memreqaddr[0] = addr;
+    }
+    void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(1536); //TODO: use config
+        m_per_scalar_thread_valid = true;
+      }
+      assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
+      for (unsigned i = 0; i < num_addrs; i++)
+        m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+    }
+    
 };
 
 class dice_metadata_parser {
@@ -85,7 +150,7 @@ class dice_metadata_parser {
   void add_operand(const char *identifier);
   void add_builtin_operand(int builtin, int dim_modifier);
   void read_parser_environment_variables();
-  void create_new_dbb(int dbb_id);
+  void create_new_dbb(int meta_id);
   void set_unrolling_factor(int factor){
     g_current_dbb->unrolling_factor = factor;
   }
@@ -108,10 +173,10 @@ class dice_metadata_parser {
   }
   //void set_branch_pred(const char* pred);
   void set_branch_target_dbb(int dbb){
-    g_current_dbb->branch_target_dbb = dbb;
+    g_current_dbb->branch_target_meta_id = dbb;
   }
   void set_reconvergence_dbb(int dbb){
-    g_current_dbb->reconvergence_dbb = dbb;
+    g_current_dbb->reconvergence_meta_id = dbb;
   }
   void set_is_ret(){
     g_current_dbb->is_ret = true;
@@ -139,9 +204,17 @@ struct dice_block_t {
 
   ptx_instruction *ptx_begin;
   ptx_instruction *ptx_end;
+  std::vector<ptx_instruction *> ptx_instructions;
   bool is_entry;
   bool is_exit;
   unsigned dbb_id;
   std::string label;
+  unsigned get_start_pc();
+  unsigned get_end_pc();
+  unsigned get_block_size(){
+    return get_end_pc() - get_start_pc();
+  }
 };
+
+void dice_metadata_assemble(std::string kname, void *kinfo);
 #endif
