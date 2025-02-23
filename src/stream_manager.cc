@@ -194,7 +194,8 @@ bool stream_operation::do_operation(gpgpu_sim *gpu) {
       }
       break;
     default:
-      abort();
+      printf("GPGPU-Sim API: stream operation type %d not supported\n", m_type);
+      assert(0);abort();
   }
   m_done = true;
   fflush(stdout);

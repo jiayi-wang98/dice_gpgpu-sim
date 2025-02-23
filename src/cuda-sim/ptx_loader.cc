@@ -191,7 +191,7 @@ symbol_table *gpgpu_context::gpgpu_ptx_sim_load_ptx_from_string(
     FILE *ptxfile = fopen(fname, "w");
     fprintf(ptxfile, "%s", p);
     fclose(ptxfile);
-    abort();
+    assert(0);abort();
     exit(40);
   }
   ptx_lex_destroy(ptx_parser->scanner);
@@ -293,7 +293,7 @@ void fix_duplicate_errors(char fname2[1024]) {
         startptr = lineptr + offset + 1;
       } else {
         printf("GPGPU-Sim PTX: ERROR ** Unrecognized function format\n");
-        abort();
+        assert(0);abort();
       }
     } else if (strcmp("variable", iter->second) == 0) {
       fwrite(startptr, sizeof(char), (int)(lineptr + 1 - startptr), ptxdest);
@@ -331,7 +331,7 @@ char *get_app_binary_name() {
 #ifdef __APPLE__
   // AMRUTH:  get apple device and check the result.
   printf("WARNING: not tested for Apple-mac devices \n");
-  abort();
+  assert(0);abort();
 #else
   std::stringstream exec_link;
   exec_link << "/proc/self/exe";

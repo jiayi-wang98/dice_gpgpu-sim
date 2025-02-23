@@ -97,7 +97,7 @@ void gpgpu_sim::gpgpu_debug() {
       /*
      for( unsigned sid=0; sid < m_n_shader; sid++ ) {
         unsigned hw_thread_id = -1;
-        abort();
+        assert(0);abort();
         ptx_thread_info *thread =
      m_sc[sid]->get_functional_thread(hw_thread_id); if( thread_at_brkpt(thread,
      b) ) { done = false; printf("GPGPU-Sim PTX DBG: reached breakpoint %u at %s

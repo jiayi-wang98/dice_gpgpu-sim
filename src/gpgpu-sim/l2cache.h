@@ -45,7 +45,7 @@ class partition_mf_allocator : public mem_fetch_allocator {
   virtual mem_fetch *alloc(const class warp_inst_t &inst,
                            const mem_access_t &access,
                            unsigned long long cycle) const {
-    abort();
+    fflush(stdout);assert(0);abort();
     return NULL;
   }
   virtual mem_fetch *alloc(new_addr_type addr, mem_access_type type,

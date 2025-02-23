@@ -316,6 +316,7 @@ void gpgpusim_ptx_error_impl(const char *func, const char *file, unsigned line,
 
   printf("GPGPU-Sim CUDA API: %s\n", buf);
   printf("                    [%s:%u : %s]\n", file, line, func);
+  fflush(stdout);
   abort();
 }
 
@@ -442,7 +443,7 @@ char *get_app_binary_name(std::string abs_path) {
 #ifdef __APPLE__
   // TODO: get apple device and check the result.
   printf("WARNING: not tested for Apple-mac devices \n");
-  abort();
+  assert(0);abort();
 #else
   char *buf = strdup(abs_path.c_str());
   char *token = strtok(buf, "/");
@@ -557,7 +558,7 @@ __host__ cudaError_t CUDARTAPI cudaDeviceGetLimitInternal(
       } else {
         printf("ERROR:Limit %d is not supported on this architecture \n",
                limit);
-        abort();
+        assert(0);abort();
       }
     case 4:  // cudaLimitDevRuntimePendingLaunchCount
       if (prop->major > 2) {
@@ -566,12 +567,12 @@ __host__ cudaError_t CUDARTAPI cudaDeviceGetLimitInternal(
       } else {
         printf("ERROR:Limit %d is not supported on this architecture \n",
                limit);
-        abort();
+        assert(0);abort();
       }
 #endif
     default:
       printf("ERROR:Limit %d unimplemented \n", limit);
-      abort();
+      assert(0);abort();
   }
   return g_last_cudaError = cudaSuccess;
 }
@@ -752,7 +753,7 @@ void **cudaRegisterFatBinaryInternal(void *fatCubin,
 #else
   else {
     printf("ERROR **  __cudaRegisterFatBinary() needs to be updated\n");
-    abort();
+    assert(0);abort();
   }
 #endif
 }
@@ -1209,12 +1210,12 @@ cudaMemcpyInternal(void *dst, const void *src, size_t count,
         printf(
             "GPGPU-Sim PTX: cudaMemcpy - ERROR : unsupported transfer: host to "
             "host\n");
-        abort();
+        assert(0);abort();
       }
     }
   } else {
     printf("GPGPU-Sim PTX: cudaMemcpy - ERROR : unsupported cudaMemcpyKind\n");
-    abort();
+    assert(0);abort();
   }
   return g_last_cudaError = cudaSuccess;
 }
@@ -1245,7 +1246,7 @@ __host__ cudaError_t CUDARTAPI cudaMemcpyToArrayInternal(
     printf(
         "GPGPU-Sim PTX: cudaMemcpyToArray - ERROR : unsupported "
         "cudaMemcpyKind\n");
-    abort();
+    assert(0);abort();
   }
   dst->devPtr32 = (unsigned)(size_t)(dst->devPtr);
   return g_last_cudaError = cudaSuccess;
@@ -1277,7 +1278,7 @@ __host__ cudaError_t CUDARTAPI cudaMemcpy2DInternal(
   else {
     printf(
         "GPGPU-Sim PTX: cudaMemcpy2D - ERROR : unsupported cudaMemcpyKind\n");
-    abort();
+    assert(0);abort();
   }
   return g_last_cudaError = cudaSuccess;
 }
@@ -1322,7 +1323,7 @@ __host__ cudaError_t CUDARTAPI cudaMemcpy2DToArrayInternal(
   else {
     printf(
         "GPGPU-Sim PTX: cudaMemcpy2D - ERROR : unsupported cudaMemcpyKind\n");
-    abort();
+    assert(0);abort();
   }
   dst->devPtr32 = (unsigned)(size_t)(dst->devPtr);
   return g_last_cudaError = cudaSuccess;
@@ -1401,7 +1402,9 @@ __host__ cudaError_t CUDARTAPI cudaMemcpyAsyncInternal(
           stream_operation((size_t)src, (size_t)dst, count, s));
       break;
     default:
-      abort();
+      printf("GPGPU-Sim PTX: cudaMemcpyAsync - ERROR : unsupported "
+             "cudaMemcpyKind\n");
+      assert(0);abort();
   }
   return g_last_cudaError = cudaSuccess;
 }
@@ -1570,7 +1573,7 @@ CUresult cuLinkAddFileInternal(CUlinkState state, CUjitInputType type,
     printf(
         "GPGPU-Sim PTX: ERROR: cuLinkAddFile does not support multiple "
         "files\n");
-    abort();
+    assert(0);abort();
   }
 
   // blocking
@@ -1579,7 +1582,7 @@ CUresult cuLinkAddFileInternal(CUlinkState state, CUjitInputType type,
   char *file = getenv("PTX_JIT_PATH");
   if (file == NULL) {
     printf("GPGPU-Sim PTX: ERROR: PTX_JIT_PATH has not been set\n");
-    abort();
+    assert(0);abort();
   }
   strcat(file, "/");
   strcat(file, path);
@@ -1868,7 +1871,7 @@ cudaDeviceGetAttributeInternal(int *value, enum cudaDeviceAttr attr, int device,
         break;
       default:
         printf("ERROR: Attribute number %d unimplemented \n", attr);
-        abort();
+        assert(0);abort();
     }
     return g_last_cudaError = cudaSuccess;
   } else {
@@ -2171,7 +2174,7 @@ CUresult CUDAAPI cuLaunchKernelInternal(
     printf(
         "GPGPU-Sim CUDA DRIVER API: ERROR: Currently do not support void** "
         "extra.\n");
-    abort();
+    assert(0);abort();
   }
   const char *hostFun = (const char *)f;
   CUctx_st *context = GPGPUSim_Context(ctx);
@@ -3327,7 +3330,7 @@ std::list<cuobjdumpSection *> cuda_runtime_api::pruneSectionList(
         "either the forced maximum capability from gpgpusim configuration or "
         "update the compilation to generate the required PTX version\n",
         min_ptx_capability_found, forced_max_capability);
-    abort();
+    assert(0);abort();
   }
   return prunedList;
 }
@@ -4076,7 +4079,8 @@ int cuda_runtime_api::load_constants(symbol_table *symtab, addr_t min_gaddr,
             assert(nbytes >= 4);
             break;  // account for double DEMOTING
           default:
-            abort();
+            printf("GPGPU-Sim PTX: ERROR ** unknown constant type\n");
+            assert(0);abort();
         }
         unsigned addr = constant->get_address() + nbytes_written;
         assert(addr + nbytes < min_gaddr);
@@ -4114,7 +4118,7 @@ kernel_info_t *cuda_runtime_api::gpgpu_cuda_ptx_sim_init_grid(
         "GPGPU-Sim PTX: ERROR launching kernel -- no PTX implementation found "
         "for %p\n",
         hostFun);
-    abort();
+    assert(0);abort();
   }
   unsigned argcount = args.size();
   unsigned argn = 1;

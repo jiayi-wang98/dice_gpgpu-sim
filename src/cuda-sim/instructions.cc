@@ -133,13 +133,15 @@ unsigned thread_group_offset(int thread, unsigned wmma_type,
               offset += 33;
             break;
           default:
-            abort();
+            printf("wrong in_tg_index");
+            assert(0);abort();
         }
       }
       break;
 
     default:
-      abort();
+      printf("wrong wmma_type");
+      assert(0);abort();
   }
   offset = (offset / 16) * stride + offset % 16;
   return offset;
@@ -156,7 +158,7 @@ int acc_float_offset(int index, int wmma_layout, int stride) {
     offset = c_col_offset[index];
   else {
     printf("wrong layout");
-    abort();
+    assert(0);abort();
   }
   offset = (offset / 16) * stride + offset % 16;
   return offset;
@@ -301,7 +303,7 @@ ptx_reg_t ptx_thread_info::get_operand_value(const operand_info &op,
               "GPGPU-Sim PTX: ERROR ** get_operand_value : unknown memory "
               "operand type for %s\n",
               name);
-          abort();
+          assert(0);abort();
         }
 
       } else if (op.is_literal()) {
@@ -508,14 +510,14 @@ unsigned get_operand_nbits(const operand_info &op) {
       default:
         printf("ERROR: unknown register type\n");
         fflush(stdout);
-        abort();
+        assert(0);abort();
     }
   } else {
     printf(
         "ERROR: Need to implement get_operand_nbits() for currently "
         "unsupported operand_info type\n");
     fflush(stdout);
-    abort();
+    assert(0);abort();
   }
 
   return 0;
@@ -1184,7 +1186,8 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
       effective_address = generic_to_shared(smid, effective_address);
       space = shared_space;
     } else {
-      abort();
+      printf("Execution error: unknown space\n");
+      assert(0);abort();
     }
   }
   assert(space == global_space || space == shared_space);
@@ -1195,7 +1198,10 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
   else if (space == shared_space)
     mem = thread->m_shared_mem;
   else
-    abort();
+    { 
+      printf("Execution error: unknown space\n");
+      assert(0);abort();
+    }
 
   // Copy value pointed to in operand 'a' into register 'd'
   // (i.e. copy src1_data to dst)
@@ -1490,7 +1496,8 @@ void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       effective_address_final = generic_to_shared(smid, effective_address);
       space = shared_space;
     } else {
-      abort();
+      printf("Execution error: unknown space\n");
+      assert(0);abort();
     }
   } else {
     assert(space == global_space || space == shared_space);
@@ -1567,7 +1574,8 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
             thread->or_reduction(ctaid, op1_data.u32, op3_data.u32);
             break;
           default:
-            abort();
+            printf("Execution error: type mismatch with instruction\n");
+            assert(0);abort();
             break;
         }
       } else {
@@ -1592,14 +1600,16 @@ void bar_impl(const ptx_instruction *pIin, ptx_thread_info *thread) {
             thread->or_reduction(ctaid, op1_data.u32, op2_data.u32);
             break;
           default:
-            abort();
+            printf("Execution error: type mismatch with instruction\n");
+            assert(0);abort();
             break;
         }
       }
       break;
     }
     default:
-      abort();
+      printf("Execution error: type mismatch with instruction\n");
+      assert(0);abort();
       break;
   }
 
@@ -1665,7 +1675,7 @@ void bfe_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     }
     default:
       printf("Operand type not supported for BFE instruction.\n");
-      abort();
+      assert(0);abort();
       return;
   }
   thread->set_operand_value(dst, data, i_type, thread, pI);
@@ -1727,7 +1737,7 @@ void bfind_impl(const ptx_instruction *pI, ptx_thread_info *thread)
     case U32_TYPE: a = src1_data.u32; break;
     case S64_TYPE: a = src1_data.s64; break;
     case U64_TYPE: a = src1_data.u64; break;
-    default: assert(false); abort();
+    default: assert(false); assert(0);abort();
   }
 
   // negate negative signed inputs
@@ -1753,18 +1763,19 @@ void bra_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
       thread->get_operand_value(target, target, U32_TYPE, thread, 1);
   
   //DICE-support
-  //get current metadata pc
-  addr_t metadata_pc = thread->get_meta_pc();
-  //get metadata
-  dice_metadata *metadata = thread->get_gpu()->gpgpu_ctx->get_meta_from_pc(metadata_pc);
-  assert(metadata != NULL);
-  assert(metadata->branch == true);
-  //get target
-  addr_t target_meta_addr = metadata->branch_target_meta_pc;
-
+  if(thread->get_gpu()->gpgpu_ctx->g_dice_enabled){
+    //get current metadata pc
+    addr_t metadata_pc = thread->get_meta_pc();
+    //get metadata
+    dice_metadata *metadata = thread->get_gpu()->gpgpu_ctx->get_meta_from_pc(metadata_pc);
+    assert(metadata != NULL);
+    assert(metadata->branch == true);
+    //get target
+    addr_t target_meta_addr = metadata->branch_target_meta_pc;
+    thread->set_next_meta_pc(target_meta_addr);
+    }
   thread->m_branch_taken = true;
   thread->set_npc(target_pc);
-  thread->set_next_meta_pc(target_meta_addr);
 }
 
 void brx_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
@@ -2128,7 +2139,7 @@ void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
 
     } else {
       printf("wmma:mma:wrong type\n");
-      abort();
+      assert(0);abort();
     }
   }
 }
@@ -2161,7 +2172,7 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         "GPGPU-Sim PTX: Execution error - mismatch in number of return values "
         "between\n"
         "               call instruction and function declaration\n");
-    abort();
+    assert(0);abort();
   }
   unsigned n_return = target_func->has_return();
   unsigned n_args = target_func->num_args();
@@ -2172,7 +2183,7 @@ void call_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         "GPGPU-Sim PTX: Execution error - mismatch in number of arguements "
         "between\n"
         "               call instruction and function declaration\n");
-    abort();
+    assert(0);abort();
   }
 
   // handle intrinsic functions
@@ -3038,7 +3049,7 @@ void cvt_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   unsigned saturation_mode = pI->saturation_mode();
 
   //   if ( to_type == F16_TYPE || from_type == F16_TYPE )
-  //      abort();
+  //      assert(0);abort();
 
   int to_sign, from_sign;
   size_t from_width, to_width;
@@ -3122,7 +3133,7 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         to_addr_hw = generic_to_global(from_addr_hw);
         break;
       default:
-        abort();
+        assert(0);abort();
     }
   } else {
     switch (space.get_type()) {
@@ -3138,7 +3149,7 @@ void cvta_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
         to_addr_hw = global_to_generic(from_addr_hw);
         break;
       default:
-        abort();
+        assert(0);abort();
     }
   }
 
@@ -3274,7 +3285,7 @@ void isspacep_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     case global_space:
       t = isspace_global(addr);
     default:
-      abort();
+      assert(0);abort();
   }
 
   ptx_reg_t p;
@@ -3305,7 +3316,7 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
     } else {
       printf("GPGPU-Sim PTX: ERROR ** cannot resolve .param space for '%s'\n",
              s->name().c_str());
-      abort();
+      assert(0);abort();
     }
   }
   switch (space.get_type()) {
@@ -3353,16 +3364,16 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
             addr = generic_to_shared(smid, addr);
             break;
           default:
-            abort();
+            assert(0);abort();
         }
       } else {
-        abort();
+        assert(0);abort();
       }
       break;
     case param_space_unclassified:
     case undefined_space:
     default:
-      abort();
+      assert(0);abort();
   }
 }
 
@@ -3616,7 +3627,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else {
           printf("mma_ld:wrong_layout_type\n");
-          abort();
+          assert(0);abort();
         }
         if (i % 2 == 0) mem_txn_addr[num_mem_txn++] = fetch_addr;
       }
@@ -3632,7 +3643,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
           mem->read(fetch_addr, size / 8, &data[i].s64);
         } else {
           printf("mma_ld:wrong_layout_type\n");
-          abort();
+          assert(0);abort();
         }
         if (i % 2 == 0) mem_txn_addr[num_mem_txn++] = fetch_addr;
       }
@@ -3651,7 +3662,7 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
             mem_txn_addr[num_mem_txn++] = fetch_addr;
           } else {
             printf("mma_ld:wrong_type\n");
-            abort();
+            assert(0);abort();
           }
         } else if (type == F32_TYPE) {
           // mem->read(new_addr+4*acc_float_offset(i,wmma_layout,stride),size/8,&data[i].s64);
@@ -3660,13 +3671,13 @@ void mma_ld_impl(const ptx_instruction *pI, core_t *core, warp_inst_t &inst) {
           mem_txn_addr[num_mem_txn++] = fetch_addr;
         } else {
           printf("wrong type");
-          abort();
+          assert(0);abort();
         }
       }
     } else {
       printf("wrong wmma type\n");
       ;
-      abort();
+      assert(0);abort();
     }
     // generate timing memory request
     inst.space = space;
@@ -6446,7 +6457,7 @@ void vote_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
           pred_value = (or_all ^ and_all);
           break;
         default:
-          abort();
+          assert(0);abort();
       }
       ptx_reg_t data;
       data.pred = pred_value ? 0 : 1;  // the way ptxplus handles the zero flag,
@@ -6495,7 +6506,7 @@ void inst_not_implemented(const ptx_instruction *pI) {
   printf(
       "GPGPU-Sim PTX: ERROR (%s:%u) instruction \"%s\" not (yet) implemented\n",
       pI->source_file(), pI->source_line(), pI->get_opcode_cstr());
-  abort();
+  assert(0);abort();
 }
 
 ptx_reg_t srcOperandModifiers(ptx_reg_t opData, operand_info opInfo,

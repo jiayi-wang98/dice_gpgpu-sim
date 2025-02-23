@@ -228,8 +228,9 @@ struct _cl_platform_id {
 struct _cl_platform_id g_gpgpu_sim_platform_id;
 
 void gpgpusim_exit()
-{
-   abort();
+{  
+   printf("GPGPU-Sim OpenCL API: ** Exiting GPGPU-Sim simulation **\n");
+   assert(0);abort();
 }
 
 void gpgpusim_opencl_warning( const char* func, unsigned line, const char *desc )
@@ -625,7 +626,7 @@ char *_cl_program::get_ptx()
 {
    if( m_pgm.empty() ) {
       printf("GPGPU-Sim PTX OpenCL API: Cannot get PTX before building program\n");
-      abort();
+      assert(0);abort();
    }
    size_t buffer_length= get_ptx_size();
    char *tmp = (char*)calloc(buffer_length + 1,1);
@@ -677,7 +678,7 @@ void opencl_not_implemented( const char* func, unsigned line )
          "                 [$GPGPUSIM_ROOT/libcuda/%s around line %u]\n\n\n", 
          func,__FILE__, line );
    fflush(stdout);
-   abort();
+   assert(0);abort();
 }
 
 void opencl_not_finished( const char* func, unsigned line )
@@ -688,7 +689,7 @@ void opencl_not_finished( const char* func, unsigned line )
          "                 [$GPGPUSIM_ROOT/libopencl/%s around line %u]\n\n\n", 
          func,__FILE__, line );
    fflush(stdout);
-   abort();
+   assert(0);abort();
 }
 
 extern CL_API_ENTRY cl_context CL_API_CALL
@@ -941,7 +942,7 @@ clEnqueueNDRangeKernel(cl_command_queue command_queue,
 	   for ( unsigned d=0; d < work_dim; d++ ) {
 		   if (global_work_offset[d] != 0){
 			   printf("GPGPU-Sim: global id offset is not supported\n");
-			   abort();
+			   assert(0);abort();
 		   }
 	   }
    }

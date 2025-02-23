@@ -47,7 +47,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define CHECK_UNSIGNED \
 	if( yytext[strlen(yytext)-1]=='U' ) { \
 		printf("GPGPU-Sim: ERROR ** U modifier not implemented\n"); \
-		abort(); \
+		assert(0);abort(); \
 	}
 #define YY_DECL int ptx_lex \
 	       (YYSTYPE * yylval_param , yyscan_t yyscanner, ptx_recognizer* recognizer)
@@ -255,8 +255,8 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 [0-9]+\.[0-9]+ 	 TC; sscanf(yytext,"%lf", &yylval->double_value); return DOUBLE_OPERAND;
 	
 0[xX][0-9a-fA-F]+U? TC; CHECK_UNSIGNED; sscanf(yytext,"%x", &yylval->int_value); return INT_OPERAND;
-0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); abort(); return INT_OPERAND;
-0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); abort(); return INT_OPERAND;
+0[0-7]+U?   	TC; printf("GPGPU-Sim: ERROR ** parsing octal not (yet) implemented\n"); fflush(stdout);abort(); return INT_OPERAND;
+0[bB][01]+U?  	TC; printf("GPGPU-Sim: ERROR ** parsing binary not (yet) implemented\n"); fflush(stdout);abort(); return INT_OPERAND;
 [-]?[0-9]+U?    TC; CHECK_UNSIGNED; yylval->int_value =  atoi(yytext); return INT_OPERAND;
 
 0[fF][0-9a-fA-F]{8}  TC; sscanf(yytext+2,"%x", (unsigned*)(void*)&yylval->float_value); return FLOAT_OPERAND;

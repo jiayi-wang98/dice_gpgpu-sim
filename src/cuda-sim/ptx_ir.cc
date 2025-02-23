@@ -1177,7 +1177,7 @@ arg_buffer_t copy_arg_to_buffer(ptx_thread_info *thread,
     printf(
         "GPGPU-Sim PTX: ERROR ** need to add support for this operand type in "
         "call/return\n");
-    abort();
+    assert(0);abort();
   }
 }
 

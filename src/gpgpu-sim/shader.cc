@@ -223,7 +223,7 @@ void shader_core_ctx::create_schedulers() {
             &m_pipeline_reg[ID_OC_MEM], i, m_config->gpgpu_scheduler_string));
         break;
       default:
-        abort();
+        assert(0);abort();
     };
   }
 
@@ -1123,7 +1123,7 @@ void scheduler_unit::order_by_priority(
     }
   } else {
     fprintf(stderr, "Unknown ordering - %d\n", ordering);
-    abort();
+    assert(0);abort();
   }
 }
 
@@ -1412,9 +1412,9 @@ void scheduler_unit::cycle() {
         m_stats->single_issue_nums[m_id]++;
       else if (issued > 1)
         m_stats->dual_issue_nums[m_id]++;
-      else
-        abort();  // issued should be > 0
-
+      else{
+        assert(0);abort();  // issued should be > 0
+      }
       break;
     }
   }
@@ -1483,7 +1483,7 @@ void two_level_active_scheduler::do_on_warp_issued(
   } else {
     fprintf(stderr, "Unimplemented m_inner_level_prioritization: %d\n",
             m_inner_level_prioritization);
-    abort();
+    assert(0);abort();
   }
 }
 
@@ -1530,7 +1530,7 @@ void two_level_active_scheduler::order_warps() {
   } else {
     fprintf(stderr, "Unimplemented m_outer_level_prioritization: %d\n",
             m_outer_level_prioritization);
-    abort();
+    assert(0);abort();
   }
   assert(num_promoted == num_demoted);
 }
@@ -1565,7 +1565,7 @@ void swl_scheduler::order_warps() {
                       scheduler_unit::sort_warps_by_oldest_dynamic_id);
   } else {
     fprintf(stderr, "swl_scheduler m_prioritization = %d\n", m_prioritization);
-    abort();
+    assert(0);abort();
   }
 }
 
@@ -2508,7 +2508,7 @@ void ldst_unit::writeback() {
         }
         break;
       default:
-        abort();
+        assert(0);abort();
     }
   }
   // update arbitration priority only if:
@@ -3071,7 +3071,7 @@ void ldst_unit::print(FILE *fout) const {
         fprintf(fout, "N_MEM_STAGE_STALL_TYPE");
         break;
       default:
-        abort();
+        assert(0);abort();
     }
     fprintf(fout, "\n");
   }
@@ -3258,7 +3258,7 @@ unsigned int shader_core_config::max_cta(const kernel_info_t &k) const {
           "the ERROR!\n");
       return 1;
     }
-    abort();
+    assert(0);abort();
   }
 
   if (adaptive_cache_config && !k.cache_config_set) {
@@ -3542,7 +3542,7 @@ void barrier_set_t::warp_reaches_barrier(unsigned cta_id, unsigned warp_id,
         cta_id, m_shader->get_gpu()->gpu_tot_sim_cycle,
         m_shader->get_gpu()->gpu_sim_cycle);
     dump();
-    abort();
+    assert(0);abort();
   }
   assert(w->second.test(warp_id) == true);  // warp is in cta
 

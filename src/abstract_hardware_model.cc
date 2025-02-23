@@ -44,7 +44,7 @@
 //DICE-support
 unsigned core_config::get_warp_size() const {
   if(gpgpu_ctx->g_dice_enabled){
-    return 256;
+    return gpgpu_ctx->the_gpgpusim->g_the_gpu_config->num_dice_max_thread_per_core();
   }
   else{
     return warp_size;
@@ -442,13 +442,15 @@ void warp_inst_t::generate_mem_accesses() {
           memory_coalescing_arch_atomic(is_write, access_type);
         else
           memory_coalescing_arch(is_write, access_type);
-      } else
-        abort();
-
+      } else{
+        printf("Error: coalescing architecture not supported\n");
+        fflush(stdout);abort();
+      }
       break;
 
     default:
-      abort();
+      printf("GPGPU-Sim PTX: ERROR ** memory space not supported in cache\n");
+      fflush(stdout);abort();
   }
 
   if (cache_block_size) {
@@ -1049,6 +1051,8 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
   assert(m_stack.size() > 0);
 
   assert(next_pc.size() == m_warp_size);
+  if (m_warp_id == 0) printf("[Jiayi Test Stack]  simt_stack::update_sid");
+  fflush(stdout);
 
   simt_mask_t top_active_mask = m_stack.back().m_active_mask;
   address_type top_recvg_pc = m_stack.back().m_recvg_pc;
@@ -1212,6 +1216,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
     //find ptx file location and name
     printf("[Stack after updated]:\n");
     print(stdout);
+    fflush(stdout);
   }
 }
 

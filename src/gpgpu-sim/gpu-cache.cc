@@ -308,10 +308,11 @@ enum cache_request_status tag_array::probe(new_addr_type addr, unsigned &idx,
     idx = invalid_line;
   } else if (valid_line != (unsigned)-1) {
     idx = valid_line;
-  } else
-    abort();  // if an unreserved block exists, it is either invalid or
-              // replaceable
+  } else{
 
+    assert(0);abort();  // if an unreserved block exists, it is either invalid or
+              // replaceable
+  }
   if (probe_mode && m_config.is_streaming()) {
     line_table::const_iterator i =
         pending_lines.find(m_config.block_addr(addr));
@@ -378,7 +379,7 @@ enum cache_request_status tag_array::access(new_addr_type addr, unsigned time,
               "tag_array::access - Error: Unknown"
               "cache_request_status %d\n",
               status);
-      abort();
+      assert(0);abort();
   }
   return status;
 }
@@ -1059,8 +1060,9 @@ void baseline_cache::fill(mem_fetch *mf, unsigned time) {
   else if (m_config.m_alloc_policy == ON_FILL) {
     m_tag_array->fill(e->second.m_block_addr, time, mf);
     if (m_config.is_streaming()) m_tag_array->remove_pending_line(mf);
-  } else
-    abort();
+  } else {
+    assert(0);abort();
+  }
   bool has_atomic = false;
   m_mshrs.mark_ready(e->second.m_block_addr, has_atomic);
   if (has_atomic) {

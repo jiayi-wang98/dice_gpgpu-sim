@@ -284,7 +284,8 @@ int float2int(float a, enum cudaRoundMode mode) {
       tmp = ceilf(a);
       break;
     default:
-      abort();
+      printf("float2int: invalid rounding mode\n");
+      assert(0);abort();
   }
   return tmp;
 }
@@ -310,7 +311,8 @@ unsigned int float2uint(float a, enum cudaRoundMode mode) {
       tmp = ceilf(a);
       break;
     default:
-      abort();
+    printf("float2uint: invalid rounding mode\n");
+      assert(0);abort();
   }
   return tmp;
 }

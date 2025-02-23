@@ -330,7 +330,8 @@ void function_info::ptx_assemble() {
             "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
             "appear in assembly code.",
             pI->source_file(), pI->source_line(), target.name().c_str());
-        abort();
+        fflush(stdout);
+        assert(0);abort();
       }
       unsigned index = labels[target.name()];  // determine address from name
       unsigned PC = m_instr_mem[index]->get_PC();
@@ -550,6 +551,7 @@ void gpgpu_t::memcpy_to_gpu(size_t dst_start_addr, const void *src,
   for (unsigned n = 0; n < count; n++)
     m_global_mem->write(dst_start_addr + n, 1, src_data + n, NULL, NULL);
 
+    if (g_debug_execution >= 3) {printf(" copying...\n");fflush(stdout);}
   // Copy into the performance model.
   // extern gpgpu_sim* g_the_gpu;
   gpgpu_ctx->the_gpgpusim->g_the_gpu->perf_memcpy_to_gpu(dst_start_addr, count);
@@ -746,7 +748,9 @@ void ptx_instruction::set_bar_type() {
         }
         break;
       default:
-        abort();
+        printf("GPGPU-Sim PTX: ERROR ** set_bar_type() -- unknown barrier "
+               "type\n"); fflush(stdout);
+        assert(0);abort();
     }
   } else if (m_opcode == SST_OP) {
     bar_type = SYNC;
@@ -1355,7 +1359,8 @@ void function_info::add_param_data(unsigned argn,
           "GPGPU-Sim PTX: ERROR ** could not locate symbol for \'%s\' : cannot "
           "bind buffer\n",
           buffer);
-      abort();
+      fflush(stdout);
+      assert(0);abort();
     }
     if (data)
       p->set_address((addr_t) * (size_t *)data);
@@ -1371,7 +1376,8 @@ void function_info::add_param_data(unsigned argn,
         printf(
             "GPGPU-Sim PTX: ERROR ** clSetKernelArg passed NULL but arg not "
             "shared memory\n");
-        abort();
+        fflush(stdout);
+        assert(0);abort();
       }
       unsigned num_bits = 8 * args->m_nbytes;
       printf(
@@ -1655,7 +1661,8 @@ void function_info::ptx_jit_config(
   if (system(buff) != 0) {
     printf("WARNING: Failed to execute grep to find ptx source \n");
     printf("Problematic call: %s", buff);
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   }
   FILE *fin = fopen(ptx_config_fn.c_str(), "r");
   char ptx_source[256];
@@ -1670,7 +1677,8 @@ void function_info::ptx_jit_config(
   if (system(buff) != 0) {
     printf("WARNING: Failed to execute grep to find ptx header \n");
     printf("Problematic call: %s", buff);
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   }
   fin = fopen(ptx_source, "r");
   assert(fin != NULL);
@@ -2028,7 +2036,8 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
     printf("GPGPU-Sim PTX: ERROR (%d) executing intruction (%s:%u)\n", x,
            pI->source_file(), pI->source_line());
     printf("GPGPU-Sim PTX:       '%s'\n", pI->get_source());
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   }
 }
 
@@ -2099,7 +2108,7 @@ void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruct
     break;
 #define OP_W_DEF(OP, FUNC, STR, DST, CLASSIFICATION) \
   case OP:                                           \
-    printf("DICE Sim: Operation not supported now!"); abort();  
+    printf("DICE Sim: Operation not supported now!"); fflush(stdout); assert(0);abort();  
     //FUNC(pI, get_core(), NULL);                      \
     op_classification = CLASSIFICATION;              \
     break;
@@ -2236,7 +2245,8 @@ void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruct
     printf("GPGPU-Sim PTX: ERROR (%d) executing intruction (%s:%u)\n", x,
            pI->source_file(), pI->source_line());
     printf("GPGPU-Sim PTX:       '%s'\n", pI->get_source());
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   }
 }
 
@@ -2324,6 +2334,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     if (g_debug_execution >= 1) {
       printf("  <CTA alloc> : sm_idx=%u sid=%u max_cta_per_sm=%u\n", sm_idx,
              sid, max_cta_per_sm);
+      fflush(stdout);
     }
     char buf[512];
     snprintf(buf, 512, "shared_%u", sid);
@@ -2338,6 +2349,7 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
     if (g_debug_execution >= 1) {
       printf("  <CTA realloc> : sm_idx=%u sid=%u max_cta_per_sm=%u\n", sm_idx,
              sid, max_cta_per_sm);
+      fflush(stdout);
     }
     shared_mem = shared_memory_lookup[sm_idx];
     sstarr_mem = sstarr_memory_lookup[sm_idx];
@@ -2494,7 +2506,8 @@ void cuda_sim::gpgpu_ptx_sim_memcpy_symbol(const char *hostVar, const void *src,
           "Execution error: PTX symbol \"%s\" w/ hostVar=0x%Lx is declared "
           "both const and global?\n",
           sym_name.c_str(), (unsigned long long)hostVar);
-      abort();
+      fflush(stdout);
+      assert(0);abort();
     }
     found_sym = true;
     sym_name = g->second;
@@ -2514,7 +2527,8 @@ void cuda_sim::gpgpu_ptx_sim_memcpy_symbol(const char *hostVar, const void *src,
   if (!found_sym) {
     printf("Execution error: No information for PTX symbol w/ hostVar=0x%Lx\n",
            (unsigned long long)hostVar);
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   } else
     printf(
         "GPGPU-Sim PTX: gpgpu_ptx_sim_memcpy_symbol: Found PTX symbol w/ "
@@ -2541,7 +2555,9 @@ void cuda_sim::gpgpu_ptx_sim_memcpy_symbol(const char *hostVar, const void *src,
       mem_name = "global";
       break;
     default:
-      abort();
+      printf("Execution error: Invalid memory space\n");
+      fflush(stdout);
+      assert(0);abort();
   }
   printf(
       "GPGPU-Sim PTX: gpgpu_ptx_sim_memcpy_symbol: copying %s memory %zu bytes "
@@ -3218,7 +3234,8 @@ void ptxinfo_opencl_addinfo(std::map<std::string, function_info *> &kernels) {
   if (k == kernels.end()) {
     printf("GPGPU-Sim PTX: ERROR ** implementation for '%s' not found.\n",
            g_ptxinfo_kname);
-    abort();
+    fflush(stdout);
+    assert(0);abort();
   } else {
     printf(
         "GPGPU-Sim PTX: Kernel \'%s\' : regs=%u, lmem=%u, smem=%u, cmem=%u\n",

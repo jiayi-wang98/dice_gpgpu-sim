@@ -701,7 +701,7 @@ class operand_info {
       return s_temp;
     } else {
       printf("operand_info::name() not implemented for type %d\n", m_type);
-      abort();
+      assert(0);abort();
     }
   }
 

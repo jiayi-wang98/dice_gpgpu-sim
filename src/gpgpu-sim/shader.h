@@ -647,7 +647,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else if (m_cu)
         return m_cu->get_warp_id();
       else
-        abort();
+        assert(0);abort();
     }
     unsigned get_sid() const { return m_shced_id; }
     unsigned get_active_count() const {
@@ -656,7 +656,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else if (m_cu)
         return m_cu->get_active_count();
       else
-        abort();
+        assert(0);abort();
     }
     const active_mask_t &get_active_mask() {
       if (m_warp)
@@ -664,7 +664,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else if (m_cu)
         return m_cu->get_active_mask();
       else
-        abort();
+        assert(0);abort();
     }
     unsigned get_sp_op() const {
       if (m_warp)
@@ -672,7 +672,7 @@ class opndcoll_rfu_t {  // operand collector based register file unit
       else if (m_cu)
         return m_cu->get_sp_op();
       else
-        abort();
+        assert(0);abort();
     }
     unsigned get_oc_id() const { return m_cu->get_id(); }
     unsigned get_bank() const { return m_bank; }
@@ -1417,7 +1417,7 @@ class shader_core_config : public core_config {
       printf(
           "GPGPU-Sim uArch: error while parsing configuration string "
           "gpgpu_shader_core_pipeline_opt\n");
-      abort();
+      assert(0);abort();
     }
 
     char *toks = new char[100];
@@ -1451,7 +1451,7 @@ class shader_core_config : public core_config {
           "GPGPU-Sim uArch: Error ** increase MAX_THREAD_PER_SM in "
           "abstract_hardware_model.h from %u to %u\n",
           MAX_THREAD_PER_SM, n_thread_per_shader);
-      abort();
+      assert(0);abort();
     }
     max_warps_per_shader = n_thread_per_shader / warp_size;
     assert(!(n_thread_per_shader % warp_size));

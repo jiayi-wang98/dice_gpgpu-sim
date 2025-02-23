@@ -19,7 +19,7 @@
 #define CHECK_UNSIGNED \
 	if( yytext[strlen(yytext)-1]=='U' ) { \
 		printf("DICE: ERROR ** U modifier not implemented\n"); \
-		abort(); \
+		assert(0);abort(); \
 	}
 #define YY_DECL int dicemeta_lex \
 	       (YYSTYPE * yylval_param , yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser)

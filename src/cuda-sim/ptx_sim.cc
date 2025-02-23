@@ -86,7 +86,7 @@ void ptx_cta_info::check_cta_thread_status_and_reset() {
     fail = true;
   }
   if (fail) {
-    abort();
+    assert(0);abort();
   }
 
   bool fail2 = false;
@@ -110,7 +110,7 @@ void ptx_cta_info::check_cta_thread_status_and_reset() {
     }
   }
   if (fail2) {
-    abort();
+    assert(0);abort();
   }
   m_threads_in_cta.clear();
   m_threads_that_have_exited.clear();
@@ -202,7 +202,7 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
     case CLOCK_REG:
       return (unsigned)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
     case CLOCK64_REG:
-      abort();  // change return value to unsigned long long?
+      assert(0);abort();  // change return value to unsigned long long?
                 // GPGPUSim clock is 4 times slower - multiply by 4
       return (m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle) * 4;
     case HALFCLOCK_ID:
@@ -215,7 +215,7 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 0) return m_ctaid.x;
       if (dim_mod == 1) return m_ctaid.y;
       if (dim_mod == 2) return m_ctaid.z;
-      abort();
+      assert(0);abort();
       break;
     case ENVREG_REG: {
       int index = builtin_id >> 16;
@@ -271,14 +271,14 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 0) return m_nctaid.x;
       if (dim_mod == 1) return m_nctaid.y;
       if (dim_mod == 2) return m_nctaid.z;
-      abort();
+      assert(0);abort();
       break;
     case NTID_REG:
       assert(dim_mod < 3);
       if (dim_mod == 0) return m_ntid.x;
       if (dim_mod == 1) return m_ntid.y;
       if (dim_mod == 2) return m_ntid.z;
-      abort();
+      assert(0);abort();
       break;
     case NWARPID_REG:
       feature_not_implemented("%nwarpid");
@@ -294,7 +294,7 @@ unsigned ptx_thread_info::get_builtin(int builtin_id, unsigned dim_mod) {
       if (dim_mod == 0) return m_tid.x;
       if (dim_mod == 1) return m_tid.y;
       if (dim_mod == 2) return m_tid.z;
-      abort();
+      assert(0);abort();
       break;
     case WARPSZ_REG:
       return m_core->get_warp_size();
@@ -309,7 +309,7 @@ void ptx_thread_info::set_info(function_info *func) {
   m_func_info = func;
   m_PC = func->get_start_PC();
   //DICE-support
-  m_meta_pc = func->get_metadata_start_pc();
+  if(func->gpgpu_ctx->g_dice_enabled) m_meta_pc = func->get_metadata_start_pc();
 }
 
 void ptx_thread_info::cpy_tid_to_reg(dim3 tid) {
@@ -615,5 +615,5 @@ void ptx_thread_info::set_npc(const function_info *f) {
 
 void feature_not_implemented(const char *f) {
   printf("GPGPU-Sim: feature '%s' not supported\n", f);
-  abort();
+  assert(0);abort();
 }

@@ -699,7 +699,7 @@ void gpgpu_sim::launch(kernel_info_t *kinfo) {
     printf(
         "                 modify the CUDA source to decrease the kernel block "
         "size.\n");
-    abort();
+    fflush(stdout);assert(0);abort();
   }
   unsigned n = 0;
   for (n = 0; n < m_running_kernels.size(); n++) {
@@ -1129,7 +1129,7 @@ void gpgpu_sim::deadlock_check() {
         "\nRe-run the simulator in gdb and use debug routines in .gdbinit to "
         "debug this\n");
     fflush(stdout);
-    abort();
+    fflush(stdout);assert(0);abort();
   }
 }
 
@@ -1460,7 +1460,7 @@ void shader_core_ctx::mem_instruction_stats(const warp_inst_t &inst) {
         m_stats->gpgpu_n_load_insn += active_count;
       break;
     default:
-      abort();
+      fflush(stdout);assert(0);abort();
   }
 }
 bool shader_core_ctx::can_issue_1block(kernel_info_t &kernel) {

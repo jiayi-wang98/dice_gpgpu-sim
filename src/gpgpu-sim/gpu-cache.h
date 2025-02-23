@@ -731,7 +731,7 @@ class cache_config {
   void exit_parse_error() {
     printf("GPGPU-Sim uArch: cache configuration parsing error (%s)\n",
            m_config_string);
-    abort();
+    assert(0);abort();
   }
 
   bool m_valid;

@@ -168,7 +168,7 @@ void dice_metadata_parser::add_operand(const char *identifier) {
   if (s == NULL) {
     std::string msg = std::string("operand \"") + identifier + "\" has no declaration.";
     printf("DICE Metadata Parser: Error %s\n", msg.c_str()); fflush(stdout);
-    abort();
+    assert(0);abort();
   }
   if(g_debug_dicemeta_generation) s->print_info(stdout);
   g_operands.push_back(operand_info(s, gpgpu_ctx));
@@ -190,7 +190,7 @@ void dice_metadata_parser::commit_dbb(){
   // check if the current dbb is empty
   if (g_current_dbb == NULL){
     printf("DICE Metadata Parser: Empty DBB, abort\n"); fflush(stdout);
-    abort();
+    assert(0);abort();
   }
   if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Commit Meta %d\n", g_current_dbb->meta_id); 
   g_current_function_info->add_dice_metadata(g_current_dbb);
@@ -228,12 +228,12 @@ void dice_metadata_parser::set_branch_pred(){
     num_operands++;
     if(num_operands>1){
       printf("DICE Metadata Parser: ERROR: Branch Predicate Regs more than 1\n"); fflush(stdout); 
-      abort();
+      assert(0);abort();
     }
   }
   if (num_operands == 0){
     printf("DICE Metadata Parser: ERROR: No Branch Predicate Regs\n"); fflush(stdout); 
-    abort();
+    assert(0);abort();
   }
   g_current_dbb->branch_pred = new operand_info(std::move(g_operands.front()));
   g_operands.clear();
@@ -300,7 +300,7 @@ dice_metadata *gpgpu_context::dice_fetch_metadata(addr_t pc) {
 dice_metadata *gpgpu_context::pc_to_metadata(unsigned pc) {
   if ((pc-metadata_start_pc) < 0) {
     printf("DICE Metadata Fetch: ERROR: PC to Metadata\n"); fflush(stdout);
-    abort();
+    assert(0);abort();
   }
   if ((pc-metadata_start_pc) < s_g_pc_to_meta.size())
     return s_g_pc_to_meta[pc-metadata_start_pc];

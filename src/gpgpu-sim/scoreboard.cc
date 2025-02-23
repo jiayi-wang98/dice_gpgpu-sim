@@ -61,7 +61,7 @@ void Scoreboard::reserveRegister(unsigned wid, unsigned regnum) {
         "Error: trying to reserve an already reserved register (sid=%d, "
         "wid=%d, regnum=%d).",
         m_sid, wid, regnum);
-    abort();
+    fflush(stdout);assert(0);abort();
   }
   SHADER_DPRINTF(SCOREBOARD, "Reserved Register - warp:%d, reg: %d\n", wid,
                  regnum);

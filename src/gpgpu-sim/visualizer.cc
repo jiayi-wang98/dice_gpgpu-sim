@@ -168,7 +168,7 @@ class my_time_vector {
           ld_time_map[uid][slot] - ld_time_map[uid][IN_ICNT_TO_MEM];
       assert(our_latency == latency);
     } else if (slot < NUM_MEM_REQ_STAT) {
-      abort();
+      assert(0);abort();
     }
   }
   void check_st_update(unsigned int uid, unsigned int slot, long int latency) {
@@ -177,7 +177,7 @@ class my_time_vector {
           st_time_map[uid][slot] - st_time_map[uid][IN_ICNT_TO_MEM];
       assert(our_latency == latency);
     } else {
-      abort();
+      assert(0);abort();
     }
   }
 
@@ -374,7 +374,7 @@ void time_vector_update(unsigned int uid, int slot, long int cycle, int type) {
   } else if ((type == WRITE_REQUEST) || (type == WRITE_ACK)) {
     g_my_time_vector->update_st(uid, slot, cycle);
   } else {
-    abort();
+    assert(0);abort();
   }
 }
 
@@ -385,6 +385,6 @@ void check_time_vector_update(unsigned int uid, int slot, long int latency,
   } else if ((type == WRITE_REQUEST) || (type == WRITE_ACK)) {
     g_my_time_vector->check_st_update(uid, slot, latency);
   } else {
-    abort();
+    assert(0);abort();
   }
 }

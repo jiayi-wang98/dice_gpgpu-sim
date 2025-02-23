@@ -517,7 +517,7 @@ void linear_to_raw_address_translation::sweep_test() const {
           "[AddrDec] ** Error: address decoding mapping aliases two addresses "
           "to same partition with same intra-partition address: %llx %llx\n",
           h->second, raw_addr);
-      abort();
+      assert(0);abort();
     } else {
       assert((int)tlx.chip < m_n_channel);
       // ensure that partition_address() returns the concatenated address

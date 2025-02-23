@@ -31,9 +31,6 @@ class gpgpu_sim;
 class kernel_info_t;
 class gpgpu_context;
 
-#define MAX_INPUT_VALUES 16
-#define MAX_OUTPUT_VALUES 16
-
 class dice_cfg_block_t{
   public:
     address_type metadata_pc;  // program counter address of metadata

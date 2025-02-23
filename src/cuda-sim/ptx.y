@@ -651,5 +651,5 @@ void syntax_not_implemented(yyscan_t yyscanner, ptx_recognizer* recognizer)
 {
 	printf("Parse error (%s): this syntax is not (yet) implemented:\n", recognizer->gpgpu_ctx->g_filename);
 	ptx_error(yyscanner, recognizer, NULL);
-	abort();
+	assert(0);abort();
 }

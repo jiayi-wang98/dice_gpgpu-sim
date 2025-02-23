@@ -233,7 +233,7 @@ void ptx_recognizer::parse_error_impl(const char *file, unsigned line,
   printf("%s:%u: Parse error: %s (%s:%u)\n\n", gpgpu_ctx->g_filename,
          ptx_get_lineno(scanner), buf, file, line);
   ptx_error(scanner, this, NULL);
-  abort();
+  assert(0);abort();
   exit(1);
 }
 
@@ -504,7 +504,7 @@ void ptx_recognizer::add_identifier(const char *identifier, int array_dim,
     case param_space_kernel:
       break;
     default:
-      abort();
+      assert(0);abort();
       break;
   }
 

@@ -36,7 +36,6 @@
 #define SCOREBOARD_H_
 
 #include "../abstract_hardware_model.h"
-class operand_info;
 
 class Scoreboard {
  public:

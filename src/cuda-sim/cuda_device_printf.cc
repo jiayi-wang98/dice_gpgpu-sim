@@ -53,7 +53,7 @@ void my_cuda_printf(const char *fmtstr, const char *arg_list) {
         printf(
             "GPGPU-Sim PTX: ERROR ** printf parsing support is limited to %%u, "
             "%%f, %%d at present");
-        abort();
+        assert(0);abort();
       }
       buf[j] = c;
       buf[j + 1] = 0;
