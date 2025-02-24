@@ -2041,7 +2041,7 @@ void ptx_thread_info::ptx_exec_inst(warp_inst_t &inst, unsigned lane_id) {
   }
 }
 
-void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruction *pI, unsigned tid) {
+void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instruction *pI, unsigned tid) {
   bool skip = false;
   int op_classification = 0;
   try {
@@ -2066,7 +2066,7 @@ void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruct
     int inst_opcode = pI->get_opcode();
     
     if (skip) {
-      metadata->set_not_active(tid);
+      CFGBlock->set_not_active(tid);
     } else {
       //const ptx_instruction *pI_saved = pI;
       //ptx_instruction *pJ = NULL;
@@ -2165,8 +2165,8 @@ void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruct
     }
 
     if (pI->get_opcode() == TEX_OP) {
-      metadata->set_addr(tid, last_eaddr());
-      assert(metadata->space == last_space());
+      CFGBlock->set_addr(tid, last_eaddr());
+      assert(CFGBlock->space == last_space());
       insn_data_size = get_tex_datasize(
           pI,
           this);  // texture obtain its data granularity from the texture info
@@ -2235,8 +2235,8 @@ void ptx_thread_info::dice_exec_inst_light(dice_metadata *metadata, ptx_instruct
     // "Return values"
     if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
-        metadata->space = insn_space;
-        metadata->set_addr(tid, insn_memaddr);
+        CFGBlock->space = insn_space;
+        CFGBlock->set_addr(tid, insn_memaddr);
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
         //assert(inst.memory_op == insn_memory_op);
       }
@@ -3071,7 +3071,7 @@ void functionalCoreSim::executeWarp(unsigned i, bool &allAtBarrier,
   if (!m_warpAtBarrier[i] && m_liveThreadCount[i] > 0) allAtBarrier = false;
 }
 
-void DICEfunctionalCoreSim::updateSIMTStack_dice(dice_metadata *metadata) {
+void DICEfunctionalCoreSim::updateSIMTStack_dice(dice_cfg_block_t *CFGBlock) {
   simt_mask_t thread_done(m_warp_size);
   addr_vector_t next_pc;
   for (unsigned i = 0; i < m_warp_size; i++) {
@@ -3079,29 +3079,29 @@ void DICEfunctionalCoreSim::updateSIMTStack_dice(dice_metadata *metadata) {
       thread_done.set(i);
       next_pc.push_back((address_type)-1);
     } else {
-      if (metadata->reconvergence_meta_pc == RECONVERGE_RETURN_PC)
-      metadata->reconvergence_meta_pc = get_return_meta_pc(m_thread[i]);
+      if (CFGBlock->reconvergence_pc == RECONVERGE_RETURN_PC)
+      CFGBlock->reconvergence_pc = get_return_meta_pc(m_thread[i]);
       next_pc.push_back(m_thread[i]->get_meta_pc());
     }
   }
-  m_simt_stack[0]->update(thread_done, next_pc, metadata->reconvergence_meta_pc,
-                               metadata->dice_block->ptx_end->op, metadata->m_size, metadata->m_PC);
+  m_simt_stack[0]->update(thread_done, next_pc, CFGBlock->reconvergence_pc,
+    CFGBlock->op, CFGBlock->get_metadata()->m_size, CFGBlock->get_metadata()->m_PC);
 }
 
 void DICEfunctionalCoreSim::executeCTA(bool &someOneLive) {
   if (m_liveThreadCount != 0) {
-    dice_metadata* metadata = getExecuteMetadata();
-    execute_metadata(metadata);
+    dice_cfg_block_t CFGBlock = getExecuteCFGBlock();
+    execute_CFGBlock(&CFGBlock);
     //TODO atomic operation //if (metadata.isatomic()) metadata.do_atomic(true);
-    updateSIMTStack_dice(metadata);
+    updateSIMTStack_dice(&CFGBlock);
   }
   if (m_liveThreadCount > 0) someOneLive = true;
 }
 
-void DICEfunctionalCoreSim::execute_metadata(dice_metadata* metadata) {
+void DICEfunctionalCoreSim::execute_CFGBlock(dice_cfg_block_t* cfg_block) {
   for (unsigned t = 0; t < m_warp_size; t++) {
-    if (metadata->active(t)) {
-      m_thread[t]->dice_exec_block(metadata,t);
+    if (cfg_block->active(t)) {
+      m_thread[t]->dice_exec_block(cfg_block,t);
       dice_checkExecutionStatusAndUpdate(t);
     }
   }
@@ -3114,13 +3114,13 @@ void DICEfunctionalCoreSim::dice_checkExecutionStatusAndUpdate(unsigned tid) {
 }
 
 //DICE-support
-void ptx_thread_info::dice_exec_block(dice_metadata* metadata, unsigned tid) {
+void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) {
   bool skip = false;
   int op_classification = 0;
   addr_t metadata_pc = next_metadata();
   //printf("DICE: next_metadata pc= %p, while giving %p\n", metadata_pc,metadata->get_PC());fflush(stdout);
-  assert(metadata_pc == metadata->get_PC());   // make sure timing model and functional model are in sync
-  set_next_meta_pc(metadata_pc + metadata->metadata_size());
+  assert(metadata_pc == CFGBlock->get_metadata()->get_PC());   // make sure timing model and functional model are in sync
+  set_next_meta_pc(metadata_pc + CFGBlock->get_metadata()->metadata_size());
   if (is_done()) {
     printf(
         "attempted to execute metadata on a thread that is already "
@@ -3130,9 +3130,9 @@ void ptx_thread_info::dice_exec_block(dice_metadata* metadata, unsigned tid) {
   //clear_metadata_reconvergence_pc
   clear_metadata_RPC();
   //run each instructions in the block
-  std::vector<ptx_instruction*>::iterator i=metadata->dice_block->ptx_instructions.begin();
-  for(;i != metadata->dice_block->ptx_instructions.end();i++){
-    dice_exec_inst_light(metadata, *i,tid);
+  std::vector<ptx_instruction*>::iterator i=CFGBlock->get_metadata()->dice_block->ptx_instructions.begin();
+  for(;i != CFGBlock->get_metadata()->dice_block->ptx_instructions.end();i++){
+    dice_exec_inst_light(CFGBlock, *i,tid);
   }
   update_metadata_pc();
 }

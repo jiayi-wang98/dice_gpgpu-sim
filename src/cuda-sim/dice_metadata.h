@@ -36,11 +36,9 @@ class dice_metadata {
       m_dicemeta_mem_index = 0;
       m_PC = 0;
       m_size = 32; //bytes
-      m_per_scalar_thread_valid = false;
     }
 
     ~dice_metadata() {
-      delete m_block_active_mask;
     }
     void set_m_metadata_mem_index(unsigned index) { m_dicemeta_mem_index = index; }
     void set_PC(addr_t PC) { m_PC = PC; }
@@ -48,6 +46,7 @@ class dice_metadata {
   
     unsigned get_m_metadata_mem_index() { return m_dicemeta_mem_index; }
     unsigned metadata_size() { return m_size; }
+    dice_block_t *get_diceblock() { return dice_block; } 
 
     class gpgpu_context* gpgpu_ctx;
     std::string m_source_file;
@@ -79,47 +78,9 @@ class dice_metadata {
     unsigned m_dicemeta_mem_index;
     addr_t m_PC;
     unsigned m_size;  // bytes
-    
-    simt_mask_t* m_block_active_mask;
-    memory_space_t space;
-    bool m_per_scalar_thread_valid;
-    struct per_thread_info {
-      per_thread_info() {
-        for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++)
-          memreqaddr[i] = 0;
-      }
-      dram_callback_t callback;
-      new_addr_type
-          memreqaddr[MAX_ACCESSES_PER_BLOCK_PER_THREAD];  // effective address,
-                                                         // upto 8 different
-                                                         // requests (to support
-                                                         // 32B access in 8 chunks
-                                                         // of 4B each)
-    };
-    std::vector<per_thread_info> m_per_scalar_thread;
+  
     
     void dump();
-    void set_active(const active_mask_t &active);
-    void set_not_active(unsigned tid);
-    bool active(unsigned thread) const { return m_block_active_mask->test(thread); }
-
-    void set_addr(unsigned n, new_addr_type addr) {
-      if (!m_per_scalar_thread_valid) {
-        m_per_scalar_thread.resize(1536);//TODO: use config
-        m_per_scalar_thread_valid = true;
-      }
-      m_per_scalar_thread[n].memreqaddr[0] = addr;
-    }
-    void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
-      if (!m_per_scalar_thread_valid) {
-        m_per_scalar_thread.resize(1536); //TODO: use config
-        m_per_scalar_thread_valid = true;
-      }
-      assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
-      for (unsigned i = 0; i < num_addrs; i++)
-        m_per_scalar_thread[n].memreqaddr[i] = addr[i];
-    }
-    
 };
 
 class dice_metadata_parser {
@@ -217,4 +178,64 @@ struct dice_block_t {
 };
 
 void dice_metadata_assemble(std::string kname, void *kinfo);
+
+//for performance simulation
+class dice_cfg_block_t{
+  public:
+    dice_cfg_block_t(dice_metadata *metadata);
+    dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata);
+    ~dice_cfg_block_t(){
+      if(m_block_active_mask) delete m_block_active_mask;
+    }
+    address_type metadata_pc;  // program counter address of metadata
+    unsigned metadata_size;   // size of metadata in bytes
+    address_type reconvergence_pc;  // program counter address of reconvergence
+    op_type op;  // operation type
+    addr_t branch_target_meta_pc;  // program counter address of branch target
+    memory_space_t space;
+
+    bool active(unsigned tid) const { return m_block_active_mask->test(tid); }
+    void set_active(const active_mask_t &active);
+    void set_not_active(unsigned tid);
+    void set_addr(unsigned n, new_addr_type addr) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(1536);//TODO: use config
+        m_per_scalar_thread_valid = true;
+      }
+      assert(n < m_per_scalar_thread.size() && "Index n out of bounds");
+      m_per_scalar_thread[n].memreqaddr[0] = addr;
+    }
+    void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(1536); //TODO: use config
+        m_per_scalar_thread_valid = true;
+      }
+      assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
+      for (unsigned i = 0; i < num_addrs; i++)
+        m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+    }
+    dice_metadata *get_metadata() { return m_metadata; }
+
+  protected:
+    unsigned m_uid;
+    simt_mask_t* m_block_active_mask;
+    dice_metadata *m_metadata;
+    dice_block_t *m_diceblock;
+    bool m_per_scalar_thread_valid;
+    struct per_thread_info {
+      per_thread_info() {
+        for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++)
+          memreqaddr[i] = 0;
+      }
+      dram_callback_t callback;
+      new_addr_type
+          memreqaddr[MAX_ACCESSES_PER_BLOCK_PER_THREAD];  // effective address,
+                                                         // upto 8 different
+                                                         // requests (to support
+                                                         // 32B access in 8 chunks
+                                                         // of 4B each)
+    };
+    std::vector<per_thread_info> m_per_scalar_thread;
+};
+
 #endif

@@ -30,19 +30,7 @@
 class gpgpu_sim;
 class kernel_info_t;
 class gpgpu_context;
-
-class dice_cfg_block_t{
-  public:
-    address_type metadata_pc;  // program counter address of metadata
-    unsigned metadata_size;   // size of metadata in bytes
-    address_type reconvergence_pc;  // program counter address of reconvergence
-    op_type op;  // operation type
-
-    bool active(unsigned thread) const { return m_block_active_mask.test(thread); }
-  protected:
-    unsigned m_uid;
-    active_mask_t m_block_active_mask;
-};
+class dice_cfg_block_t;
 
 class cgra_core_ctx {
   public:
@@ -71,12 +59,12 @@ class cgra_core_ctx {
     void initializeSIMTStack(unsigned num_threads);
     void deleteSIMTStack();
     void get_pdom_stack_top_info(unsigned *pc,unsigned *rpc) const;
-    virtual void updateSIMTStack(dice_cfg_block_t *cfg_block);
+    void updateSIMTStack(dice_cfg_block_t *cfg_block);
 
     //thread operation
     bool ptx_thread_done(unsigned hw_thread_id) const;
     void execute_cfg_block_t(dice_cfg_block_t &cfg_block);
-    virtual void checkExecutionStatusAndUpdate(unsigned tid);
+    void checkExecutionStatusAndUpdate(unsigned tid);
   protected:
     class gpgpu_sim *m_gpu;
     kernel_info_t *m_kernel;

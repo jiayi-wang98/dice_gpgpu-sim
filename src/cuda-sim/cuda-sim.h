@@ -116,9 +116,9 @@ class DICEfunctionalCoreSim : public core_t {
    void execute(int inst_count, unsigned ctaid_cp);
  
   private:
-   dice_metadata* getExecuteMetadata();
+   dice_cfg_block_t getExecuteCFGBlock();
    void executeCTA(bool &);
-   void execute_metadata(dice_metadata* metadata);
+   void execute_CFGBlock(dice_cfg_block_t* cfg_block);
    // initializes threads in the CTA block which we are executing
    void initializeCTA(unsigned ctaid_cp);
    virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,unsigned tid) {
@@ -130,7 +130,7 @@ class DICEfunctionalCoreSim : public core_t {
  
    // lunches the stack and set the threads count
    void createCTAsimt_stack();
-   void updateSIMTStack_dice(dice_metadata *metadata);
+   void updateSIMTStack_dice(dice_cfg_block_t* CFGBlock);
    // each warp live thread count and barrier indicator
    unsigned m_liveThreadCount;
    //bool *m_warpAtBarrier;

@@ -306,7 +306,7 @@ class ptx_thread_info {
   }
   void ptx_fetch_inst(inst_t &inst) const;
   void ptx_exec_inst(warp_inst_t &inst, unsigned lane_id);
-  void dice_exec_inst_light(class dice_metadata * metadata, ptx_instruction *pI, unsigned tid);
+  void dice_exec_inst_light(class dice_cfg_block_t *CFGBlock, ptx_instruction *pI, unsigned tid);
 
   const ptx_version &get_ptx_version() const;
   void set_reg(const symbol *reg, const ptx_reg_t &value);
@@ -484,7 +484,7 @@ class ptx_thread_info {
   kernel_info_t &get_kernel() { return m_kernel; }
 
   //DICE-support
-  void dice_exec_block(class dice_metadata* metadata, unsigned tid);
+  void dice_exec_block(class dice_cfg_block_t* CFGBlock, unsigned tid);
  public:
   addr_t m_last_effective_address;
   bool m_branch_taken;

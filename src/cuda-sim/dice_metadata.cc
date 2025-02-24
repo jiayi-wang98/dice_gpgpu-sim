@@ -311,17 +311,47 @@ dice_metadata *gpgpu_context::pc_to_metadata(unsigned pc) {
 }
 
 
-dice_metadata* DICEfunctionalCoreSim::getExecuteMetadata(){
+dice_cfg_block_t DICEfunctionalCoreSim::getExecuteCFGBlock(){
   unsigned pc, rpc;
   m_simt_stack[0]->get_pdom_stack_top_info(&pc, &rpc);
   printf("DICE pdom_stack_top_info: %p, %p\n", pc, rpc); fflush(stdout);
+  //This should create a new metadata object
+  //use dice_cfg_block_t instead of dice_metadata
   dice_metadata* metadata = m_gpu->gpgpu_ctx->dice_fetch_metadata(pc);
   assert(metadata != NULL);
-  metadata->set_active(m_simt_stack[0]->get_active_mask());
-  return metadata;
+  dice_cfg_block_t dice_cfg_block = dice_cfg_block_t(metadata);
+  dice_cfg_block.set_active(m_simt_stack[0]->get_active_mask());
+  return dice_cfg_block;
 }
 
-void dice_metadata::set_active(const active_mask_t &active) {
+dice_cfg_block_t::dice_cfg_block_t(dice_metadata *metadata)
+    : m_metadata(metadata)
+{
+  metadata_pc = metadata->get_PC();
+  reconvergence_pc = metadata->reconvergence_meta_pc;
+  branch_target_meta_pc = metadata->branch_target_meta_pc;
+  metadata_size = metadata->metadata_size();
+  m_diceblock = metadata->get_diceblock();
+  op = m_diceblock->ptx_end->op; //Jiayi TODO: should use metadata info in the future
+  m_block_active_mask = nullptr;
+  m_per_scalar_thread_valid = false;
+}
+
+dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata)
+    : m_uid(uid),
+      m_metadata(metadata)
+{
+  metadata_pc = metadata->get_PC();
+  reconvergence_pc = metadata->reconvergence_meta_pc;
+  branch_target_meta_pc = metadata->branch_target_meta_pc;
+  metadata_size = metadata->metadata_size();
+  m_diceblock = metadata->get_diceblock();
+  m_block_active_mask = new simt_mask_t(block_size);
+  op = m_diceblock->ptx_end->op; //Jiayi TODO: should use metadata info in the future
+  m_per_scalar_thread_valid = false;
+}
+
+void dice_cfg_block_t::set_active(const active_mask_t &active) {
   assert(active.size() > 0);
   //active.dump();
   simt_mask_t *active_mask = new simt_mask_t(active);
@@ -338,6 +368,6 @@ void dice_metadata::set_active(const active_mask_t &active) {
   //}
 }
 
-void dice_metadata::set_not_active(unsigned tid) {
+void dice_cfg_block_t::set_not_active(unsigned tid) {
   m_block_active_mask->reset(tid);
 }
