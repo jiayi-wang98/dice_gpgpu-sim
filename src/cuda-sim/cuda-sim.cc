@@ -2429,6 +2429,172 @@ unsigned ptx_sim_init_thread(kernel_info_t &kernel,
   return 1;
 }
 
+unsigned ptx_sim_init_thread_dice(kernel_info_t &kernel,
+                             ptx_thread_info **thread_info, int sid,
+                             unsigned tid, unsigned threads_left,
+                             unsigned num_threads, class cgra_core_ctx *core,
+                             unsigned hw_cta_id, unsigned hw_warp_id,
+                             gpgpu_t *gpu, bool isInFunctionalSimulationMode) {
+  std::list<ptx_thread_info *> &active_threads = kernel.active_threads();
+
+  static std::map<unsigned, memory_space *> shared_memory_lookup;
+  static std::map<unsigned, memory_space *> sstarr_memory_lookup;
+  static std::map<unsigned, ptx_cta_info *> ptx_cta_lookup;
+  static std::map<unsigned, ptx_warp_info *> ptx_warp_lookup;
+  static std::map<unsigned, std::map<unsigned, memory_space *> >
+      local_memory_lookup;
+
+  if (*thread_info != NULL) {
+    ptx_thread_info *thd = *thread_info;
+    assert(thd->is_done());
+    if (g_debug_execution == -1) {
+      dim3 ctaid = thd->get_ctaid();
+      dim3 t = thd->get_tid();
+      printf(
+          "GPGPU-Sim PTX simulator:  thread exiting ctaid=(%u,%u,%u) "
+          "tid=(%u,%u,%u) uid=%u\n",
+          ctaid.x, ctaid.y, ctaid.z, t.x, t.y, t.z, thd->get_uid());
+      fflush(stdout);
+    }
+    thd->m_cta_info->register_deleted_thread(thd);
+    delete thd;
+    *thread_info = NULL;
+  }
+
+  if (!active_threads.empty()) {
+    assert(active_threads.size() <= threads_left);
+    ptx_thread_info *thd = active_threads.front();
+    active_threads.pop_front();
+    *thread_info = thd;
+    thd->init(gpu, core, sid, hw_cta_id, hw_warp_id, tid,
+              isInFunctionalSimulationMode);
+    return 1;
+  }
+
+  if (kernel.no_more_ctas_to_run()) {
+    return 0;  // finished!
+  }
+
+  if (threads_left < kernel.threads_per_cta()) {
+    return 0;
+  }
+  if (g_debug_execution == -1) {
+    printf("GPGPU-Sim PTX simulator:  STARTING THREAD ALLOCATION --> \n");
+    fflush(stdout);
+  }
+
+  // initializing new CTA
+  ptx_cta_info *cta_info = NULL;
+  memory_space *shared_mem = NULL;
+  memory_space *sstarr_mem = NULL;
+
+  unsigned cta_size = kernel.threads_per_cta();
+  unsigned max_cta_per_sm = num_threads / cta_size;  // e.g., 256 / 48 = 5
+  assert(max_cta_per_sm > 0);
+
+  // unsigned sm_idx = (tid/cta_size)*gpgpu_param_num_shaders + sid;
+  unsigned sm_idx =
+      hw_cta_id * gpu->gpgpu_ctx->func_sim->gpgpu_param_num_shaders + sid;
+
+  if (shared_memory_lookup.find(sm_idx) == shared_memory_lookup.end()) {
+    if (g_debug_execution >= 1) {
+      printf("  <CTA alloc> : sm_idx=%u sid=%u max_cta_per_sm=%u\n", sm_idx,
+             sid, max_cta_per_sm);
+      fflush(stdout);
+    }
+    char buf[512];
+    snprintf(buf, 512, "shared_%u", sid);
+    shared_mem = new memory_space_impl<16 * 1024>(buf, 4);
+    shared_memory_lookup[sm_idx] = shared_mem;
+    snprintf(buf, 512, "sstarr_%u", sid);
+    sstarr_mem = new memory_space_impl<16 * 1024>(buf, 4);
+    sstarr_memory_lookup[sm_idx] = sstarr_mem;
+    cta_info = new ptx_cta_info(sm_idx, gpu->gpgpu_ctx);
+    ptx_cta_lookup[sm_idx] = cta_info;
+  } else {
+    if (g_debug_execution >= 1) {
+      printf("  <CTA realloc> : sm_idx=%u sid=%u max_cta_per_sm=%u\n", sm_idx,
+             sid, max_cta_per_sm);
+      fflush(stdout);
+    }
+    shared_mem = shared_memory_lookup[sm_idx];
+    sstarr_mem = sstarr_memory_lookup[sm_idx];
+    cta_info = ptx_cta_lookup[sm_idx];
+    cta_info->check_cta_thread_status_and_reset();
+  }
+
+  std::map<unsigned, memory_space *> &local_mem_lookup =
+      local_memory_lookup[sid];
+  while (kernel.more_threads_in_cta()) {
+    dim3 ctaid3d = kernel.get_next_cta_id();
+    unsigned new_tid = kernel.get_next_thread_id();
+    dim3 tid3d = kernel.get_next_thread_id_3d();
+    kernel.increment_thread_id();
+    new_tid += tid;
+    ptx_thread_info *thd = new ptx_thread_info(kernel);
+    ptx_warp_info *warp_info = NULL;
+    if (ptx_warp_lookup.find(hw_warp_id) == ptx_warp_lookup.end()) {
+      warp_info = new ptx_warp_info();
+      ptx_warp_lookup[hw_warp_id] = warp_info;
+    } else {
+      warp_info = ptx_warp_lookup[hw_warp_id];
+    }
+    thd->m_warp_info = warp_info;
+
+    memory_space *local_mem = NULL;
+    std::map<unsigned, memory_space *>::iterator l =
+        local_mem_lookup.find(new_tid);
+    if (l != local_mem_lookup.end()) {
+      local_mem = l->second;
+    } else {
+      char buf[512];
+      snprintf(buf, 512, "local_%u_%u", sid, new_tid);
+      local_mem = new memory_space_impl<32>(buf, 32);
+      local_mem_lookup[new_tid] = local_mem;
+    }
+    thd->set_info(kernel.entry());
+    thd->set_nctaid(kernel.get_grid_dim());
+    thd->set_ntid(kernel.get_cta_dim());
+    thd->set_ctaid(ctaid3d);
+    thd->set_tid(tid3d);
+    if (kernel.entry()->get_ptx_version().extensions())
+      thd->cpy_tid_to_reg(tid3d);
+    thd->set_valid();
+    thd->m_shared_mem = shared_mem;
+    thd->m_sstarr_mem = sstarr_mem;
+    function_info *finfo = thd->func_info();
+    symbol_table *st = finfo->get_symtab();
+    thd->func_info()->param_to_shared(thd->m_shared_mem, st);
+    thd->func_info()->param_to_shared(thd->m_sstarr_mem, st);
+    thd->m_cta_info = cta_info;
+    cta_info->add_thread(thd);
+    thd->m_local_mem = local_mem;
+    if (g_debug_execution == -1) {
+      printf(
+          "GPGPU-Sim PTX simulator:  allocating thread ctaid=(%u,%u,%u) "
+          "tid=(%u,%u,%u) @ 0x%Lx\n",
+          ctaid3d.x, ctaid3d.y, ctaid3d.z, tid3d.x, tid3d.y, tid3d.z,
+          (unsigned long long)thd);
+      fflush(stdout);
+    }
+    active_threads.push_back(thd);
+  }
+  if (g_debug_execution == -1) {
+    printf("GPGPU-Sim PTX simulator:  <-- FINISHING THREAD ALLOCATION\n");
+    fflush(stdout);
+  }
+
+  kernel.increment_cta_id();
+
+  assert(active_threads.size() <= threads_left);
+  *thread_info = active_threads.front();
+  (*thread_info)
+      ->init(gpu, core, sid, hw_cta_id, hw_warp_id, tid,
+             isInFunctionalSimulationMode);
+  active_threads.pop_front();
+  return 1;
+}
+
 size_t get_kernel_code_size(class function_info *entry) {
   return entry->get_function_size();
 }

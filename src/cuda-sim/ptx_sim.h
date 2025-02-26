@@ -298,6 +298,19 @@ class ptx_thread_info {
             unsigned wid, unsigned tid, bool fsim) {
     m_gpu = gpu;
     m_core = core;
+    m_cgra_core = NULL;
+    m_hw_sid = sid;
+    m_hw_ctaid = cta_id;
+    m_hw_wid = wid;
+    m_hw_tid = tid;
+    m_functionalSimulationMode = fsim;
+  }
+
+  void init(gpgpu_t *gpu, cgra_core_ctx *cgra, unsigned sid, unsigned cta_id,
+    unsigned wid, unsigned tid, bool fsim) {
+    m_gpu = gpu;
+    m_core = NULL;
+    m_cgra_core = cgra;
     m_hw_sid = sid;
     m_hw_ctaid = cta_id;
     m_hw_wid = wid;

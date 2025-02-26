@@ -45,6 +45,7 @@
 
 //#include "../cuda-sim/ptx.tab.h"
 
+//#include "../gpgpu-sim/cgra_core.h"
 #include "../abstract_hardware_model.h"
 #include "delayqueue.h"
 #include "dram.h"
@@ -1845,6 +1846,7 @@ class shader_core_stats : public shader_core_stats_pod {
 
   friend class power_stat_t;
   friend class shader_core_ctx;
+  friend class cgra_core_ctx;
   friend class ldst_unit;
   friend class simt_core_cluster;
   friend class scheduler_unit;
@@ -2312,6 +2314,8 @@ class simt_core_cluster {
                     memory_stats_t *mstats);
 
   void core_cycle();
+  //DICE-support
+  void cgra_cycle();
   void icnt_cycle();
 
   void reinit();
@@ -2360,6 +2364,7 @@ class simt_core_cluster {
   shader_core_stats *m_stats;
   memory_stats_t *m_memory_stats;
   shader_core_ctx **m_core;
+  class cgra_core_ctx **m_cgra_core;
   const memory_config *m_mem_config;
 
   unsigned m_cta_issue_next_core;
@@ -2379,6 +2384,7 @@ class exec_simt_core_cluster : public simt_core_cluster {
   }
 
   virtual void create_shader_core_ctx();
+  virtual void create_cgra_core_ctx();
 };
 
 class shader_memory_interface : public mem_fetch_interface {
@@ -2387,15 +2393,22 @@ class shader_memory_interface : public mem_fetch_interface {
     m_core = core;
     m_cluster = cluster;
   }
+  shader_memory_interface(cgra_core_ctx *core, simt_core_cluster *cluster) {
+    m_cgra_core = core;
+    m_cluster = cluster;
+  }
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->icnt_injection_buffer_full(size, write);
   }
+  virtual void push_cgra(mem_fetch *mf);
   virtual void push(mem_fetch *mf) {
     m_core->inc_simt_to_mem(mf->get_num_flits(true));
     m_cluster->icnt_inject_request_packet(mf);
   }
 
  private:
+  //DICE-support
+  cgra_core_ctx *m_cgra_core;
   shader_core_ctx *m_core;
   simt_core_cluster *m_cluster;
 };
@@ -2404,6 +2417,10 @@ class perfect_memory_interface : public mem_fetch_interface {
  public:
   perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
     m_core = core;
+    m_cluster = cluster;
+  }
+  perfect_memory_interface(cgra_core_ctx *core, simt_core_cluster *cluster) {
+    m_cgra_core = core;
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
@@ -2416,7 +2433,12 @@ class perfect_memory_interface : public mem_fetch_interface {
     m_cluster->push_response_fifo(mf);
   }
 
+  virtual void push_cgra(mem_fetch *mf);
+
  private:
+  //DICE-support
+  cgra_core_ctx *m_cgra_core;
+
   shader_core_ctx *m_core;
   simt_core_cluster *m_cluster;
 };

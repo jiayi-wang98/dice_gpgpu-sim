@@ -292,7 +292,7 @@ unsigned dice_block_t::get_end_pc(){
 
 //DICE-support
 dice_metadata *gpgpu_context::dice_fetch_metadata(addr_t pc) {
-  printf("DICE Metadata Fetch: %p\n", pc); fflush(stdout);
+  //printf("DICE Metadata Fetch: %p\n", pc); fflush(stdout);
   return pc_to_metadata(pc);
 }
 
@@ -314,7 +314,7 @@ dice_metadata *gpgpu_context::pc_to_metadata(unsigned pc) {
 dice_cfg_block_t DICEfunctionalCoreSim::getExecuteCFGBlock(){
   unsigned pc, rpc;
   m_simt_stack[0]->get_pdom_stack_top_info(&pc, &rpc);
-  printf("DICE pdom_stack_top_info: %p, %p\n", pc, rpc); fflush(stdout);
+  //printf("DICE pdom_stack_top_info: %p, %p\n", pc, rpc); fflush(stdout);
   //This should create a new metadata object
   //use dice_cfg_block_t instead of dice_metadata
   dice_metadata* metadata = m_gpu->gpgpu_ctx->dice_fetch_metadata(pc);

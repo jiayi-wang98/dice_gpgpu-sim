@@ -4105,6 +4105,11 @@ void opndcoll_rfu_t::collector_unit_t::dispatch() {
 }
 
 void exec_simt_core_cluster::create_shader_core_ctx() {
+  //DICE-support
+  if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+    create_cgra_core_ctx();
+    return;
+  }
   m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
@@ -4141,9 +4146,26 @@ void simt_core_cluster::core_cycle() {
   }
 }
 
+void simt_core_cluster::cgra_cycle() {
+  for (std::list<unsigned>::iterator it = m_core_sim_order.begin();
+       it != m_core_sim_order.end(); ++it) {
+    m_cgra_core[*it]->cycle();
+  }
+
+  if (m_config->simt_core_sim_order == 1) {
+    m_core_sim_order.splice(m_core_sim_order.end(), m_core_sim_order,
+                            m_core_sim_order.begin());
+  }
+}
+
 void simt_core_cluster::reinit() {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  //DICE-support
+  if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+    m_cgra_core[i]->reinit(0, m_config->n_thread_per_shader, true);
+  } else {
     m_core[i]->reinit(0, m_config->n_thread_per_shader, true);
+  }
 }
 
 unsigned simt_core_cluster::max_cta(const kernel_info_t &kernel) {
@@ -4152,8 +4174,14 @@ unsigned simt_core_cluster::max_cta(const kernel_info_t &kernel) {
 
 unsigned simt_core_cluster::get_not_completed() const {
   unsigned not_completed = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
-    not_completed += m_core[i]->get_not_completed();
+  //DICE-support
+  if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+    for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+      not_completed += m_cgra_core[i]->get_not_completed();
+  } else {
+    for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+      not_completed += m_core[i]->get_not_completed();
+  }
   return not_completed;
 }
 
