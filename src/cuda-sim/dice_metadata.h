@@ -195,6 +195,7 @@ class dice_cfg_block_t{
     memory_space_t space;
 
     bool active(unsigned tid) const { return m_block_active_mask->test(tid); }
+    unsigned active_count() const { return m_block_active_mask->count(); }
     void set_active(const active_mask_t &active);
     void set_not_active(unsigned tid);
     void set_addr(unsigned n, new_addr_type addr) {

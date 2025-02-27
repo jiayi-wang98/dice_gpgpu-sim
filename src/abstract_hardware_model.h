@@ -633,6 +633,10 @@ class simt_mask_t {
           printf("\n");
           fflush(stdout);
       }
+
+      void resize(std::size_t new_size, bool default_value = false) {
+        bits.resize(new_size, default_value);
+      }
   private:
       std::vector<bool> bits;
   };
@@ -657,6 +661,9 @@ class simt_stack {
   void print(FILE *fp) const;
   void resume(char *fname);
   void print_checkpoint(FILE *fout) const;
+  void resize_warp(unsigned warpsize){
+    m_warp_size = warpsize;
+  }
 
  protected:
   unsigned m_warp_id;
