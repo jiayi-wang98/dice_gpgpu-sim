@@ -102,10 +102,10 @@ void gpgpu_context::dice_metadata_load_from_filename(const char *filename) {
 void dice_metadata::dump(){
   printf("DICE Metadata:\n");
   printf("Metadata ID: %d\n", meta_id);
-  printf("PC: %p\n", m_PC);
+  printf("PC: 0x%03x\n", m_PC);
   printf("Metadata Mem Index: %d\n", m_dicemeta_mem_index);
   printf("Size: %d\n", m_size);
-  printf("BITSTREAM_ADDR: %s : %p\n", bitstream_label.c_str(),dice_block->get_start_pc());
+  printf("BITSTREAM_ADDR: %s : 0x%03x\n", bitstream_label.c_str(),dice_block->get_start_pc());
   printf("BITSTREAM_LENGTH: %d\n", bitstream_length);
   printf("Unrolling Factor: %d\n", unrolling_factor);
   printf("Unrolling Strategy: %d\n", unrolling_strategy);

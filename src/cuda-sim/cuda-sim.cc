@@ -267,9 +267,113 @@ void gpgpu_t::gpgpu_ptx_sim_unbindTexture(
 }
 
 #define MAX_INST_SIZE 8 /*bytes*/
+#define MAX_DICE_BITSTREAM_SIZE 256 /*bytes*/
+
+void function_info::dice_block_assemble() {
+  if (m_assembled) {
+    return;
+  }
+
+  // get the instructions into instruction memory...
+  unsigned num_inst = m_instructions.size();
+  unsigned num_blocks = m_dice_blocks.size();
+  //get total possible size
+  m_instr_mem_size = MAX_DICE_BITSTREAM_SIZE * (num_blocks + 1);
+  m_instr_mem = new ptx_instruction *[m_instr_mem_size];
+
+  printf("GPGPU-Sim PTX: instruction assembly for function \'%s\'... ",
+         m_name.c_str());
+  fflush(stdout);
+  std::list<ptx_instruction *>::iterator i;
+
+  addr_t PC =
+      gpgpu_ctx->func_sim->g_assemble_code_next_pc;  // globally unique address
+                                                     // (across functions)
+  // start function on an aligned address
+  unsigned align_pc_offset = (MAX_DICE_BITSTREAM_SIZE - (PC % MAX_DICE_BITSTREAM_SIZE)) % MAX_DICE_BITSTREAM_SIZE;
+  for (unsigned i = 0; i < align_pc_offset; i++)
+    gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
+  PC += align_pc_offset;
+  m_start_PC = PC;
+
+  addr_t n = 0;  // offset in m_instr_mem
+  // Why s_g_pc_to_insn.size() is needed to reserve additional memory for insts?
+  // reserve is cumulative. s_g_pc_to_insn.reserve(s_g_pc_to_insn.size() +
+  // MAX_INST_SIZE*m_instructions.size());
+  gpgpu_ctx->s_g_pc_to_insn.reserve(MAX_DICE_BITSTREAM_SIZE * num_blocks);
+  unsigned block_id = 0;
+  for (i = m_instructions.begin(); i != m_instructions.end(); i++) {
+    ptx_instruction *pI = *i;
+    if (pI->is_label()) {
+      const symbol *l = pI->get_label();
+      unsigned dbb_id=pI->get_dbb()->dbb_id;
+      if (dbb_id>block_id){
+        block_id=dbb_id;
+        //need to alignment
+        unsigned align_size = (MAX_DICE_BITSTREAM_SIZE - (PC % MAX_DICE_BITSTREAM_SIZE)) % MAX_DICE_BITSTREAM_SIZE;
+        for (unsigned i = 0; i < align_size; i++) {
+          gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
+          m_instr_mem[n + i] = NULL;
+        }
+        n += align_size;
+        PC += align_size;
+      }
+      labels[l->name()] = n;
+    } else {
+      gpgpu_ctx->func_sim->g_pc_to_finfo[PC] = this;
+      m_instr_mem[n] = pI;
+      gpgpu_ctx->s_g_pc_to_insn.push_back(pI);
+      assert(pI == gpgpu_ctx->s_g_pc_to_insn[PC]);
+      pI->set_m_instr_mem_index(n);
+      pI->set_PC(PC);
+      assert(pI->inst_size() <= MAX_INST_SIZE);
+      for (unsigned i = 1; i < pI->inst_size(); i++) {
+        gpgpu_ctx->s_g_pc_to_insn.push_back((ptx_instruction *)NULL);
+        m_instr_mem[n + i] = NULL;
+      }
+      n += pI->inst_size();
+      PC += pI->inst_size();
+    }
+  }
+  gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
+  block_id = 0;
+  unsigned inst_size = 0;
+  for (unsigned ii = 0; ii < n;
+       ii += inst_size) {  // handle branch instructions
+    ptx_instruction* pI = m_instr_mem[ii];
+    if(pI == NULL){
+      inst_size = 1;
+      continue; //OK for DICE
+    }
+    inst_size = pI->inst_size();
+    if (pI->get_opcode() == BRA_OP || pI->get_opcode() == BREAKADDR_OP ||
+        pI->get_opcode() == CALLP_OP) {
+      operand_info &target = pI->dst();  // get operand, e.g. target name
+      if (labels.find(target.name()) == labels.end()) {
+        printf(
+            "GPGPU-Sim PTX: Loader error (%s:%u): Branch label \"%s\" does not "
+            "appear in assembly code.",
+            pI->source_file(), pI->source_line(), target.name().c_str());
+        fflush(stdout);
+        assert(0);abort();
+      }
+      unsigned index = labels[target.name()];  // determine address from name
+      unsigned PC = m_instr_mem[index]->get_PC();
+      m_symtab->set_label_address(target.get_symbol(), PC);
+      target.set_type(label_t);
+    }
+  }
+  m_n = n;
+  printf("  done.\n");
+  fflush(stdout);
+}
 
 void function_info::ptx_assemble() {
   if (m_assembled) {
+    return;
+  }
+  if(gpgpu_ctx->g_dice_enabled){
+    dice_block_assemble();
     return;
   }
 
@@ -403,7 +507,10 @@ void function_info::metadata_assemble() {
   // start function on an aligned address
   //for (unsigned i = 0; i < (PC % MAX_METADATA_SIZE); i++)
   //  gpgpu_ctx->s_g_pc_to_meta.push_back((dice_metadata *)NULL);
-  PC += PC % MAX_METADATA_SIZE;
+  unsigned cache_lize_size = gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->m_L1I_config.get_line_sz();
+  //need to align with cache line size
+  unsigned align_pc_offset = (cache_lize_size - (PC % cache_lize_size)) % cache_lize_size;
+  PC += align_pc_offset;
   m_metadata_start_pc = PC;
 
   //set metadata_start_pc for saving in s_g_pc_to_meta
@@ -3281,12 +3388,18 @@ void DICEfunctionalCoreSim::dice_checkExecutionStatusAndUpdate(unsigned tid) {
 
 //DICE-support
 void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) {
+  //printf("DICE: tid %d executing block %d\n", tid, CFGBlock->get_metadata()->meta_id);
+  //fflush(stdout);
   bool skip = false;
   int op_classification = 0;
   addr_t metadata_pc = next_metadata();
   //printf("DICE: next_metadata pc= %p, while giving %p\n", metadata_pc,metadata->get_PC());fflush(stdout);
   assert(metadata_pc == CFGBlock->get_metadata()->get_PC());   // make sure timing model and functional model are in sync
   set_next_meta_pc(metadata_pc + CFGBlock->get_metadata()->metadata_size());
+  //if(m_cgra_core->get_id()==0){
+  //  printf("DICE-Sim Functional: tid %d set next_meta_pc = 0x%04x after metadata_id =%d\n", tid, metadata_pc + CFGBlock->get_metadata()->metadata_size(), CFGBlock->get_metadata()->meta_id);
+  //  fflush(stdout);
+  //}
   if (is_done()) {
     printf(
         "attempted to execute metadata on a thread that is already "

@@ -1169,7 +1169,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
       // stack
       new_recvg_pc = recvg_pc;
       if (new_recvg_pc != top_recvg_pc) {
-        if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to new_recvg_pc %d\n", new_recvg_pc);
+        if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to new_recvg_pc 0x%04x\n", new_recvg_pc);
         m_stack.back().m_pc = new_recvg_pc;
         m_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
@@ -1189,13 +1189,13 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
         continue;
       }
     // update the current top of pdom stack
-    if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to tmp_next_pc %d\n", tmp_next_pc);
+    if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to tmp_next_pc 0x%04x\n", tmp_next_pc);
     m_stack.back().m_pc = tmp_next_pc;
     m_stack.back().m_active_mask = tmp_active_mask;
     if (m_warp_id == 0) print(stdout);
     if (warp_diverged) {
       m_stack.back().m_calldepth = 0;
-      if (m_warp_id == 0) printf("[Jiayi Test Stack] update rpc to new_recvg_pc %d\n", new_recvg_pc);
+      if (m_warp_id == 0) printf("[Jiayi Test Stack] update rpc to new_recvg_pc 0x%04x\n", new_recvg_pc);
       m_stack.back().m_recvg_pc = new_recvg_pc;
     } else {
       m_stack.back().m_recvg_pc = top_recvg_pc;
@@ -1218,6 +1218,33 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
     print(stdout);
     fflush(stdout);
   }
+}
+
+void simt_stack::update_no_divergence(address_type next_pc) {
+  assert(m_stack.size() > 0);
+
+
+  simt_mask_t top_active_mask = m_stack.back().m_active_mask;
+  address_type top_recvg_pc = m_stack.back().m_recvg_pc;
+  address_type top_pc = m_stack.back().m_pc;  // the pc of the instruction just executed
+  stack_entry_type top_type = m_stack.back().m_type;
+    // discard the new entry if its PC matches with reconvergence PC
+    // that automatically reconverges the entry
+    // If the top stack entry is CALL, dont reconverge.
+  if (next_pc == top_recvg_pc && (top_type != STACK_ENTRY_TYPE_CALL)){
+    m_stack.pop_back();
+    return;
+  }
+
+  m_stack.back().m_pc = next_pc;
+  assert(m_stack.size() > 0);
+}
+
+//DICE-support
+void simt_stack::modify_top(address_type next_pc){
+  //modify stack top entry's next pc to next_pc, keep active mask, reconvergence pc the same
+  assert(m_stack.size() > 0);
+  m_stack.back().m_pc = next_pc;
 }
 
 void simt_stack::update(simt_mask_t &thread_done, addr_vector_t &next_pc,

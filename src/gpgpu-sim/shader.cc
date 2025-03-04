@@ -2280,6 +2280,20 @@ pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
   active_insts_in_pipeline = 0;
 }
 
+pipelined_simd_unit::pipelined_simd_unit(register_set *result_port,
+  const shader_core_config *config,
+  unsigned max_latency,
+  cgra_core_ctx *cgra_core)
+  : simd_function_unit(config) {
+  m_result_port = result_port;
+  m_pipeline_depth = max_latency;
+  m_pipeline_reg = new warp_inst_t *[m_pipeline_depth];
+  for (unsigned i = 0; i < m_pipeline_depth; i++)
+  m_pipeline_reg[i] = new warp_inst_t(config);
+  m_cgra_core = cgra_core;
+  active_insts_in_pipeline = 0;
+}
+
 void pipelined_simd_unit::cycle() {
   if (!m_pipeline_reg[0]->empty()) {
     m_result_port->move_in(m_pipeline_reg[0]);
@@ -2354,6 +2368,45 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_last_inst_gpu_tot_sim_cycle = 0;
 }
 
+void ldst_unit::init_cgra(mem_fetch_interface *icnt,
+  shader_core_mem_fetch_allocator *mf_allocator,
+  cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
+   const shader_core_config *config,
+  const memory_config *mem_config, shader_core_stats *stats,
+  unsigned cgra_core_id, unsigned tpc) {
+  m_memory_config = mem_config;
+  m_icnt = icnt;
+  m_mf_allocator = mf_allocator;
+  m_core = NULL;
+  m_cgra_core = cgra_core;
+  m_operand_collector = NULL;
+  m_scoreboard = NULL;
+  m_dispatcher_rfu = dispatcher_rfu;
+  m_stats = stats;
+  m_sid = cgra_core_id;
+  m_cgra_core_id = cgra_core_id;
+  m_tpc = tpc;
+  #define STRSIZE 1024
+  char L1T_name[STRSIZE];
+  char L1C_name[STRSIZE];
+  snprintf(L1T_name, STRSIZE, "L1T_%03d", m_cgra_core_id);
+  snprintf(L1C_name, STRSIZE, "L1C_%03d", m_cgra_core_id);
+  m_L1T = new tex_cache(L1T_name, m_config->m_L1T_config, m_cgra_core_id,
+       get_shader_texture_cache_id(), icnt, IN_L1T_MISS_QUEUE,
+       IN_SHADER_L1T_ROB);
+  m_L1C = new read_only_cache(L1C_name, m_config->m_L1C_config,m_cgra_core_id,
+             get_shader_constant_cache_id(), icnt,
+             IN_L1C_MISS_QUEUE);
+  m_L1D = NULL;
+  m_mem_rc = NO_RC_FAIL;
+  m_num_writeback_clients =
+  5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
+  m_writeback_arb = 0;
+  m_next_global = NULL;
+  m_last_inst_gpu_sim_cycle = 0;
+  m_last_inst_gpu_tot_sim_cycle = 0;
+}
+
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      shader_core_ctx *core, opndcoll_rfu_t *operand_collector,
@@ -2380,6 +2433,34 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                                  (mem_fetch *)NULL);
   }
   m_name = "MEM ";
+}
+
+ldst_unit::ldst_unit(mem_fetch_interface *icnt,
+                     shader_core_mem_fetch_allocator *mf_allocator,
+                     cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
+                     const shader_core_config *config,
+                     const memory_config *mem_config, class shader_core_stats *stats,
+                     unsigned cgra_core_id, unsigned tpc)
+      : pipelined_simd_unit(NULL, config, config->smem_latency, m_cgra_core) {
+  assert(config->smem_latency > 1);
+  init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, config,
+       mem_config, stats,cgra_core_id, tpc);
+  if (!m_config->m_L1D_config.disabled()) {
+    char L1D_name[STRSIZE];
+    snprintf(L1D_name, STRSIZE, "L1D_%03d", cgra_core_id);
+    m_L1D = new l1_cache(L1D_name, m_config->m_L1D_config, cgra_core_id,
+                         get_shader_normal_cache_id(), m_icnt, m_mf_allocator,
+                         IN_L1D_MISS_QUEUE, cgra_core->get_gpu());
+
+    l1_latency_queue.resize(m_config->m_L1D_config.l1_banks);
+    assert(m_config->m_L1D_config.l1_latency > 0);
+
+    for (unsigned j = 0; j < m_config->m_L1D_config.l1_banks; j++)
+      l1_latency_queue[j].resize(m_config->m_L1D_config.l1_latency,
+                                 (mem_fetch *)NULL);
+  }
+  m_name = "MEM ";
+
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -2811,6 +2892,27 @@ void gpgpu_sim::shader_print_cache_stats(FILE *fout) const {
     fprintf(fout, "\tL1I_total_cache_pending_hits = %llu\n",
             total_css.pending_hits);
     fprintf(fout, "\tL1I_total_cache_reservation_fails = %llu\n",
+            total_css.res_fails);
+  }
+  //DICE-support
+  if (!m_shader_config->m_L1I_config.disabled() && gpgpu_ctx->g_dice_enabled) {
+    total_css.clear();
+    css.clear();
+    fprintf(fout, "\n========= Core cache stats =========\n");
+    fprintf(fout, "L1B_cache:\n");
+    for (unsigned i = 0; i < m_shader_config->n_simt_clusters; ++i) {
+      m_cluster[i]->get_L1B_sub_stats(css);
+      total_css += css;
+    }
+    fprintf(fout, "\tL1B_total_cache_accesses = %llu\n", total_css.accesses);
+    fprintf(fout, "\tL1B_total_cache_misses = %llu\n", total_css.misses);
+    if (total_css.accesses > 0) {
+      fprintf(fout, "\tL1B_total_cache_miss_rate = %.4lf\n",
+              (double)total_css.misses / (double)total_css.accesses);
+    }
+    fprintf(fout, "\tL1B_total_cache_pending_hits = %llu\n",
+            total_css.pending_hits);
+    fprintf(fout, "\tL1B_total_cache_reservation_fails = %llu\n",
             total_css.res_fails);
   }
 
@@ -4110,6 +4212,7 @@ void exec_simt_core_cluster::create_shader_core_ctx() {
     create_cgra_core_ctx();
     return;
   }
+  m_cgra_core = NULL;
   m_core = new shader_core_ctx *[m_config->n_simt_cores_per_cluster];
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
@@ -4137,7 +4240,12 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
 void simt_core_cluster::core_cycle() {
   for (std::list<unsigned>::iterator it = m_core_sim_order.begin();
        it != m_core_sim_order.end(); ++it) {
-    m_core[*it]->cycle();
+    //DICE-support
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[*it]->cycle();
+    } else {
+      m_core[*it]->cycle();
+    }
   }
 
   if (m_config->simt_core_sim_order == 1) {
@@ -4187,7 +4295,13 @@ unsigned simt_core_cluster::get_not_completed() const {
 
 void simt_core_cluster::print_not_completed(FILE *fp) const {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
-    unsigned not_completed = m_core[i]->get_not_completed();
+    unsigned not_completed;
+    //DICE-support
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      not_completed = m_cgra_core[i]->get_not_completed();
+    } else {
+      not_completed = m_core[i]->get_not_completed();
+    }
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
     fprintf(fp, "%u(%u) ", sid, not_completed);
   }
@@ -4197,7 +4311,12 @@ float simt_core_cluster::get_current_occupancy(
     unsigned long long &active, unsigned long long &total) const {
   float aggregate = 0.f;
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
-    aggregate += m_core[i]->get_current_occupancy(active, total);
+    //DICE-support
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      aggregate += m_cgra_core[i]->get_current_occupancy(active, total);
+    } else {
+      aggregate += m_core[i]->get_current_occupancy(active, total);
+    }
   }
   return aggregate / m_config->n_simt_cores_per_cluster;
 }
@@ -4205,14 +4324,24 @@ float simt_core_cluster::get_current_occupancy(
 unsigned simt_core_cluster::get_n_active_cta() const {
   unsigned n = 0;
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+    n += m_cgra_core[i]->get_n_active_cta();
+  } else {
     n += m_core[i]->get_n_active_cta();
+  }
   return n;
 }
 
 unsigned simt_core_cluster::get_n_active_sms() const {
   unsigned n = 0;
-  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
-    n += m_core[i]->isactive();
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++){
+    //DICE-support
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      n += m_cgra_core[i]->isactive();
+    } else {
+      n += m_core[i]->isactive();
+    }
+  }
   return n;
 }
 
@@ -4281,7 +4410,12 @@ void simt_core_cluster::cache_flush() {
 
 void simt_core_cluster::cache_invalidate() {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++)
+  //DICE-support
+  if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+    m_cgra_core[i]->cache_invalidate();
+  } else {
     m_core[i]->cache_invalidate();
+  }
 }
 
 bool simt_core_cluster::icnt_injection_buffer_full(unsigned size, bool write) {
@@ -4318,6 +4452,10 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
       m_stats->gpgpu_n_mem_write_local++;
       break;
     case INST_ACC_R:
+      m_stats->gpgpu_n_mem_read_inst++;
+      break;
+    //DICE-support
+    case BITSTREAM_ACC_R:
       m_stats->gpgpu_n_mem_read_inst++;
       break;
     case L1_WRBK_ACC:
@@ -4357,6 +4495,10 @@ void simt_core_cluster::icnt_inject_request_packet(class mem_fetch *mf) {
 }
 
 void simt_core_cluster::icnt_cycle() {
+  if(m_cgra_core!=NULL) {
+    icnt_cycle_cgra();
+    return;
+  } 
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
     unsigned cid = m_config->sid_to_cid(mf->get_sid());
@@ -4372,6 +4514,51 @@ void simt_core_cluster::icnt_cycle() {
         m_response_fifo.pop_front();
         m_memory_stats->memlatstat_read_done(mf);
         m_core[cid]->accept_ldst_unit_response(mf);
+      }
+    }
+  }
+  if (m_response_fifo.size() < m_config->n_simt_ejection_buffer_size) {
+    mem_fetch *mf = (mem_fetch *)::icnt_pop(m_cluster_id);
+    if (!mf) return;
+    assert(mf->get_tpc() == m_cluster_id);
+    assert(mf->get_type() == READ_REPLY || mf->get_type() == WRITE_ACK);
+
+    // The packet size varies depending on the type of request:
+    // - For read request and atomic request, the packet contains the data
+    // - For write-ack, the packet only has control metadata
+    unsigned int packet_size =
+        (mf->get_is_write()) ? mf->get_ctrl_size() : mf->size();
+    m_stats->m_incoming_traffic_stats->record_traffic(mf, packet_size);
+    mf->set_status(IN_CLUSTER_TO_SHADER_QUEUE,
+                   m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
+    // m_memory_stats->memlatstat_read_done(mf,m_shader_config->max_warps_per_shader);
+    m_response_fifo.push_back(mf);
+    m_stats->n_mem_to_simt[m_cluster_id] += mf->get_num_flits(false);
+  }
+}
+
+void simt_core_cluster::icnt_cycle_cgra() {
+  if (!m_response_fifo.empty()) {
+    mem_fetch *mf = m_response_fifo.front();
+    unsigned cid = m_config->sid_to_cid(mf->get_sid());
+    if (mf->get_access_type() == INST_ACC_R) {
+      // instruction fetch response
+      if (!m_cgra_core[cid]->fetch_unit_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_cgra_core[cid]->accept_metadata_fetch_response(mf);
+      }
+    } else if (mf->get_access_type() == BITSTREAM_ACC_R) {
+      // instruction fetch response
+      if (!m_cgra_core[cid]->bitstream_unit_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_cgra_core[cid]->accept_bitstream_fetch_response(mf);
+      }
+    } else {
+      // data response
+      if (!m_cgra_core[cid]->ldst_unit_response_buffer_full()) {
+        m_response_fifo.pop_front();
+        m_memory_stats->memlatstat_read_done(mf);
+        m_cgra_core[cid]->accept_ldst_unit_response(mf);
       }
     }
   }
@@ -4428,7 +4615,11 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
   long simt_to_mem = 0;
   long mem_to_simt = 0;
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_icnt_power_stats(simt_to_mem, mem_to_simt);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_icnt_power_stats(simt_to_mem, mem_to_simt);
+    } else {
+      m_core[i]->get_icnt_power_stats(simt_to_mem, mem_to_simt);
+    }
   }
   n_simt_to_mem = simt_to_mem;
   n_mem_to_simt = mem_to_simt;
@@ -4436,7 +4627,11 @@ void simt_core_cluster::get_icnt_stats(long &n_simt_to_mem,
 
 void simt_core_cluster::get_cache_stats(cache_stats &cs) const {
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_cache_stats(cs);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_cache_stats(cs);
+    } else {
+      m_core[i]->get_cache_stats(cs);
+    }
   }
 }
 
@@ -4446,18 +4641,39 @@ void simt_core_cluster::get_L1I_sub_stats(struct cache_sub_stats &css) const {
   temp_css.clear();
   total_css.clear();
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_L1I_sub_stats(temp_css);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_L1I_sub_stats(temp_css);
+    } else {
+      m_core[i]->get_L1I_sub_stats(temp_css);
+    }
     total_css += temp_css;
   }
   css = total_css;
 }
+
+void simt_core_cluster::get_L1B_sub_stats(struct cache_sub_stats &css) const {
+  struct cache_sub_stats temp_css;
+  struct cache_sub_stats total_css;
+  temp_css.clear();
+  total_css.clear();
+  for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
+    m_cgra_core[i]->get_L1B_sub_stats(temp_css);
+    total_css += temp_css;
+  }
+  css = total_css;
+}
+
 void simt_core_cluster::get_L1D_sub_stats(struct cache_sub_stats &css) const {
   struct cache_sub_stats temp_css;
   struct cache_sub_stats total_css;
   temp_css.clear();
   total_css.clear();
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_L1D_sub_stats(temp_css);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_L1D_sub_stats(temp_css);
+    } else {
+      m_core[i]->get_L1D_sub_stats(temp_css);
+    }
     total_css += temp_css;
   }
   css = total_css;
@@ -4468,7 +4684,11 @@ void simt_core_cluster::get_L1C_sub_stats(struct cache_sub_stats &css) const {
   temp_css.clear();
   total_css.clear();
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_L1C_sub_stats(temp_css);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_L1C_sub_stats(temp_css);
+    } else {
+      m_core[i]->get_L1C_sub_stats(temp_css);
+    }
     total_css += temp_css;
   }
   css = total_css;
@@ -4479,7 +4699,11 @@ void simt_core_cluster::get_L1T_sub_stats(struct cache_sub_stats &css) const {
   temp_css.clear();
   total_css.clear();
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; ++i) {
-    m_core[i]->get_L1T_sub_stats(temp_css);
+    if(m_gpu->gpgpu_ctx->g_dice_enabled) {
+      m_cgra_core[i]->get_L1T_sub_stats(temp_css);
+    } else {
+      m_core[i]->get_L1T_sub_stats(temp_css);
+    }
     total_css += temp_css;
   }
   css = total_css;

@@ -362,6 +362,7 @@ class ptx_thread_info {
   unsigned get_hw_wid() const { return m_hw_wid; }
   unsigned get_hw_sid() const { return m_hw_sid; }
   core_t *get_core() { return m_core; }
+  cgra_core_ctx *get_cgra_core() { return m_cgra_core; }
 
   unsigned get_icount() const { return m_icount; }
   void set_valid() { m_valid = true; }

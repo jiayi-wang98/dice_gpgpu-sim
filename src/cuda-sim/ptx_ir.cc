@@ -409,19 +409,31 @@ void function_info::create_basic_blocks() {
 //DICE-support
 void function_info::print_dice_blocks() {
   printf("Printing DICE blocks for function \'%s\':\n", m_name.c_str());
-  std::list<ptx_instruction *>::iterator ptx_itr;
-  unsigned last_dbb = 0;
-  for (ptx_itr = m_instructions.begin(); ptx_itr != m_instructions.end();
-       ptx_itr++) {
-    if ((*ptx_itr)->get_dbb()) {
-      if ((*ptx_itr)->get_dbb()->dbb_id != last_dbb) {
-        printf("\n");
-        last_dbb = (*ptx_itr)->get_dbb()->dbb_id;
-      }
-      printf("%s: ", (*ptx_itr)->get_dbb()->label.c_str());
+  //std::list<ptx_instruction *>::iterator ptx_itr;
+  //unsigned last_dbb = 0;
+  //for (ptx_itr = m_instructions.begin(); ptx_itr != m_instructions.end();
+  //     ptx_itr++) {
+  //  if ((*ptx_itr)->get_dbb()) {
+  //    if ((*ptx_itr)->get_dbb()->dbb_id != last_dbb) {
+  //      printf("\n");
+  //      last_dbb = (*ptx_itr)->get_dbb()->dbb_id;
+  //    }
+  //    printf("%s: ", (*ptx_itr)->get_dbb()->label.c_str());
+  //    (*ptx_itr)->print_insn();
+  //    printf("\n");
+  //  }
+  //}
+  std::vector<dice_block_t *>::iterator dbb_itr;
+  for (dbb_itr = m_dice_blocks.begin(); dbb_itr != m_dice_blocks.end();
+       dbb_itr++) {
+    printf("DBB ID: %d\t:\n", (*dbb_itr)->dbb_id);
+    std::vector<ptx_instruction *>::iterator ptx_itr;
+    for (ptx_itr = (*dbb_itr)->ptx_instructions.begin();
+         ptx_itr != (*dbb_itr)->ptx_instructions.end(); ptx_itr++) {
       (*ptx_itr)->print_insn();
       printf("\n");
     }
+    printf("\n");
   }
 }
 
@@ -564,6 +576,12 @@ void function_info::connect_basic_blocks()  // iterate across m_basic_blocks of
       // then next basic block is also successor
       // (this is better than testing for .uni)
       unsigned next_addr = pI->get_m_instr_mem_index() + pI->inst_size();
+      //DICE-support(can actually dont do pdom at all)
+      if(gpgpu_ctx->g_dice_enabled){
+        while (m_instr_mem[next_addr] == NULL) {
+          next_addr++;
+        }
+      }
       basic_block_t *next_bb = m_instr_mem[next_addr]->get_bb();
       (*bb_itr)->successor_ids.insert(next_bb->bb_id);
       next_bb->predecessor_ids.insert((*bb_itr)->bb_id);
@@ -629,10 +647,11 @@ void function_info::set_dice_blocks(){
 
   // first instruction is a leader
   i = m_instructions.begin();
-  leaders.push_back(*i);
+  ptx_instruction *pI = *i;
+  if (pI->is_label()) leaders.push_back(pI);
   i++;
   while (i != m_instructions.end()) {
-    ptx_instruction *pI = *i;
+    pI = *i;
     if (pI->is_label()) leaders.push_back(pI);
     i++;
   }
@@ -649,8 +668,14 @@ void function_info::set_dice_blocks(){
   i = m_instructions.begin();
   std::string block_name = (*l)->get_label()->name();
   printf("DICE PPTX: Creating dice block %s\n", block_name.c_str());
+  ptx_instruction *first_real_inst = *find_next_real_instruction(i);
   m_dice_blocks.push_back(
-      new dice_block_t(block_name,dbb_id++, *find_next_real_instruction(i), NULL, 1, 0));
+      new dice_block_t(block_name,dbb_id++, first_real_inst, NULL, 1, 0));
+
+  printf("DICE PPTX: Pushing inst: ");
+  first_real_inst->print_insn();
+  printf("to current dice block.\n");
+
   ptx_instruction *last_real_inst = *(l++);
 
   for (; i != m_instructions.end(); i++) {
@@ -662,14 +687,21 @@ void function_info::set_dice_blocks(){
           m_instructions.end()) {  // if not bogus trailing label
         block_name = (*l)->get_label()->name();
         printf("DICE PPTX: Creating dice block %s\n", block_name.c_str());
-        m_dice_blocks.push_back(new dice_block_t(block_name,dbb_id++, *find_next_real_instruction(i), NULL, 0, 0));
-        last_real_inst = *find_next_real_instruction(i);
+        first_real_inst = *find_next_real_instruction(i);
+        m_dice_blocks.push_back(new dice_block_t(block_name,dbb_id++, first_real_inst, NULL, 0, 0));
+        printf("DICE PPTX: Pushing inst: ");
+        first_real_inst->print_insn();
+        printf("to current dice block.\n");
+        last_real_inst = first_real_inst;
       }
       // start search for next leader
       l++;
     }
     //if not label, push to current dice block
     if(!pI->is_label()){
+      printf("DICE PPTX: Pushing inst: ");
+      pI->print_insn();
+      printf("to current dice block.\n");
       m_dice_blocks.back()->ptx_instructions.push_back(pI);
     }
     pI->assign_dbb(m_dice_blocks.back());
@@ -709,6 +741,13 @@ void function_info::do_pdom() {
   for (unsigned ii = 0; ii < m_n;
        ii += m_instr_mem[ii]->inst_size()) {  // handle branch instructions
     ptx_instruction *pI = m_instr_mem[ii];
+    //DICE-support
+    if(gpgpu_ctx->g_dice_enabled){
+      while(pI == NULL){
+        ii++;
+        pI = m_instr_mem[ii];
+      }
+    }
     pI->pre_decode();
   }
   printf("GPGPU-Sim PTX: ... done pre-decoding instructions for \'%s\'.\n",
@@ -1544,7 +1583,7 @@ std::string ptx_instruction::to_string() const {
   unsigned used_bytes = 0;
   if (!is_label()) {
     used_bytes +=
-        snprintf(buf + used_bytes, STR_SIZE - used_bytes, " PC=0x%03x ", m_PC);
+        snprintf(buf + used_bytes, STR_SIZE - used_bytes, " PC=0x%04x ", m_PC);
   } else {
     used_bytes +=
         snprintf(buf + used_bytes, STR_SIZE - used_bytes, "                ");

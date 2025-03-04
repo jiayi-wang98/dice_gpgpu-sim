@@ -36,6 +36,7 @@ std::string traffic_breakdown::classify_memfetch(class mem_fetch* mf) {
     case LOCAL_ACC_R:
     case LOCAL_ACC_W:
     case INST_ACC_R:
+    case BITSTREAM_ACC_R:
     case L1_WRBK_ACC:
     case L2_WRBK_ACC:
     case L1_WR_ALLOC_R:

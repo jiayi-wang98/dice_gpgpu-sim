@@ -1773,7 +1773,11 @@ void bra_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     //get target
     addr_t target_meta_addr = metadata->branch_target_meta_pc;
     thread->set_next_meta_pc(target_meta_addr);
-    }
+    //if(thread->get_cgra_core()->get_id()==0){
+    //  printf("DICE-Sim Functional: tid %d reset next_meta_pc = 0x%04x\n", thread->get_hw_tid(), target_meta_addr);
+    //  fflush(stdout);
+    //}
+  }
   thread->m_branch_taken = true;
   thread->set_npc(target_pc);
 }

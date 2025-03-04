@@ -652,6 +652,8 @@ class simt_stack {
   void update(simt_mask_t &thread_done, addr_vector_t &next_pc,
               address_type recvg_pc, op_type next_inst_op,
               unsigned next_inst_size, address_type next_inst_pc);
+  void modify_top(address_type next_pc);
+  void update_no_divergence(address_type next_pc);
   void update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
               address_type recvg_pc, op_type next_inst_op,
               unsigned next_inst_size, address_type next_inst_pc);
@@ -985,7 +987,7 @@ typedef std::bitset<SECTOR_CHUNCK_SIZE> mem_access_sector_mask_t;
   MA_TUP(GLOBAL_ACC_R), MA_TUP(LOCAL_ACC_R), MA_TUP(CONST_ACC_R),       \
       MA_TUP(TEXTURE_ACC_R), MA_TUP(GLOBAL_ACC_W), MA_TUP(LOCAL_ACC_W), \
       MA_TUP(L1_WRBK_ACC), MA_TUP(L2_WRBK_ACC), MA_TUP(INST_ACC_R),     \
-      MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R),                     \
+      MA_TUP(BITSTREAM_ACC_R), MA_TUP(L1_WR_ALLOC_R), MA_TUP(L2_WR_ALLOC_R), \
       MA_TUP(NUM_MEM_ACCESS_TYPE) MA_TUP_END(mem_access_type)
 
 #define MA_TUP_BEGIN(X) enum X {

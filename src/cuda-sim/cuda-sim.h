@@ -61,7 +61,7 @@ unsigned ptx_sim_init_thread_dice(kernel_info_t &kernel,
                               unsigned tid, unsigned threads_left,
                               unsigned num_threads, class cgra_core_ctx *core,
                               unsigned hw_cta_id, unsigned hw_warp_id,
-                              gpgpu_t *gpu,
+                              gpgpu_t *gpu, 
                               bool functionalSimulationMode = false);
 const struct gpgpu_ptx_sim_info *ptx_sim_kernel_info(
     const class function_info *kernel);

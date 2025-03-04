@@ -1355,6 +1355,7 @@ class function_info {
 
   void ptx_assemble();
   //DICE-support
+  void dice_block_assemble();
   void metadata_assemble();
 
   unsigned ptx_get_inst_op(ptx_thread_info *thread);

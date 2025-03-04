@@ -43,6 +43,7 @@ class dispatcher_rfu_t;
 enum cgra_block_stage {
   MF_DE,
   DP_CGRA,
+  MEM_WRITEBACK,
   NUM_DICE_STAGE
 };
 
@@ -62,6 +63,7 @@ class cgra_core_ctx {
       return m_thread;
     }
     unsigned get_max_block_size() const { return m_max_block_size;}
+    unsigned get_n_active_cta() const { return m_active_blocks; }
 
     void reinit(unsigned start_thread, unsigned end_thread,bool reset_not_completed);
     unsigned sim_init_thread(
@@ -71,7 +73,10 @@ class cgra_core_ctx {
     void init_CTA(unsigned cta_id, unsigned start_thread,
       unsigned end_thread, unsigned ctaid,int cta_size, kernel_info_t &kernel);
     address_type next_meta_pc(int tid) const;
-    dice_cfg_block_t* get_next_dice_block(address_type pc);
+    //dice_cfg_block_t* get_next_dice_block(address_type pc);
+    void get_icnt_power_stats(long &n_simt_to_mem,long &n_mem_to_simt) const;
+    void get_cache_stats(cache_stats &cs);
+    float get_current_occupancy(unsigned long long &active,unsigned long long &total) const;
     //stack operation
     void initializeSIMTStack(unsigned num_threads);
     void resizeSIMTStack(unsigned num_threads);
@@ -87,14 +92,23 @@ class cgra_core_ctx {
 
     //hardware simulation
     void create_front_pipeline();
+    void create_dispatcher();
+    void create_execution_unit();
     void cycle();
     //outer execution pipeline
     void set_can_fetch_metadata();
+    void set_stalled_by_simt_stack(unsigned block_id){
+      m_fetch_stalled_by_simt_stack = true;
+      m_fetch_waiting_block_id = block_id;
+    }
+    void clear_stalled_by_simt_stack(){
+      m_fetch_stalled_by_simt_stack = false;
+    }
     void fetch_metadata();
     void fetch_bitstream();
     void decode();
     void execute();
-    void issue(unsigned tid);
+    void exec(unsigned tid);
     //inner pipeline in execute();
     void dispatch();
     void cgra_execute_block();
@@ -107,6 +121,9 @@ class cgra_core_ctx {
       else
         return 0;
     }
+
+    void cache_flush();
+    void cache_invalidate();
     dice_cfg_block_t* get_dice_cfg_block(address_type pc);
     void set_max_cta(const kernel_info_t &kernel);
     unsigned get_kernel_block_size() const { return m_kernel_block_size; }
@@ -131,7 +148,20 @@ class cgra_core_ctx {
       m_stats->n_simt_to_mem[m_cgra_core_id] += n_flits;
     }
     void register_cta_thread_exit(unsigned cta_num, kernel_info_t *kernel);
+    bool fetch_unit_response_buffer_full() const { return false; }
+    bool bitstream_unit_response_buffer_full() const { return false; }
+    bool ldst_unit_response_buffer_full() const { return false; }
+    void accept_metadata_fetch_response(mem_fetch *mf);
+    void accept_bitstream_fetch_response(mem_fetch *mf);
+    void accept_ldst_unit_response(mem_fetch *mf);
+    unsigned get_id() const { return m_cgra_core_id; }
 
+    //status
+    void get_L1I_sub_stats(struct cache_sub_stats &css) const ;
+    void get_L1B_sub_stats(struct cache_sub_stats &css) const ;
+    void get_L1D_sub_stats(struct cache_sub_stats &css) const ;
+    void get_L1C_sub_stats(struct cache_sub_stats &css) const ;
+    void get_L1T_sub_stats(struct cache_sub_stats &css) const ;
   protected:
     unsigned m_cgra_core_id;
     unsigned m_tpc;  // texture processor cluster id (aka, node id when using
@@ -166,6 +196,8 @@ class cgra_core_ctx {
 
     std::vector<cgra_block_state_t*> m_cgra_block_state;//current decoded block state
     // fetch
+    bool m_fetch_stalled_by_simt_stack;
+    unsigned m_fetch_waiting_block_id;
     read_only_cache *m_L1I;  // instruction cache
     ifetch_buffer_t m_metadata_fetch_buffer;
 
@@ -194,9 +226,8 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        : cgra_core_ctx(gpu, cluster, cgra_core_id, tpc_id, config, mem_config,
                          stats) {
      create_front_pipeline();
-     //create_shd_warp();
-     //create_schedulers();
-     //create_exec_pipeline();
+     create_dispatcher();
+     create_execution_unit();
    }
  
    //virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
@@ -208,7 +239,6 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
    //                                 unsigned num_threads, core_t *core,
    //                                 unsigned hw_cta_id, unsigned hw_warp_id,
    //                                 gpgpu_t *gpu);
-   //virtual void create_shd_warp();
    //virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
    //virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
    //                                     unsigned *pc, unsigned *rpc);
@@ -222,12 +252,12 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
     cgra_block_state_t(class cgra_core_ctx *cgra_core, unsigned block_size)
          : m_cgra_core(cgra_core), m_block_size(block_size) {
        m_stores_outstanding = 0;
-       m_metadata_in_pipeline = 0;
+       m_thread_in_pipeline = 0;
        reset();
      }
      void reset() {
        assert(m_stores_outstanding == 0);
-       assert(m_metadata_in_pipeline == 0);
+       assert(m_thread_in_pipeline == 0);
        m_imiss_pending = false;
        m_bmiss_pending = false;
        m_decoded = false;
@@ -252,12 +282,22 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        m_done_exit = false;
      }
 
+    bool dummy() const { 
+      if(!m_metadata_buffer.m_valid) return true; //empty block
+      if(hardware_done()) return true;
+      return false;
+    }
+
      unsigned active_count () const;
      
      void set_dispatch_done() {
        dispatch_completed = true;
      }
      bool dispatch_done() const { return dispatch_completed; }
+
+     void set_decode_done() { m_decoded = true; }
+
+     bool decode_done() const { return m_decoded; }
 
      bool ready_to_dispatch() const {
        if (m_metadata_buffer.m_valid && m_metadata_buffer.m_bitstream_valid) {
@@ -275,24 +315,20 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      }
 
      bool hardware_done() const {
-      return functional_done() && stores_done() && !metadata_in_pipeline();
+      return functional_done() && stores_done() && !thread_in_pipeline();
      }
 
      bool done_exit() const { return m_done_exit; }
      void set_done_exit() { m_done_exit = true; }
 
-     bool metadata_in_pipeline() const { return m_metadata_in_pipeline > 0; }
-     void inc_metadata_in_pipeline() { m_metadata_in_pipeline++; }
-     void dec_metadata_in_pipeline() {
-       assert(m_metadata_in_pipeline > 0);
-       m_metadata_in_pipeline--;
+     bool thread_in_pipeline() const { return m_thread_in_pipeline > 0; }
+     void inc_thread_in_pipeline() { m_thread_in_pipeline++; }
+     void dec_thread_in_pipeline() {
+       assert(m_thread_in_pipeline > 0);
+       m_thread_in_pipeline--;
      }
 
-     void metadata_buffer_fill(dice_cfg_block_t *cfg_block) {
-      assert(cfg_block!=NULL);
-      m_metadata_buffer.m_cfg_block = cfg_block;
-      m_metadata_buffer.m_valid = true;
-     }
+     void metadata_buffer_fill(dice_cfg_block_t *cfg_block);
 
      void bitstream_buffer_fill() {
       m_metadata_buffer.m_bitstream_valid = true;
@@ -306,6 +342,14 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      }
      void set_cgra_fabric_done() {
       cgra_fabric_completed = true;
+     }
+
+     void set_writeback_done() {
+      writeback_completed = true;
+     }
+
+     bool writeback_done() const {
+      return writeback_completed & stores_done(); 
      }
 
      bool stores_done() const { return m_stores_outstanding == 0; }
@@ -331,6 +375,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      void set_next_pc(address_type pc) { m_next_metadata_pc = pc; }
      virtual address_type get_bitstream_pc(); 
      unsigned get_bitstream_size();
+     unsigned get_block_latency();
      
      bool imiss_pending() const { return m_imiss_pending; }
      void set_imiss_pending() { m_imiss_pending = true; }
@@ -344,6 +389,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
    
      class cgra_core_ctx * get_cgra_core() { return m_cgra_core; }
      bool active(unsigned tid) const { return m_active_threads.test(tid); }
+     simt_mask_t get_active_threads() const { return m_active_threads; }
     private:
      class cgra_core_ctx *m_cgra_core;
      unsigned m_cta_id;
@@ -352,6 +398,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      address_type m_next_metadata_pc;
      bool dispatch_completed;  
      bool cgra_fabric_completed;
+     bool writeback_completed;
      unsigned n_completed;  // number of threads in block completed
      simt_mask_t m_active_threads;
    
@@ -383,30 +430,32 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
    
      unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                      // acknowledged
-     unsigned m_metadata_in_pipeline;
+     unsigned m_loads_outstanding;  // number of load requests sent but not yet
+                                     // get a response                               
+     unsigned m_thread_in_pipeline;
 };
 
 #define MAX_CGRA_FABRIC_LATENCY 32
 class cgra_unit {
   public:
-   cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t *block);
+   cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block);
    ~cgra_unit() {}
  
    // modifiers
-   void issue(unsigned tid) {
+   void exec(unsigned tid) {
      shift_registers[0]=tid;
    }
    void cycle();
    void set_latency(unsigned l) { assert(l<MAX_CGRA_FABRIC_LATENCY); m_latency = l; }
    unsigned out_tid() {
-      return shift_registers[m_latency-1];
+      return shift_registers[m_latency];
    }
    unsigned out_valid() {
-      return shift_registers[m_latency-1] != unsigned(-1);
+      return shift_registers[m_latency] != unsigned(-1);
    }
  
    // accessors
-   bool can_issue() const {
+   bool can_exec() const {
      return !is_busy;
    }
    bool stallable() const {};
@@ -420,31 +469,32 @@ class cgra_unit {
    const shader_core_config *m_config; //DICE-TODO: need to change to cgra_core_config or dice_config;
    unsigned shift_registers[MAX_CGRA_FABRIC_LATENCY]; //storing thread id
    bool is_busy;
-   cgra_block_state_t *m_executing_block;
+   cgra_block_state_t **m_executing_block;
  };
 
 
 
  class dispatcher_rfu_t{
   public:
-    dispatcher_rfu_t(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t *block){
+    dispatcher_rfu_t(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block){
       m_config = config;
       m_cgra_core = cgra_core;
       m_dispatching_block = block;
       m_dispatched_thread = 0;
-      m_last_dispatched_tid = 0;
+      m_last_dispatched_tid = unsigned(-1);
     }
     ~dispatcher_rfu_t() {}
     void cycle();
+    void writeback(unsigned tid);
     unsigned next_active_thread();
     bool idle() { return m_dispatching_block == NULL; }
-    cgra_block_state_t *get_dispatching_block() { return m_dispatching_block; }
-    bool current_finished() { return m_dispatching_block->dispatch_done(); }
+    cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
+    bool current_finished() { return (*m_dispatching_block)->dispatch_done(); }
 
   private:
     const shader_core_config *m_config;
     cgra_core_ctx *m_cgra_core;
-    cgra_block_state_t *m_dispatching_block;
+    cgra_block_state_t **m_dispatching_block;
     unsigned m_dispatched_thread;
     unsigned m_last_dispatched_tid;
     std::list<unsigned> m_ready_threads;

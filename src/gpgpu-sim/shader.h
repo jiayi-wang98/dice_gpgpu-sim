@@ -1072,6 +1072,9 @@ class pipelined_simd_unit : public simd_function_unit {
   pipelined_simd_unit(register_set *result_port,
                       const shader_core_config *config, unsigned max_latency,
                       shader_core_ctx *core);
+  pipelined_simd_unit(register_set *result_port,
+                        const shader_core_config *config, unsigned max_latency,
+                        class cgra_core_ctx *cgra_core);
 
   // modifiers
   virtual void cycle();
@@ -1107,6 +1110,7 @@ class pipelined_simd_unit : public simd_function_unit {
   warp_inst_t **m_pipeline_reg;
   register_set *m_result_port;
   class shader_core_ctx *m_core;
+  class cgra_core_ctx *m_cgra_core;
 
   unsigned active_insts_in_pipeline;
 };
@@ -1257,6 +1261,12 @@ class ldst_unit : public pipelined_simd_unit {
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, class shader_core_stats *stats,
             unsigned sid, unsigned tpc);
+  ldst_unit(mem_fetch_interface *icnt,
+            shader_core_mem_fetch_allocator *mf_allocator,
+            cgra_core_ctx *cgra_core, class dispatcher_rfu_t *dispatcher_rfu,
+            const shader_core_config *config,
+            const memory_config *mem_config, class shader_core_stats *stats,
+            unsigned cgra_core_id, unsigned tpc);
 
   // modifiers
   virtual void issue(register_set &inst);
@@ -1316,6 +1326,12 @@ class ldst_unit : public pipelined_simd_unit {
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, shader_core_stats *stats,
             unsigned sid, unsigned tpc);
+  void init_cgra(mem_fetch_interface *icnt,
+              shader_core_mem_fetch_allocator *mf_allocator,
+              cgra_core_ctx *core, class dispatcher_rfu_t *dispatcher,
+              const shader_core_config *config,
+              const memory_config *mem_config, shader_core_stats *stats,
+              unsigned sid, unsigned tpc);
 
  protected:
   bool shared_cycle(warp_inst_t &inst, mem_stage_stall_type &rc_fail,
@@ -1340,7 +1356,9 @@ class ldst_unit : public pipelined_simd_unit {
   class mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mf_allocator;
   class shader_core_ctx *m_core;
+
   unsigned m_sid;
+
   unsigned m_tpc;
 
   tex_cache *m_L1T;        // texture cache
@@ -1352,9 +1370,16 @@ class ldst_unit : public pipelined_simd_unit {
   std::list<mem_fetch *> m_response_fifo;
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
+  class dispatcher_rfu_t *m_dispatcher_rfu;
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
+
+  //DICE-support
+  class dice_cfg_block_t *m_next_dcb_wb;
+  unsigned m_cgra_core_id; 
+  class cgra_core_ctx *m_cgra_core;
+
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
   unsigned m_num_writeback_clients;
@@ -1520,7 +1545,8 @@ class shader_core_config : public core_config {
   unsigned gpgpu_registers_per_block;
   char *pipeline_widths_string;
   int pipe_widths[N_PIPELINE_STAGES];
-
+  //DICE-support
+  mutable cache_config m_L1B_config; //TODO
   mutable cache_config m_L1I_config;
   mutable cache_config m_L1T_config;
   mutable cache_config m_L1C_config;
@@ -2317,6 +2343,7 @@ class simt_core_cluster {
   //DICE-support
   void cgra_cycle();
   void icnt_cycle();
+  void icnt_cycle_cgra();
 
   void reinit();
   unsigned issue_block2core();
@@ -2351,6 +2378,7 @@ class simt_core_cluster {
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
+  void get_L1B_sub_stats(struct cache_sub_stats &css) const;
 
   void get_icnt_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
   float get_current_occupancy(unsigned long long &active,
@@ -2391,10 +2419,12 @@ class shader_memory_interface : public mem_fetch_interface {
  public:
   shader_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
     m_core = core;
+    m_cgra_core = NULL;
     m_cluster = cluster;
   }
   shader_memory_interface(cgra_core_ctx *core, simt_core_cluster *cluster) {
     m_cgra_core = core;
+    m_core = NULL;
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
@@ -2402,8 +2432,13 @@ class shader_memory_interface : public mem_fetch_interface {
   }
   virtual void push_cgra(mem_fetch *mf);
   virtual void push(mem_fetch *mf) {
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->icnt_inject_request_packet(mf);
+    if(m_cgra_core != NULL){
+      push_cgra(mf);
+      return;
+    } else {
+      m_core->inc_simt_to_mem(mf->get_num_flits(true));
+      m_cluster->icnt_inject_request_packet(mf);
+    }
   }
 
  private:
@@ -2417,20 +2452,27 @@ class perfect_memory_interface : public mem_fetch_interface {
  public:
   perfect_memory_interface(shader_core_ctx *core, simt_core_cluster *cluster) {
     m_core = core;
+    m_cgra_core = NULL;
     m_cluster = cluster;
   }
   perfect_memory_interface(cgra_core_ctx *core, simt_core_cluster *cluster) {
     m_cgra_core = core;
+    m_core = NULL;
     m_cluster = cluster;
   }
   virtual bool full(unsigned size, bool write) const {
     return m_cluster->response_queue_full();
   }
   virtual void push(mem_fetch *mf) {
-    if (mf && mf->isatomic())
+    if(m_cgra_core != NULL){
+      push_cgra(mf);
+      return;
+    } else {
+      if (mf && mf->isatomic())
       mf->do_atomic();  // execute atomic inside the "memory subsystem"
-    m_core->inc_simt_to_mem(mf->get_num_flits(true));
-    m_cluster->push_response_fifo(mf);
+      m_core->inc_simt_to_mem(mf->get_num_flits(true));
+      m_cluster->push_response_fifo(mf);
+    }
   }
 
   virtual void push_cgra(mem_fetch *mf);
