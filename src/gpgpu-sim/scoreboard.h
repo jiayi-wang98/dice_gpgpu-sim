@@ -40,6 +40,20 @@
 class Scoreboard {
  public:
   Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t *gpu);
+  void resize(unsigned n_warps);
+  void clear(){
+    for (unsigned i = 0; i < reg_table.size(); i++) {
+      reg_table[i].clear();
+    }
+    for (unsigned i = 0; i < longopregs.size(); i++) {
+      longopregs[i].clear();
+    }
+  }
+  //DICE-support, here use warps as threads.
+  void reserveRegisters(const class dice_metadata *metadata, unsigned tid);
+  void releaseRegisters(const class dice_metadata *metadata, unsigned tid);
+  void releaseRegistersFromLoad(const class dice_metadata *metadata, unsigned tid);
+  bool checkCollision(unsigned tid, const dice_metadata *metadata) const;
 
   void reserveRegisters(const warp_inst_t *inst);
   void releaseRegisters(const warp_inst_t *inst);

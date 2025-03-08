@@ -47,6 +47,8 @@ class dice_metadata {
     unsigned get_m_metadata_mem_index() { return m_dicemeta_mem_index; }
     unsigned metadata_size() { return m_size; }
     dice_block_t *get_diceblock() { return dice_block; } 
+    bool has_loads() { return load_destination_regs.size() > 0; }
+    bool has_stores() { return num_store > 0; }
 
     class gpgpu_context* gpgpu_ctx;
     std::string m_source_file;
@@ -217,6 +219,7 @@ class dice_cfg_block_t{
         m_per_scalar_thread[n].memreqaddr[i] = addr[i];
     }
     dice_metadata *get_metadata() { return m_metadata; }
+    void generate_mem_accesses();
 
   protected:
     unsigned m_uid;

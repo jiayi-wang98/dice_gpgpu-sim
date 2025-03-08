@@ -3413,6 +3413,9 @@ void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) 
   for(;i != CFGBlock->get_metadata()->dice_block->ptx_instructions.end();i++){
     dice_exec_inst_light(CFGBlock, *i,tid);
   }
+  if (!(this->m_functionalSimulationMode)) {
+    CFGBlock->generate_mem_accesses();
+  }
   update_metadata_pc();
 }
 

@@ -25,6 +25,7 @@
 #include "stats.h"
 #include "traffic_breakdown.h"
 #include "shader.h"
+#include "scoreboard.h"
 
 // Forward declarations
 class gpgpu_sim;
@@ -150,7 +151,7 @@ class cgra_core_ctx {
     void register_cta_thread_exit(unsigned cta_num, kernel_info_t *kernel);
     bool fetch_unit_response_buffer_full() const { return false; }
     bool bitstream_unit_response_buffer_full() const { return false; }
-    bool ldst_unit_response_buffer_full() const { return false; }
+    bool ldst_unit_response_buffer_full() const;
     void accept_metadata_fetch_response(mem_fetch *mf);
     void accept_bitstream_fetch_response(mem_fetch *mf);
     void accept_ldst_unit_response(mem_fetch *mf);
@@ -210,6 +211,7 @@ class cgra_core_ctx {
 
     //execute
     cgra_unit *m_cgra_unit;
+    Scoreboard *m_scoreboard;
     
     //ldst_unit
     ldst_unit *m_ldst_unit;
@@ -440,8 +442,14 @@ class cgra_unit {
   public:
    cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block);
    ~cgra_unit() {}
- 
+  
    // modifiers
+   void reinit(){
+      is_busy = false;
+      for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
+        shift_registers[i] = unsigned(-1);
+      }
+   }
    void exec(unsigned tid) {
      shift_registers[0]=tid;
    }
@@ -451,7 +459,7 @@ class cgra_unit {
       return shift_registers[m_latency];
    }
    unsigned out_valid() {
-      return shift_registers[m_latency] != unsigned(-1);
+      return out_tid() != unsigned(-1);
    }
  
    // accessors
@@ -476,16 +484,17 @@ class cgra_unit {
 
  class dispatcher_rfu_t{
   public:
-    dispatcher_rfu_t(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block){
+    dispatcher_rfu_t(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block, Scoreboard *scoreboard){
       m_config = config;
       m_cgra_core = cgra_core;
       m_dispatching_block = block;
       m_dispatched_thread = 0;
       m_last_dispatched_tid = unsigned(-1);
+      m_scoreboard = scoreboard;
     }
     ~dispatcher_rfu_t() {}
     void cycle();
-    void writeback(unsigned tid);
+    void writeback(cgra_block_state_t* block, unsigned reg_num, unsigned tid);
     unsigned next_active_thread();
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
@@ -498,5 +507,6 @@ class cgra_unit {
     unsigned m_dispatched_thread;
     unsigned m_last_dispatched_tid;
     std::list<unsigned> m_ready_threads;
+    Scoreboard *m_scoreboard;
  };
 #endif

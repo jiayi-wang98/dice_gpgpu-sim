@@ -371,3 +371,8 @@ void dice_cfg_block_t::set_active(const active_mask_t &active) {
 void dice_cfg_block_t::set_not_active(unsigned tid) {
   m_block_active_mask->reset(tid);
 }
+
+void dice_cfg_block_t::generate_mem_accesses() {
+  //TODO
+  
+}

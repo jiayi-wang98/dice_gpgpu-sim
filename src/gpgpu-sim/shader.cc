@@ -2371,7 +2371,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
 void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   shader_core_mem_fetch_allocator *mf_allocator,
   cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
-   const shader_core_config *config,
+  Scoreboard *scoreboard,const shader_core_config *config,
   const memory_config *mem_config, shader_core_stats *stats,
   unsigned cgra_core_id, unsigned tpc) {
   m_memory_config = mem_config;
@@ -2380,7 +2380,7 @@ void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   m_core = NULL;
   m_cgra_core = cgra_core;
   m_operand_collector = NULL;
-  m_scoreboard = NULL;
+  m_scoreboard = scoreboard;
   m_dispatcher_rfu = dispatcher_rfu;
   m_stats = stats;
   m_sid = cgra_core_id;
@@ -2438,12 +2438,12 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
                      cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
-                     const shader_core_config *config,
-                     const memory_config *mem_config, class shader_core_stats *stats,
+                     Scoreboard *scoreboard, const shader_core_config *config,
+                     const memory_config *mem_config, shader_core_stats *stats,
                      unsigned cgra_core_id, unsigned tpc)
       : pipelined_simd_unit(NULL, config, config->smem_latency, m_cgra_core) {
   assert(config->smem_latency > 1);
-  init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, config,
+  init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, scoreboard, config,
        mem_config, stats,cgra_core_id, tpc);
   if (!m_config->m_L1D_config.disabled()) {
     char L1D_name[STRSIZE];

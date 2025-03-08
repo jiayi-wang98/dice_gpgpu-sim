@@ -42,6 +42,12 @@ Scoreboard::Scoreboard(unsigned sid, unsigned n_warps, class gpgpu_t* gpu)
   m_gpu = gpu;
 }
 
+void Scoreboard::resize(unsigned n_warps){
+  // Initialize size of table
+  reg_table.resize(n_warps);
+  longopregs.resize(n_warps);
+}
+
 // Print scoreboard contents
 void Scoreboard::printContents() const {
   printf("scoreboard contents (sid=%d): \n", m_sid);

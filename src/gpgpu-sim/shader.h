@@ -1264,18 +1264,20 @@ class ldst_unit : public pipelined_simd_unit {
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
             cgra_core_ctx *cgra_core, class dispatcher_rfu_t *dispatcher_rfu,
-            const shader_core_config *config,
+            Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, class shader_core_stats *stats,
             unsigned cgra_core_id, unsigned tpc);
 
   // modifiers
   virtual void issue(register_set &inst);
   virtual void cycle();
+  void cycle_cgra();
 
   void fill(mem_fetch *mf);
   void flush();
   void invalidate();
   void writeback();
+  void writeback_cgra();
 
   // accessors
   virtual unsigned clock_multiplier() const;
@@ -1329,7 +1331,7 @@ class ldst_unit : public pipelined_simd_unit {
   void init_cgra(mem_fetch_interface *icnt,
               shader_core_mem_fetch_allocator *mf_allocator,
               cgra_core_ctx *core, class dispatcher_rfu_t *dispatcher,
-              const shader_core_config *config,
+              Scoreboard *scoreboard, const shader_core_config *config,
               const memory_config *mem_config, shader_core_stats *stats,
               unsigned sid, unsigned tpc);
 
@@ -1370,7 +1372,6 @@ class ldst_unit : public pipelined_simd_unit {
   std::list<mem_fetch *> m_response_fifo;
   opndcoll_rfu_t *m_operand_collector;
   Scoreboard *m_scoreboard;
-  class dispatcher_rfu_t *m_dispatcher_rfu;
 
   mem_fetch *m_next_global;
   warp_inst_t m_next_wb;
@@ -1379,6 +1380,7 @@ class ldst_unit : public pipelined_simd_unit {
   class dice_cfg_block_t *m_next_dcb_wb;
   unsigned m_cgra_core_id; 
   class cgra_core_ctx *m_cgra_core;
+  class dispatcher_rfu_t *m_dispatcher_rfu;
 
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared

@@ -13,6 +13,7 @@
 #include "../option_parser.h"
 #include "cgra_core.h"
 #include "stat-tool.h"
+#include "scoreboard.h"
 
 extern int g_debug_execution;
 
@@ -101,6 +102,10 @@ void cgra_core_ctx::execute_CFGBlock(dice_cfg_block_t* cfg_block) {
       checkExecutionStatusAndUpdate(t);
     }
   }
+}
+
+bool cgra_core_ctx::ldst_unit_response_buffer_full() const{
+  return m_ldst_unit->response_buffer_full();
 }
 
 void cgra_core_ctx::execute_1thread_CFGBlock(dice_cfg_block_t* cfg_block, unsigned tid) {
@@ -321,6 +326,9 @@ void cgra_core_ctx::reinit(unsigned start_thread, unsigned end_thread,bool reset
   m_kernel_block_size = end_thread - start_thread;
   resizeSIMTStack(m_kernel_block_size);
   m_simt_stack->reset();
+
+  m_scoreboard->clear();
+  m_scoreboard->resize(m_kernel_block_size);
   
   //reset block state block size
   //delete existing block state
@@ -335,6 +343,8 @@ void cgra_core_ctx::reinit(unsigned start_thread, unsigned end_thread,bool reset
     m_cgra_block_state.push_back(new cgra_block_state_t(this, m_kernel_block_size));
   }
 
+  //reset cgra_unit state
+  m_cgra_unit->reinit();
   //reinit fetch buffer
   m_metadata_fetch_buffer = ifetch_buffer_t();
   m_bitstream_fetch_buffer = ifetch_buffer_t();
@@ -390,7 +400,8 @@ void cgra_core_ctx::create_dispatcher(){
     printf("DICE Sim uArch: create_dispatcher() id=%d\n", m_cgra_core_id);
     fflush(stdout);
   }
-  m_dispatcher_rfu = new dispatcher_rfu_t(m_config, this, &(m_cgra_block_state[DP_CGRA]));
+  m_scoreboard = new Scoreboard(m_cgra_core_id, m_kernel_block_size, m_gpu);
+  m_dispatcher_rfu = new dispatcher_rfu_t(m_config, this, &(m_cgra_block_state[DP_CGRA]), m_scoreboard);
 }
 
 void cgra_core_ctx::create_execution_unit(){
@@ -399,7 +410,7 @@ void cgra_core_ctx::create_execution_unit(){
     fflush(stdout);
   }
   m_cgra_unit = new cgra_unit(m_config, this, &(m_cgra_block_state[DP_CGRA]));
-  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
+  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
 }
 
 //hardware simulation
@@ -820,7 +831,6 @@ void cgra_core_ctx::dispatch(){
 }
 
 void cgra_core_ctx::cgra_execute_block(){
-  m_cgra_unit->cycle();
   if(m_cgra_block_state[DP_CGRA]->dispatch_done() && m_cgra_unit->can_exec() && !m_cgra_block_state[DP_CGRA]->cgra_fabric_done()){
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
       printf("DICE Sim uArch [CGRA_EXECU]: cycle %d, cgra_execute finished for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
@@ -828,9 +838,23 @@ void cgra_core_ctx::cgra_execute_block(){
     }
     m_cgra_block_state[DP_CGRA]->set_cgra_fabric_done();
   }
+  m_cgra_unit->cycle();
 }
 
 void cgra_core_ctx::writeback(){
+  //register writeback
+  if(m_cgra_unit->out_valid()){
+    unsigned tid=m_cgra_unit->out_tid();
+    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA]->get_current_cfg_block(), tid);
+
+    m_dispatcher_rfu->writeback(m_cgra_block_state[DP_CGRA],0,tid);//TODO
+    // TODO: need to move to dispatcher to check if bankconflict
+    m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+    //TODO move to m_dispatcher_rfu->writeback_ldst
+    m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+  }
+
+  //check if cgra fabric is finished
   if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && (m_cgra_block_state[MEM_WRITEBACK]->writeback_done() || m_cgra_block_state[MEM_WRITEBACK]->dummy())){
     //move to writeback stage
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
@@ -857,11 +881,6 @@ void cgra_core_ctx::writeback(){
       printf("DICE Sim uArch [WRITEBACK]: cycle %d, writeback finished for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
       fflush(stdout);
     }
-  }
-  //writeback
-  //register writeback
-  if(m_cgra_unit->out_valid()){
-    m_dispatcher_rfu->writeback(m_cgra_unit->out_tid());
   }
   //ldst unit writeback
   //TODO
@@ -914,14 +933,15 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
   for (unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++) {
     shift_registers[i] = unsigned(-1); //unsigned(-1) means empty/invalid
   }
-  m_latency = MAX_CGRA_FABRIC_LATENCY;
+  m_latency = MAX_CGRA_FABRIC_LATENCY-1;
 }
 
 void cgra_core_ctx::exec(unsigned tid){
   m_cgra_unit->exec(tid);
   //run function simulation here
+  //move to when cgra out valid.
   if(tid != unsigned(-1)){
-    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA]->get_current_cfg_block(), tid);
+    //execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA]->get_current_cfg_block(), tid);
     //if(g_debug_execution >= 3 && m_cgra_core_id==0){
     //  printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
     //}
@@ -929,13 +949,14 @@ void cgra_core_ctx::exec(unsigned tid){
 }
 
 void dispatcher_rfu_t::cycle(){
-  //send to execute if ready
+  //send to execute in ready buffer
   if(m_ready_threads.size() > 0){
     unsigned tid = m_ready_threads.front();
-    if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-      printf("DICE Sim uArch [DISPATCHER]: cycle %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
-      fflush(stdout);
-    }
+    //if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+    //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+    //  fflush(stdout);
+    //}
+    m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), tid);
     m_ready_threads.pop_front();
     m_cgra_core->exec(tid);//issue thread to cgra unit
     m_dispatched_thread++;
@@ -948,11 +969,14 @@ void dispatcher_rfu_t::cycle(){
       //find next active thread id
       unsigned tid = next_active_thread();
       //DICE-TODO: simulate read operands for this tid
-      if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-        printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
-        fflush(stdout);
+      //if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+      //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+      //  fflush(stdout);
+      //}
+      if(!m_scoreboard->checkCollision(tid, (*m_dispatching_block)->get_current_metadata())){
+        m_ready_threads.push_back(tid);
+        m_last_dispatched_tid = tid;
       }
-      m_ready_threads.push_back(tid);
     }
     else{
       //all threads in the block are dispatched
@@ -976,7 +1000,7 @@ void dispatcher_rfu_t::cycle(){
   }
 }
 
-void dispatcher_rfu_t::writeback(unsigned tid){
+void dispatcher_rfu_t::writeback(cgra_block_state_t* block, unsigned reg_num, unsigned tid){
   //writeback
   //TODO
 }
@@ -999,6 +1023,86 @@ unsigned dispatcher_rfu_t::next_active_thread(){
     next_tid++;
     assert(next_tid < (*m_dispatching_block)->get_block_size());
   }
-  m_last_dispatched_tid = next_tid;
   return next_tid;
+}
+
+//Scoreboard
+void Scoreboard::reserveRegisters(const dice_metadata *metadata, unsigned tid){
+  //use iterator
+  for(std::list<operand_info>::const_iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+    if (it->reg_num() > 0) {
+      reserveRegister(tid, it->reg_num());
+    }
+  }
+
+  // Keep track of long operations
+  if (metadata->load_destination_regs.size()!=0) {
+    for (std::list<operand_info>::const_iterator it = metadata->load_destination_regs.begin(); it != metadata->load_destination_regs.end(); ++it) {
+      if (it->reg_num() > 0) {
+        longopregs[tid].insert(it->reg_num());
+      }
+    }
+  }
+}
+
+void Scoreboard::releaseRegisters(const dice_metadata *metadata, unsigned tid){
+  for(std::list<operand_info>::const_iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+    if (it->reg_num() > 0) {
+      releaseRegister(tid, it->reg_num());
+    }
+  }
+}
+
+void Scoreboard::releaseRegistersFromLoad(const dice_metadata *metadata, unsigned tid){
+  for (std::list<operand_info>::const_iterator it = metadata->load_destination_regs.begin(); it != metadata->load_destination_regs.end(); ++it) {
+    if (it->reg_num() > 0) {
+      longopregs[tid].erase(it->reg_num());
+    }
+  }
+}
+
+bool Scoreboard::checkCollision(unsigned tid, const dice_metadata *metadata) const {
+  // Get list of all input and output registers
+  std::set<int> inst_regs;
+  for (std::list<operand_info>::const_iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it) {
+    inst_regs.insert(it->reg_num());
+  }
+
+  for(std::list<operand_info>::const_iterator it = metadata->load_destination_regs.begin(); it != metadata->load_destination_regs.end(); ++it){
+    inst_regs.insert(it->reg_num());
+  }
+
+  for (std::list<operand_info>::const_iterator it = metadata->in_regs.begin(); it != metadata->in_regs.end(); ++it) {
+    if(it->is_builtin()){
+      continue;
+    }
+    inst_regs.insert(it->reg_num());
+  }
+
+  if (metadata->branch) {
+    if (!metadata->uni_bra) {
+      inst_regs.insert(metadata->branch_pred->reg_num());
+    }
+  }
+  // Check for collision, get the intersection of reserved registers and
+  // instruction registers
+
+  std::set<int>::const_iterator it2;
+  for (it2 = inst_regs.begin(); it2 != inst_regs.end(); it2++)
+  {
+    if (reg_table[tid].find(*it2) != reg_table[tid].end()) {
+      //printf("DICE-Sim uArch: cycle %d, collision detected for thread %d, reg %d\n",m_gpu->gpu_sim_cycle, tid, *it2);
+      return true;
+    }
+  }
+  return false;
+}
+
+
+void ldst_unit::cycle_cgra(){
+  writeback_cgra();
+  //TODO
+}
+
+void ldst_unit::writeback_cgra(){
 }
