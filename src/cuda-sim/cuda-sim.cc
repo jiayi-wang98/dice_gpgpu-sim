@@ -2342,8 +2342,10 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     // "Return values"
     if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
-        CFGBlock->space = insn_space;
-        CFGBlock->set_addr(tid, insn_memaddr);
+        if(pI->has_memory_read()||pI->has_memory_write()){
+          CFGBlock->space = insn_space;
+          CFGBlock->add_mem_access(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size);
+        }
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
         //assert(inst.memory_op == insn_memory_op);
       }
@@ -3412,9 +3414,11 @@ void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) 
   std::vector<ptx_instruction*>::iterator i=CFGBlock->get_metadata()->dice_block->ptx_instructions.begin();
   for(;i != CFGBlock->get_metadata()->dice_block->ptx_instructions.end();i++){
     dice_exec_inst_light(CFGBlock, *i,tid);
-  }
-  if (!(this->m_functionalSimulationMode)) {
-    CFGBlock->generate_mem_accesses();
+    //if (!(this->m_functionalSimulationMode)) {
+    //  if((*i) != NULL && (*i)->is_load() || (*i)->is_store()){
+    //    (*i)->generate_mem_accesses();
+    //  }
+    //}
   }
   update_metadata_pc();
 }

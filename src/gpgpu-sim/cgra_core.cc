@@ -33,6 +33,7 @@ cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   m_liveThreadCount = 0;
   m_not_completed = 0;
   m_fetch_stalled_by_simt_stack = false;
+  m_exec_stalled_by_writeback_buffer_full = false;
   m_active_blocks = 0;
   m_gpu = gpu;
   m_kernel = NULL;
@@ -95,11 +96,12 @@ bool cgra_core_ctx::ptx_thread_done(unsigned hw_thread_id) const {
 }
 
 
-void cgra_core_ctx::execute_CFGBlock(dice_cfg_block_t* cfg_block) {
+void cgra_core_ctx::execute_CFGBlock(cgra_block_state_t* cgra_block) {
+  dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
   for (unsigned t = 0; t < m_kernel_block_size; t++) {
     if (cfg_block->active(t)) {
       m_thread[t]->dice_exec_block(cfg_block,t);
-      checkExecutionStatusAndUpdate(t);
+      checkExecutionStatusAndUpdate(cgra_block,t);
     }
   }
 }
@@ -108,21 +110,112 @@ bool cgra_core_ctx::ldst_unit_response_buffer_full() const{
   return m_ldst_unit->response_buffer_full();
 }
 
-void cgra_core_ctx::execute_1thread_CFGBlock(dice_cfg_block_t* cfg_block, unsigned tid) {
+void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, unsigned tid) {
+  dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
   if (cfg_block->active(tid)) {
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
       printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
     }
     m_thread[tid]->dice_exec_block(cfg_block,tid);
-    checkExecutionStatusAndUpdate(tid);
+    checkExecutionStatusAndUpdate(cgra_block,tid);
   }
 }
 
-void cgra_core_ctx::checkExecutionStatusAndUpdate(unsigned tid) {
+void cgra_core_ctx::checkExecutionStatusAndUpdate(cgra_block_state_t* cgra_block, unsigned tid) {
+  dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
+  //get instructions from the cfg_block
+  for(unsigned i=0; i<cfg_block->get_diceblock()->ptx_instructions.size(); i++){
+    ptx_instruction *pI = cfg_block->get_diceblock()->ptx_instructions[i];
+    if (pI->isatomic()) cgra_block->inc_n_atomic();
+    if (pI->space.is_local() && (pI->is_load() || pI->is_store())) {
+      new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
+      unsigned num_addrs;
+      num_addrs = translate_local_memaddr(
+        pI->get_addr(tid), tid,
+        m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster,
+      pI->data_size, (new_addr_type *)localaddrs);
+      pI->set_addr(tid, (new_addr_type *)localaddrs, num_addrs);
+    }
+  }
+  if (ptx_thread_done(tid)) {
+    cgra_block->set_completed(tid);
+  }
   if (m_thread[tid] == NULL || m_thread[tid]->is_done()) {
-     m_liveThreadCount--;
-   }
+    m_liveThreadCount--;
+  }
 }
+
+unsigned cgra_core_ctx::translate_local_memaddr(
+  address_type localaddr, unsigned tid, unsigned num_shader,
+  unsigned datasize, new_addr_type *translated_addrs) {
+// During functional execution, each thread sees its own memory space for
+// local memory, but these need to be mapped to a shared address space for
+// timing simulation.  We do that mapping here.
+
+address_type thread_base = 0;
+unsigned max_concurrent_threads = 0;
+//if (m_config->gpgpu_local_mem_map) {
+//  // Dnew = D*N + T%nTpC + nTpC*C
+//  // N = nTpC*nCpS*nS (max concurent threads)
+//  // C = nS*K + S (hw cta number per gpu)
+//  // K = T/nTpC   (hw cta number per core)
+//  // D = data index
+//  // T = thread
+//  // nTpC = number of threads per CTA
+//  // nCpS = number of CTA per shader
+//  //
+//  // for a given local memory address threads in a CTA map to contiguous
+//  // addresses, then distribute across memory space by CTAs from successive
+//  // shader cores first, then by successive CTA in same shader core
+//  thread_base =
+//      4 * (kernel_padded_threads_per_cta *
+//               (m_sid + num_shader * (tid / kernel_padded_threads_per_cta)) +
+//           tid % kernel_padded_threads_per_cta);
+//  max_concurrent_threads =
+//      kernel_padded_threads_per_cta * kernel_max_cta_per_shader * num_shader;
+//} else {
+  // legacy mapping that maps the same address in the local memory space of
+  // all threads to a single contiguous address region
+  thread_base = 4 * (m_config->n_thread_per_shader * m_cgra_core_id + tid);
+  max_concurrent_threads = num_shader * m_config->n_thread_per_shader;
+//}
+assert(thread_base < 4 /*word size*/ * max_concurrent_threads);
+
+// If requested datasize > 4B, split into multiple 4B accesses
+// otherwise do one sub-4 byte memory access
+unsigned num_accesses = 0;
+
+if (datasize >= 4) {
+  // >4B access, split into 4B chunks
+  assert(datasize % 4 == 0);  // Must be a multiple of 4B
+  num_accesses = datasize / 4;
+  assert(num_accesses <= MAX_ACCESSES_PER_INSN_PER_THREAD);  // max 32B
+  assert(
+      localaddr % 4 ==
+      0);  // Address must be 4B aligned - required if accessing 4B per
+           // request, otherwise access will overflow into next thread's space
+  for (unsigned i = 0; i < num_accesses; i++) {
+    address_type local_word = localaddr / 4 + i;
+    address_type linear_address = local_word * max_concurrent_threads * 4 +
+                                  thread_base + LOCAL_GENERIC_START;
+    translated_addrs[i] = linear_address;
+  }
+} else {
+  // Sub-4B access, do only one access
+  assert(datasize > 0);
+  num_accesses = 1;
+  address_type local_word = localaddr / 4;
+  address_type local_word_offset = localaddr % 4;
+  assert((localaddr + datasize - 1) / 4 ==
+         local_word);  // Make sure access doesn't overflow into next 4B chunk
+  address_type linear_address = local_word * max_concurrent_threads * 4 +
+                                local_word_offset + thread_base +
+                                LOCAL_GENERIC_START;
+  translated_addrs[0] = linear_address;
+}
+return num_accesses;
+}
+
 
 void cgra_core_ctx::set_max_cta(const kernel_info_t &kernel){
   // calculate the max cta count and cta size for local memory address mapping
@@ -796,7 +889,7 @@ void cgra_core_ctx::execute(){
 }
 //inner pipeline in execute();
 void cgra_core_ctx::dispatch(){
-  m_dispatcher_rfu->cycle();
+  m_dispatcher_rfu->dispatch();
   //if(m_cgra_core_id==0 && m_gpu->gpu_sim_cycle > 1891 && m_gpu->gpu_sim_cycle < 1895){
   //  printf("DICE Sim uArch [DISPATCHER]:\n");
   //  if(m_cgra_block_state[DP_CGRA]==NULL){
@@ -842,12 +935,17 @@ void cgra_core_ctx::cgra_execute_block(){
 }
 
 void cgra_core_ctx::writeback(){
-  //register writeback
-  if(m_cgra_unit->out_valid()){
-    unsigned tid=m_cgra_unit->out_tid();
-    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA]->get_current_cfg_block(), tid);
+  //ldst unit writeback
+  //TODO
 
-    m_dispatcher_rfu->writeback(m_cgra_block_state[DP_CGRA],0,tid);//TODO
+
+  //register writeback
+  if(m_cgra_unit->out_valid()){//not stalled
+    unsigned tid=m_cgra_unit->out_tid();
+    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA], tid);
+
+    //check if bank conflict with writeback request from ldst unit, if yes, then writeback to writeback_buffer
+    m_dispatcher_rfu->writeback_cgra(m_cgra_block_state[DP_CGRA],tid);//TODO
     // TODO: need to move to dispatcher to check if bankconflict
     m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
     //TODO move to m_dispatcher_rfu->writeback_ldst
@@ -906,6 +1004,9 @@ void cgra_unit::print() const {
 
 void cgra_unit::cycle(){
   //shift the shift registers to the right
+  if(stalled){
+    return;
+  }
   for (unsigned i = m_latency; i > 0; i--) {
     shift_registers[i] = shift_registers[i - 1];
   }
@@ -934,6 +1035,8 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
     shift_registers[i] = unsigned(-1); //unsigned(-1) means empty/invalid
   }
   m_latency = MAX_CGRA_FABRIC_LATENCY-1;
+  stalled = false;
+  is_busy = false;
 }
 
 void cgra_core_ctx::exec(unsigned tid){
@@ -948,20 +1051,78 @@ void cgra_core_ctx::exec(unsigned tid){
   }
 }
 
-void dispatcher_rfu_t::cycle(){
+void cgra_core_ctx::set_exec_stalled_by_writeback_buffer_full(){
+  m_exec_stalled_by_writeback_buffer_full = true;
+  m_cgra_unit->set_stalled();
+}
+void cgra_core_ctx::clear_exec_stalled_by_writeback_buffer_full(){
+  m_exec_stalled_by_writeback_buffer_full = false;
+  m_cgra_unit->clear_stalled();
+}
+
+rf_bank_controller::rf_bank_controller(unsigned bank_id, dispatcher_rfu_t *rfu) {
+  m_rfu = rfu;
+  m_bank_id = bank_id;
+  m_buffer_size = m_rfu->get_config()->dice_cgra_core_rf_wb_buffer_size;
+  occupied_by_ldst_unit = false;
+}
+
+bool rf_bank_controller::wb_buffer_full(){
+  return m_cgra_writeback_buffer.size() >= m_buffer_size;
+}
+
+void rf_bank_controller::cycle(){
+  if(occupied_by_ldst_unit) return;
+  if(m_cgra_writeback_buffer.size() > 0){
+    //std::pair<unsigned,cgra_block_state_t*> wb = m_cgra_writeback_buffer.front();
+    m_cgra_writeback_buffer.pop_front();
+  }
+}
+
+bool dispatcher_rfu_t::writeback_buffer_full(dice_metadata* metadata) const {
+  //check if the writeback buffer is full for each direct register writeback
+  //get reg_num from metadata
+  for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+    unsigned reg_num = (*it).reg_num();
+    if(m_rf_bank_controller[reg_num]->wb_buffer_full()){
+      return true;
+    }
+  }
+  return false;
+}
+
+void dispatcher_rfu_t::dispatch(){
   //send to execute in ready buffer
   if(m_ready_threads.size() > 0){
-    unsigned tid = m_ready_threads.front();
-    //if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-    //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
-    //  fflush(stdout);
-    //}
-    m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), tid);
-    m_ready_threads.pop_front();
-    m_cgra_core->exec(tid);//issue thread to cgra unit
-    m_dispatched_thread++;
+    if(!exec_stalled()){
+      unsigned tid = m_ready_threads.front();
+      //if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+      //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+      //  fflush(stdout);
+      //}
+      m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), tid);
+      m_ready_threads.pop_front();
+      m_cgra_core->exec(tid);//issue thread to cgra unit
+      m_dispatched_thread++;
+    } 
   } else {
-    m_cgra_core->exec(unsigned(-1));//issue nop to cgra unit
+    if(!exec_stalled()) {
+      m_cgra_core->exec(unsigned(-1));//issue nop to cgra unit
+    }
+  }
+
+  if((*m_dispatching_block)->ready_to_dispatch()) {
+    if(!exec_stalled()) {
+      if(writeback_buffer_full((*m_dispatching_block)->get_current_metadata())){
+        //stall the exec
+        m_cgra_core->set_exec_stalled_by_writeback_buffer_full();
+      }
+    } else {
+      if(!writeback_buffer_full((*m_dispatching_block)->get_current_metadata())){
+        //restart the exec
+        m_cgra_core->clear_exec_stalled_by_writeback_buffer_full();
+      }
+    }
   }
   //check if all thread in current block is dispatched. if not, keep dispatching
   if ((*m_dispatching_block)->ready_to_dispatch() && !(*m_dispatching_block)->dispatch_done()) {
@@ -973,9 +1134,12 @@ void dispatcher_rfu_t::cycle(){
       //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
       //  fflush(stdout);
       //}
-      if(!m_scoreboard->checkCollision(tid, (*m_dispatching_block)->get_current_metadata())){
-        m_ready_threads.push_back(tid);
-        m_last_dispatched_tid = tid;
+      if(!exec_stalled()){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
+        if(!m_scoreboard->checkCollision(tid, (*m_dispatching_block)->get_current_metadata())){
+          read_operands((*m_dispatching_block)->get_current_metadata(), tid);
+          m_ready_threads.push_back(tid);
+          m_last_dispatched_tid = tid;
+        }
       }
     }
     else{
@@ -1000,8 +1164,26 @@ void dispatcher_rfu_t::cycle(){
   }
 }
 
-void dispatcher_rfu_t::writeback(cgra_block_state_t* block, unsigned reg_num, unsigned tid){
-  //writeback
+void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
+  //writeback register from cgra
+  //check each output register in the metadata
+  dice_metadata* metadata = block->get_current_metadata();
+  unsigned num_writeback = 0;
+  for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+    unsigned reg_num = (*it).reg_num();
+    assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
+    //push to writeback buffer
+    m_rf_bank_controller[reg_num]->push_to_buffer(tid,block);
+    num_writeback++;
+  }
+  //cycle every RF bank
+  for(unsigned i = 0; i < m_config->dice_cgra_core_max_rf_banks;i++){
+    m_rf_bank_controller[i]->cycle();
+  }
+  m_num_write_access += num_writeback;
+}
+
+void dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, unsigned tid){
   //TODO
 }
 
@@ -1024,6 +1206,17 @@ unsigned dispatcher_rfu_t::next_active_thread(){
     assert(next_tid < (*m_dispatching_block)->get_block_size());
   }
   return next_tid;
+}
+
+
+void dispatcher_rfu_t::read_operands(dice_metadata *metadata, unsigned tid){
+  unsigned num_input_regs = 0;
+  //get number of input operands from metadata
+  for(std::list<operand_info>::iterator it = metadata->in_regs.begin(); it != metadata->in_regs.end(); ++it){
+    if((*it).is_builtin()) continue;
+    num_input_regs++;
+  }
+  m_num_read_access += num_input_regs;
 }
 
 //Scoreboard

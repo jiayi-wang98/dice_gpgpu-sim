@@ -1045,6 +1045,10 @@ class mem_access_t {
     m_write = wr;
   }
 
+  //DICE-support
+  unsigned get_tid() const { return m_tid; }
+  unsigned get_ld_dest_reg() const { return m_ld_dest_reg; }
+  
   new_addr_type get_addr() const { return m_addr; }
   void set_addr(new_addr_type addr) { m_addr = addr; }
   unsigned get_size() const { return m_req_size; }
@@ -1104,6 +1108,9 @@ class mem_access_t {
   active_mask_t m_warp_mask;
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
+  //DICE-support
+  unsigned m_tid;
+  unsigned m_ld_dest_reg;
 };
 
 class mem_fetch;

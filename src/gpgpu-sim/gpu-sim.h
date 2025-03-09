@@ -361,6 +361,15 @@ class gpgpu_sim_config : public power_config,
   unsigned num_dice_max_thread_per_core() const {
     return m_shader_config.dice_cgra_core_max_threads;
   }
+
+  unsigned num_dice_max_rf_banks() const {
+    return m_shader_config.dice_cgra_core_max_rf_banks;
+  }
+
+  unsigned num_dice_rf_wb_buffer_size() const {
+    return m_shader_config.dice_cgra_core_rf_wb_buffer_size;
+  }
+
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }

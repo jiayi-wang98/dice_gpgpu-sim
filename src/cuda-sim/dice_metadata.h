@@ -203,34 +203,58 @@ class dice_cfg_block_t{
     void set_not_active(unsigned tid);
     void set_addr(unsigned n, new_addr_type addr) {
       if (!m_per_scalar_thread_valid) {
-        m_per_scalar_thread.resize(1536);//TODO: use config
+        m_per_scalar_thread.resize(m_block_size);
         m_per_scalar_thread_valid = true;
       }
       assert(n < m_per_scalar_thread.size() && "Index n out of bounds");
       m_per_scalar_thread[n].memreqaddr[0] = addr;
+      m_per_scalar_thread[n].count++;
+    }
+    void add_mem_access(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(m_block_size);
+        m_per_scalar_thread_valid = true;
+      }
+      assert(n < m_per_scalar_thread.size() && "Index n out of bounds");
+      unsigned index=m_per_scalar_thread[n].count;
+      assert(index < MAX_ACCESSES_PER_BLOCK_PER_THREAD);
+      m_per_scalar_thread[n].memreqaddr[index] = addr;
+      m_per_scalar_thread[n].space[index] = space;
+      m_per_scalar_thread[n].mem_op[index] = insn_memory_op;
+      m_per_scalar_thread[n].size[index] = size;
+      m_per_scalar_thread[n].count++;
+      //printf("DICE Sim uArch [MEM_ACCESS]: thread %u, addr 0x%04x, space %d, mem_op %d, size %d ,num_of_mem_access = %d\n", n, addr, space, insn_memory_op , size,index);
+      //fflush(stdout);
     }
     void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
       if (!m_per_scalar_thread_valid) {
-        m_per_scalar_thread.resize(1536); //TODO: use config
+        m_per_scalar_thread.resize(m_block_size); 
         m_per_scalar_thread_valid = true;
       }
       assert(num_addrs <= MAX_ACCESSES_PER_INSN_PER_THREAD);
       for (unsigned i = 0; i < num_addrs; i++)
         m_per_scalar_thread[n].memreqaddr[i] = addr[i];
+      m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
     void generate_mem_accesses();
-
+    dice_block_t *get_diceblock() { return m_diceblock; }
   protected:
     unsigned m_uid;
+    unsigned m_block_size;
     simt_mask_t* m_block_active_mask;
     dice_metadata *m_metadata;
     dice_block_t *m_diceblock;
     bool m_per_scalar_thread_valid;
     struct per_thread_info {
       per_thread_info() {
-        for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++)
+        for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++){
           memreqaddr[i] = 0;
+          space[i] = undefined_space;
+          mem_op[i] = no_memory_op;
+          size[i] = 0;
+        }
+        count = 0;
       }
       dram_callback_t callback;
       new_addr_type
@@ -239,6 +263,10 @@ class dice_cfg_block_t{
                                                          // requests (to support
                                                          // 32B access in 8 chunks
                                                          // of 4B each)
+      memory_space_t space[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
+      _memory_op_t mem_op[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
+      unsigned size[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
+      unsigned count;
     };
     std::vector<per_thread_info> m_per_scalar_thread;
 };

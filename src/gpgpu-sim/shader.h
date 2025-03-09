@@ -1635,6 +1635,8 @@ class shader_core_config : public core_config {
 
   //DICE
   unsigned dice_cgra_core_max_threads;
+  unsigned dice_cgra_core_max_rf_banks;
+  unsigned dice_cgra_core_rf_wb_buffer_size;
 };
 
 struct shader_core_stats_pod {

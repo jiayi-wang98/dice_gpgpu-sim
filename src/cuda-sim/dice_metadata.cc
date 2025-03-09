@@ -335,6 +335,7 @@ dice_cfg_block_t::dice_cfg_block_t(dice_metadata *metadata)
   op = m_diceblock->ptx_end->op; //Jiayi TODO: should use metadata info in the future
   m_block_active_mask = nullptr;
   m_per_scalar_thread_valid = false;
+  m_block_size = 1536;
 }
 
 dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata)
@@ -349,6 +350,7 @@ dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metad
   m_block_active_mask = new simt_mask_t(block_size);
   op = m_diceblock->ptx_end->op; //Jiayi TODO: should use metadata info in the future
   m_per_scalar_thread_valid = false;
+  m_block_size = block_size;
 }
 
 void dice_cfg_block_t::set_active(const active_mask_t &active) {

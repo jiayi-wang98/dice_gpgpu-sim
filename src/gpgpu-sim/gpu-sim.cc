@@ -231,6 +231,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
       opp, "-dice_cgra_core_max_threads", OPT_UINT32,
       &dice_cgra_core_max_threads,
       "DICE cgra core max number of threads config, i.e.,","2048, 1024, 512, 256");
+  option_parser_register(
+    opp, "-dice_cgra_core_max_rf_banks", OPT_UINT32,
+    &dice_cgra_core_max_rf_banks,
+    "DICE cgra core max number of distinc RF banks, i.e.,","16, 32, 64, 128");
+  
+  option_parser_register(
+    opp, "-dice_cgra_core_rf_wb_buffer_size", OPT_UINT32,
+    &dice_cgra_core_rf_wb_buffer_size,
+    "DICE cgra core RF writeback buffer size, i.e.,","16, 32, 64, 128");
       
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
                          &m_L1T_config.m_config_string,

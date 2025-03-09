@@ -65,7 +65,10 @@ class cgra_core_ctx {
     }
     unsigned get_max_block_size() const { return m_max_block_size;}
     unsigned get_n_active_cta() const { return m_active_blocks; }
-
+    
+    unsigned translate_local_memaddr(
+      address_type localaddr, unsigned tid, unsigned num_shader,
+      unsigned datasize, new_addr_type *translated_addrs);
     void reinit(unsigned start_thread, unsigned end_thread,bool reset_not_completed);
     unsigned sim_init_thread(
       kernel_info_t &kernel, ptx_thread_info **thread_info, int sid, unsigned tid,
@@ -87,9 +90,9 @@ class cgra_core_ctx {
 
     //thread operation
     bool ptx_thread_done(unsigned hw_thread_id) const;
-    void execute_CFGBlock(dice_cfg_block_t* cfg_block);
-    void execute_1thread_CFGBlock(dice_cfg_block_t* cfg_block,unsigned tid);
-    void checkExecutionStatusAndUpdate(unsigned tid);
+    void execute_CFGBlock(cgra_block_state_t* cfg_block);
+    void execute_1thread_CFGBlock(cgra_block_state_t* cgra_block,unsigned tid);
+    void checkExecutionStatusAndUpdate(cgra_block_state_t* cfg_block, unsigned tid);
 
     //hardware simulation
     void create_front_pipeline();
@@ -105,6 +108,10 @@ class cgra_core_ctx {
     void clear_stalled_by_simt_stack(){
       m_fetch_stalled_by_simt_stack = false;
     }
+    void set_exec_stalled_by_writeback_buffer_full();
+    void clear_exec_stalled_by_writeback_buffer_full();
+    bool is_stalled_by_simt_stack() const { return m_fetch_stalled_by_simt_stack; }
+    bool is_exec_stalled_by_writeback_buffer_full() const { return m_exec_stalled_by_writeback_buffer_full; }
     void fetch_metadata();
     void fetch_bitstream();
     void decode();
@@ -198,6 +205,7 @@ class cgra_core_ctx {
     std::vector<cgra_block_state_t*> m_cgra_block_state;//current decoded block state
     // fetch
     bool m_fetch_stalled_by_simt_stack;
+    bool m_exec_stalled_by_writeback_buffer_full;
     unsigned m_fetch_waiting_block_id;
     read_only_cache *m_L1I;  // instruction cache
     ifetch_buffer_t m_metadata_fetch_buffer;
@@ -283,6 +291,12 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        m_active_threads = active;
        m_done_exit = false;
      }
+
+     void set_completed(unsigned lane) {
+      assert(m_active_threads.test(lane));
+      m_active_threads.reset(lane);
+      n_completed++;
+    }
 
     bool dummy() const { 
       if(!m_metadata_buffer.m_valid) return true; //empty block
@@ -392,6 +406,11 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      class cgra_core_ctx * get_cgra_core() { return m_cgra_core; }
      bool active(unsigned tid) const { return m_active_threads.test(tid); }
      simt_mask_t get_active_threads() const { return m_active_threads; }
+
+     unsigned get_n_atomic() const { return m_n_atomic; }
+     void inc_n_atomic() { m_n_atomic++; }
+     void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
+
     private:
      class cgra_core_ctx *m_cgra_core;
      unsigned m_cta_id;
@@ -433,7 +452,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                      // acknowledged
      unsigned m_loads_outstanding;  // number of load requests sent but not yet
-                                     // get a response                               
+                                     // get a response                             
      unsigned m_thread_in_pipeline;
 };
 
@@ -446,12 +465,13 @@ class cgra_unit {
    // modifiers
    void reinit(){
       is_busy = false;
+      stalled = false;
       for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
         shift_registers[i] = unsigned(-1);
       }
    }
    void exec(unsigned tid) {
-     shift_registers[0]=tid;
+    shift_registers[0]=tid;
    }
    void cycle();
    void set_latency(unsigned l) { assert(l<MAX_CGRA_FABRIC_LATENCY); m_latency = l; }
@@ -459,6 +479,7 @@ class cgra_unit {
       return shift_registers[m_latency];
    }
    unsigned out_valid() {
+      if(stalled) return false;
       return out_tid() != unsigned(-1);
    }
  
@@ -469,6 +490,9 @@ class cgra_unit {
    bool stallable() const {};
    void print() const;
    const char *get_name() { return m_name.c_str(); }
+   bool is_stalled() { return stalled; }
+   void set_stalled() { stalled = true; }
+   void clear_stalled() { stalled = false; }
  
   protected:
    unsigned m_latency;
@@ -478,9 +502,28 @@ class cgra_unit {
    unsigned shift_registers[MAX_CGRA_FABRIC_LATENCY]; //storing thread id
    bool is_busy;
    cgra_block_state_t **m_executing_block;
+   bool stalled;
  };
 
+ class rf_bank_controller {
+  public:
+    rf_bank_controller(unsigned bank_id, class dispatcher_rfu_t *rfu);
+    bool wb_buffer_full();
+    void push_to_buffer(unsigned tid, cgra_block_state_t *block) {
+      m_cgra_writeback_buffer.push_back(std::make_pair(tid, block));
+    }
 
+    void cycle();
+    
+    bool occupied_by_ldst_unit;
+  private:
+    unsigned m_buffer_size;
+    unsigned m_bank_id;
+    std::list<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer;
+    
+    //backward pointer
+    dispatcher_rfu_t *m_rfu;
+};
 
  class dispatcher_rfu_t{
   public:
@@ -491,14 +534,31 @@ class cgra_unit {
       m_dispatched_thread = 0;
       m_last_dispatched_tid = unsigned(-1);
       m_scoreboard = scoreboard;
+      m_num_read_access = 0;
+      m_num_write_access = 0;
+      init_rf_bank_controller();
     }
-    ~dispatcher_rfu_t() {}
-    void cycle();
-    void writeback(cgra_block_state_t* block, unsigned reg_num, unsigned tid);
+    void init_rf_bank_controller(){
+      for(unsigned i=0; i<m_config->dice_cgra_core_max_rf_banks; i++){
+        m_rf_bank_controller.push_back(new rf_bank_controller(i, this));
+      }
+    }
+    ~dispatcher_rfu_t() {
+      for(unsigned i=0; i<m_config->dice_cgra_core_max_rf_banks; i++){
+        delete m_rf_bank_controller[i];
+      }
+    }
+    void dispatch();
+    void writeback_cgra(cgra_block_state_t* block,unsigned tid);
+    void writeback_ldst(cgra_block_state_t* block,unsigned reg_num, unsigned tid);
     unsigned next_active_thread();
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
     bool current_finished() { return (*m_dispatching_block)->dispatch_done(); }
+    bool writeback_buffer_full(dice_metadata *metadata) const;
+    const shader_core_config *get_config() { return m_config; }
+    bool exec_stalled() const { return m_cgra_core->is_exec_stalled_by_writeback_buffer_full(); }
+    void read_operands(dice_metadata *metadata, unsigned tid);
 
   private:
     const shader_core_config *m_config;
@@ -508,5 +568,11 @@ class cgra_unit {
     unsigned m_last_dispatched_tid;
     std::list<unsigned> m_ready_threads;
     Scoreboard *m_scoreboard;
+    std::vector<rf_bank_controller*> m_rf_bank_controller;
+
+    //statistics
+    unsigned long long m_num_read_access;
+    unsigned long long m_num_write_access;
  };
+
 #endif
