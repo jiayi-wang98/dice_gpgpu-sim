@@ -736,16 +736,38 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
       byte_sector_mask.set(k);
 
     for (unsigned j = start, i = 0; j <= end; ++j, ++i) {
-      const mem_access_t *ma = new mem_access_t(
+      mem_access_t *ma;
+      mem_fetch *n_mf;
+      //DICE-support
+      if(m_gpu->dice_enabled()){
+      //if(0){
+        ma = new mem_access_t(mf->get_access_type(), mf->get_addr() + SECTOR_SIZE * i, mf->get_space(), SECTOR_SIZE,
+                           mf->is_write(),  // Now performing a read
+                           mf->get_tid(), mf->get_reg_num(), mf->get_ldst_port_num(), mf->get_access_warp_mask(),
+                           mf->get_access_byte_mask() & byte_sector_mask,
+                           std::bitset<SECTOR_CHUNCK_SIZE>().set(j), m_gpu->gpgpu_ctx);
+        n_mf = new mem_fetch(*ma, mf->get_cgra_block_state(), mf->get_ctrl_size(), 
+                           mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
+                           m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle,mf);
+      } else {
+        ma = new mem_access_t(
           mf->get_access_type(), mf->get_addr() + SECTOR_SIZE * i, SECTOR_SIZE,
           mf->is_write(), mf->get_access_warp_mask(),
           mf->get_access_byte_mask() & byte_sector_mask,
           std::bitset<SECTOR_CHUNCK_SIZE>().set(j), m_gpu->gpgpu_ctx);
 
-      mem_fetch *n_mf =
+        n_mf =
           new mem_fetch(*ma, NULL, mf->get_ctrl_size(), mf->get_wid(),
                         mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
                         m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle, mf);
+      }
+
+      
+       //Jiayi Test
+      //printf("line 750: mem_fetch *n_mf = new mem_fetch(*ma, NULL, mf->get_ctrl_size(), mf->get_wid(),\n");
+      //printf("mf_addr: %x, mf_tid=%d\n", n_mf->get_addr(), n_mf->get_tid());
+      //fflush(stdout);
+
 
       result.push_back(n_mf);
       byte_sector_mask <<= SECTOR_SIZE;
@@ -756,6 +778,7 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
         "mask = , data size = %u",
         mf->get_addr(), mf->get_access_sector_mask().count(),
         mf->get_data_size());
+    fflush(stdout);
     assert(0 && "Undefined data size is received");
   }
 

@@ -1046,9 +1046,58 @@ class mem_access_t {
   }
 
   //DICE-support
+  mem_access_t( mem_access_type type, new_addr_type address, memory_space_t space, unsigned size,
+               bool wr,  unsigned tid, unsigned ld_dest_reg, unsigned port_num, gpgpu_context *ctx) {
+    init(ctx);
+    m_type = type;
+    m_addr = address;
+    m_req_size = size;
+    m_write = wr;
+    m_tid = tid;
+    m_ld_dest_reg = ld_dest_reg;
+    m_ldst_port_num = port_num;
+    m_space = space;
+  }
+
+  mem_access_t( mem_access_type type, new_addr_type address, memory_space_t space, unsigned size,
+               bool wr,  unsigned tid, unsigned ld_dest_reg, unsigned port_num, const active_mask_t &active_mask,
+               const mem_access_byte_mask_t &byte_mask,
+               const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx) 
+              :m_warp_mask(active_mask),
+               m_byte_mask(byte_mask),
+               m_sector_mask(sector_mask) {
+    init(ctx);
+    m_type = type;
+    m_addr = address;
+    m_req_size = size;
+    m_write = wr;
+    m_tid = tid;
+    m_ld_dest_reg = ld_dest_reg;
+    m_ldst_port_num = port_num;
+    m_space = space;
+  }
+  //copy constructor
+  mem_access_t(const mem_access_t &access) {
+    init(access.gpgpu_ctx);
+    m_type = access.m_type;
+    m_addr = access.m_addr;
+    m_req_size = access.m_req_size;
+    m_write = access.m_write;
+    m_warp_mask = access.m_warp_mask;
+    m_byte_mask = access.m_byte_mask;
+    m_sector_mask = access.m_sector_mask;
+    //DICE-support
+    m_tid = access.m_tid;
+    m_ld_dest_reg = access.m_ld_dest_reg;
+    m_ldst_port_num = access.m_ldst_port_num;
+    m_space = access.m_space;
+  }
+
   unsigned get_tid() const { return m_tid; }
   unsigned get_ld_dest_reg() const { return m_ld_dest_reg; }
-  
+  unsigned get_ldst_port_num() const { return m_ldst_port_num; }
+  memory_space_t get_space() const { return m_space.get_type(); }
+
   new_addr_type get_addr() const { return m_addr; }
   void set_addr(new_addr_type addr) { m_addr = addr; }
   unsigned get_size() const { return m_req_size; }
@@ -1111,6 +1160,8 @@ class mem_access_t {
   //DICE-support
   unsigned m_tid;
   unsigned m_ld_dest_reg;
+  unsigned m_ldst_port_num;
+  memory_space_t m_space;
 };
 
 class mem_fetch;
@@ -1399,7 +1450,9 @@ class warp_inst_t : public inst_t {
   bool accessq_empty() const { return m_accessq.empty(); }
   unsigned accessq_count() const { return m_accessq.size(); }
   const mem_access_t &accessq_back() { return m_accessq.back(); }
+  const mem_access_t &accessq_front() { return m_accessq.front(); }
   void accessq_pop_back() { m_accessq.pop_back(); }
+  void accessq_pop_front() { m_accessq.pop_front(); }
 
   bool dispatch_delay() {
     if (cycles > 0) cycles--;

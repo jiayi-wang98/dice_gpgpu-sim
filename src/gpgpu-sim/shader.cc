@@ -61,6 +61,15 @@ mem_fetch *shader_core_mem_fetch_allocator::alloc(
                     m_core_id, m_cluster_id, m_memory_config, cycle);
   return mf;
 }
+
+mem_fetch *shader_core_mem_fetch_allocator::alloc_cgra(
+  cgra_block_state_t *cgra_block, mem_access_t access,
+  unsigned long long cycle) const {
+  //mem_access_t access_dup(access);
+mem_fetch *mf = new mem_fetch(access, cgra_block, access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE,
+                  m_core_id, m_cluster_id, m_memory_config, cycle);
+return mf;
+}
 /////////////////////////////////////////////////////////////////////////////
 
 std::list<unsigned> shader_core_ctx::get_regs_written(const inst_t &fvt) const {
@@ -2091,6 +2100,14 @@ bool ldst_unit::response_buffer_full() const {
 }
 
 void ldst_unit::fill(mem_fetch *mf) {
+  //DICE-support
+  if(m_cgra_core!=NULL){
+    mf->set_status(
+      IN_SHADER_LDST_RESPONSE_FIFO,
+      m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+    m_response_fifo.push_back(mf);
+    return;
+  }
   mf->set_status(
       IN_SHADER_LDST_RESPONSE_FIFO,
       m_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle);
@@ -2370,7 +2387,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
 
 void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   shader_core_mem_fetch_allocator *mf_allocator,
-  cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
+  cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,cgra_block_state_t **cgra_block,
   Scoreboard *scoreboard,const shader_core_config *config,
   const memory_config *mem_config, shader_core_stats *stats,
   unsigned cgra_core_id, unsigned tpc) {
@@ -2403,8 +2420,11 @@ void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
   m_writeback_arb = 0;
   m_next_global = NULL;
+  m_next_cgra_writeback = NULL;
+  m_next_global_cgra= NULL;
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
+  m_current_cgra_block = cgra_block;
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -2437,13 +2457,13 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      shader_core_mem_fetch_allocator *mf_allocator,
-                     cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu,
+                     cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu, cgra_block_state_t **cgra_block,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
                      unsigned cgra_core_id, unsigned tpc)
       : pipelined_simd_unit(NULL, config, config->smem_latency, m_cgra_core) {
   assert(config->smem_latency > 1);
-  init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, scoreboard, config,
+  init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, cgra_block, scoreboard, config,
        mem_config, stats,cgra_core_id, tpc);
   if (!m_config->m_L1D_config.disabled()) {
     char L1D_name[STRSIZE];

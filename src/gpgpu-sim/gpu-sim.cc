@@ -237,9 +237,15 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     "DICE cgra core max number of distinc RF banks, i.e.,","16, 32, 64, 128");
   
   option_parser_register(
-    opp, "-dice_cgra_core_rf_wb_buffer_size", OPT_UINT32,
-    &dice_cgra_core_rf_wb_buffer_size,
-    "DICE cgra core RF writeback buffer size, i.e.,","16, 32, 64, 128");
+    opp, "-dice_cgra_core_rf_cgra_wb_buffer_size", OPT_UINT32,
+    &dice_cgra_core_rf_cgra_wb_buffer_size,
+    "DICE cgra core RF CGRA writeback buffer size, i.e.,","16, 32, 64, 128");
+
+  option_parser_register(
+    opp, "-dice_cgra_core_rf_ldst_wb_buffer_size", OPT_UINT32,
+    &dice_cgra_core_rf_cgra_wb_buffer_size,
+    "DICE cgra core RF LDST unit writeback buffer size, i.e.,","16, 32, 64, 128");
+
       
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
                          &m_L1T_config.m_config_string,
@@ -862,6 +868,7 @@ gpgpu_sim::gpgpu_sim(const gpgpu_sim_config &config, gpgpu_context *ctx)
                        m_shader_stats, m_memory_config, m_memory_stats);
 
   gpu_sim_insn = 0;
+  gpu_sim_block = 0;
   gpu_tot_sim_insn = 0;
   gpu_tot_issued_cta = 0;
   gpu_completed_cta = 0;
@@ -1977,14 +1984,28 @@ void gpgpu_sim::cycle() {
       }
     }
 
-    if (!(gpu_sim_cycle % 50000)) {
-      // deadlock detection
-      if (m_config.gpu_deadlock_detect && gpu_sim_insn == last_gpu_sim_insn) {
-        gpu_deadlock = true;
-      } else {
-        last_gpu_sim_insn = gpu_sim_insn;
+    //DICE-support
+    if (gpgpu_ctx->g_dice_enabled) {
+      if (!(gpu_sim_cycle % 50000)) {
+        // deadlock detection
+        if (m_config.gpu_deadlock_detect && gpu_sim_block == last_gpu_sim_block) {
+          gpu_deadlock = true;
+        } else {
+          last_gpu_sim_block = gpu_sim_block;
+        }
+      }
+    } else {
+      if (!(gpu_sim_cycle % 50000)) {
+        // deadlock detection
+        if (m_config.gpu_deadlock_detect && gpu_sim_insn == last_gpu_sim_insn) {
+          gpu_deadlock = true;
+        } else {
+          last_gpu_sim_insn = gpu_sim_insn;
+        }
       }
     }
+
+
     try_snap_shot(gpu_sim_cycle);
     spill_log_to_file(stdout, 0, gpu_sim_cycle);
 
@@ -2074,3 +2095,7 @@ const shader_core_config *gpgpu_sim::getShaderCoreConfig() {
 const memory_config *gpgpu_sim::getMemoryConfig() { return m_memory_config; }
 
 simt_core_cluster *gpgpu_sim::getSIMTCluster() { return *m_cluster; }
+
+bool gpgpu_sim::dice_enabled() {
+  return gpgpu_ctx->g_dice_enabled;
+}

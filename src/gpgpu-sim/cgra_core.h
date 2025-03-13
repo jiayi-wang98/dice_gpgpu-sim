@@ -163,6 +163,7 @@ class cgra_core_ctx {
     void accept_bitstream_fetch_response(mem_fetch *mf);
     void accept_ldst_unit_response(mem_fetch *mf);
     unsigned get_id() const { return m_cgra_core_id; }
+    void store_ack(class mem_fetch *mf);
 
     //status
     void get_L1I_sub_stats(struct cache_sub_stats &css) const ;
@@ -280,6 +281,9 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        m_next = 0;
        dispatch_completed = false;
        cgra_fabric_completed = false;
+       m_num_loads_done = 0;
+       m_num_stores_done = 0;
+       writeback_completed = false;
      }
      void init(address_type start_metadata_pc, unsigned cta_id,
                const simt_mask_t &active) {
@@ -300,7 +304,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
 
     bool dummy() const { 
       if(!m_metadata_buffer.m_valid) return true; //empty block
-      if(hardware_done()) return true;
+      //if(hardware_done()) return true;
       return false;
     }
 
@@ -365,15 +369,21 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      }
 
      bool writeback_done() const {
+      return writeback_completed; 
+     }
+
+     bool block_done() const {
       return writeback_completed & stores_done(); 
      }
 
+     bool loads_done();
+     bool stores_done();
+     bool mem_access_queue_empty();
+
      bool stores_done() const { return m_stores_outstanding == 0; }
-     void inc_store_req() { m_stores_outstanding++; }
-     void dec_store_req() {
-       assert(m_stores_outstanding > 0);
-       m_stores_outstanding--;
-     }
+     void inc_store_req();
+     void dec_store_req();
+     unsigned get_stores_outstanding() const { return m_stores_outstanding; }
 
      bool metadata_buffer_empty() const {
       if (m_metadata_buffer.m_valid) return false;
@@ -410,6 +420,15 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      unsigned get_n_atomic() const { return m_n_atomic; }
      void inc_n_atomic() { m_n_atomic++; }
      void dec_n_atomic(unsigned n) { m_n_atomic -= n; }
+
+     void inc_number_of_loads_done() { m_num_loads_done++; }
+     void dec_number_of_loads_done() { m_num_loads_done--; }
+     unsigned get_number_of_loads_done() { return m_num_loads_done; }
+
+
+     void inc_number_of_stores_done();
+     void dec_number_of_stores_done() { m_num_stores_done--; }
+     unsigned get_number_of_stores_done() { return m_num_stores_done; }
 
     private:
      class cgra_core_ctx *m_cgra_core;
@@ -451,8 +470,8 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
    
      unsigned m_stores_outstanding;  // number of store requests sent but not yet
                                      // acknowledged
-     unsigned m_loads_outstanding;  // number of load requests sent but not yet
-                                     // get a response                             
+     unsigned m_num_loads_done;  // number of load that have been done       
+     unsigned m_num_stores_done;  // number of stores that have been acknowledged                   
      unsigned m_thread_in_pipeline;
 };
 
@@ -517,9 +536,11 @@ class cgra_unit {
     
     bool occupied_by_ldst_unit;
   private:
-    unsigned m_buffer_size;
+    unsigned m_cgra_buffer_size;
+    unsigned m_ldst_buffer_size;
     unsigned m_bank_id;
     std::list<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer;
+    std::list<std::pair<unsigned,cgra_block_state_t*>> m_ldst_writeback_buffer; //tbd, not really necessary
     
     //backward pointer
     dispatcher_rfu_t *m_rfu;
@@ -548,9 +569,10 @@ class cgra_unit {
         delete m_rf_bank_controller[i];
       }
     }
+    void rf_cycle();
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
-    void writeback_ldst(cgra_block_state_t* block,unsigned reg_num, unsigned tid);
+    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, unsigned tid);
     unsigned next_active_thread();
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }

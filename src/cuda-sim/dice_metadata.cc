@@ -338,9 +338,10 @@ dice_cfg_block_t::dice_cfg_block_t(dice_metadata *metadata)
   m_block_size = 1536;
 }
 
-dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata)
+dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata, gpgpu_context* ctx)
     : m_uid(uid),
-      m_metadata(metadata)
+      m_metadata(metadata),
+      gpgpu_ctx(ctx)
 {
   metadata_pc = metadata->get_PC();
   reconvergence_pc = metadata->reconvergence_meta_pc;
@@ -351,6 +352,9 @@ dice_cfg_block_t::dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metad
   op = m_diceblock->ptx_end->op; //Jiayi TODO: should use metadata info in the future
   m_per_scalar_thread_valid = false;
   m_block_size = block_size;
+  m_config = &(ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config());
+  //reserve max number of ports in ldst unit, set as 8 for now std::vector<std::list<mem_access_t>> m_accessq;
+  m_accessq.resize(MAX_LDST_UNIT_PORTS);  //ldst_port->access per port
 }
 
 void dice_cfg_block_t::set_active(const active_mask_t &active) {
@@ -358,6 +362,7 @@ void dice_cfg_block_t::set_active(const active_mask_t &active) {
   //active.dump();
   simt_mask_t *active_mask = new simt_mask_t(active);
   m_block_active_mask = active_mask;
+  m_active_count = active_mask->count();
   //Atomic TODO
   //if (m_isatomic) {
   //  for (unsigned i = 0; i < m_config->get_warp_size(); i++) {
@@ -370,11 +375,176 @@ void dice_cfg_block_t::set_active(const active_mask_t &active) {
   //}
 }
 
+unsigned dice_cfg_block_t::get_num_stores(){
+  return (m_metadata->num_store)*m_active_count;
+}
+
+unsigned dice_cfg_block_t::get_num_loads(){
+  return ((m_metadata->load_destination_regs).size())*m_active_count;
+}
+
 void dice_cfg_block_t::set_not_active(unsigned tid) {
   m_block_active_mask->reset(tid);
 }
 
-void dice_cfg_block_t::generate_mem_accesses() {
-  //TODO
-  
+address_type line_size_based_tag_func_cgra(new_addr_type address,
+  new_addr_type line_size) {
+// gives the tag for an address based on a given line size
+return address & ~(line_size - 1);
+}
+
+void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
+  //convert memory ops to mem_access_t
+  if(m_per_scalar_thread_valid){
+    unsigned num_stores=0;
+    new_addr_type cache_block_size = 0;  // in bytes
+    for(unsigned i=0; i<m_per_scalar_thread[tid].count; i++){
+      new_addr_type addr = m_per_scalar_thread[tid].memreqaddr[i];
+      memory_space_t space = m_per_scalar_thread[tid].space[i];
+      _memory_op_t insn_memory_op = m_per_scalar_thread[tid].mem_op[i];
+      unsigned size = m_per_scalar_thread[tid].size[i];
+      unsigned ld_dest_reg = m_per_scalar_thread[tid].ld_dest_reg[i];
+      bool is_write = insn_memory_op == memory_store;
+      mem_access_type access_type;
+      switch (space.get_type()) {
+        case const_space:
+        case param_space_kernel:
+          cache_block_size = m_config->gpgpu_cache_constl1_linesize;
+          access_type = CONST_ACC_R;
+          break;
+        case tex_space:
+          cache_block_size = m_config->gpgpu_cache_texl1_linesize;
+          access_type = TEXTURE_ACC_R;
+          break;
+        case global_space:
+          access_type = is_write ? GLOBAL_ACC_W : GLOBAL_ACC_R;
+          break;
+        case local_space:
+        case param_space_local:
+          access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
+          break;
+        case shared_space:
+          break;
+        case sstarr_space:
+          break;
+        default:
+          assert(0);
+          break;
+      }
+      //const/texture space cache
+      if(cache_block_size){
+        mem_access_byte_mask_t byte_mask;
+        unsigned block_address = line_size_based_tag_func_cgra(addr, cache_block_size);
+        unsigned idx = addr - block_address;
+        for (unsigned i = 0; i < size; i++) byte_mask.set(idx + i);
+
+        if(!is_write){
+          //use iterator to find the ld_dest_reg
+          unsigned i=0;
+          for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
+            if(it->reg_num() == ld_dest_reg){
+              unsigned port_index = i;
+              assert(port_index < (MAX_LDST_UNIT_PORTS/2));
+              mem_access_t access(access_type, addr,space, cache_block_size, is_write, tid, ld_dest_reg, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
+              m_accessq[port_index].push_back(access);
+              break;
+            }
+            i++;
+          }
+        } else {
+          //put them in different ports(4-7)
+          unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          assert(port_index < MAX_LDST_UNIT_PORTS);
+          mem_access_t access(access_type, addr, space, cache_block_size, is_write, tid, ld_dest_reg, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
+          m_accessq[port_index].push_back(access);
+          num_stores++;
+        }
+      } else { //L1D cache
+        //assume sector cache now
+        bool sector_segment_size = false; //TODO understand this
+        unsigned segment_size;
+        switch (size) {
+          case 1:
+            segment_size = 32;
+            break;
+          case 2:
+            segment_size = sector_segment_size ? 32 : 64;
+            break;
+          case 4:
+          case 8:
+          case 16:
+            segment_size = sector_segment_size ? 32 : 128;
+            break;
+        }
+        unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+        unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
+                                            // chunk does this thread access?
+        mem_access_sector_mask_t sector_mask;
+        sector_mask.set(chunk);
+
+        unsigned idx = (addr & 127);
+        std::bitset<128> byte_mask;
+        active_mask_t active_mask = *m_block_active_mask;
+        for (unsigned i = 0; i < size; i++)
+          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) byte_mask.set(idx + i);
+        //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
+        if(!is_write){
+          //use iterator to find the ld_dest_reg
+          unsigned i=0;
+          for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
+            if(it->reg_num() == ld_dest_reg){
+              unsigned port_index = i;
+              assert(port_index < (MAX_LDST_UNIT_PORTS/2));
+              mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask, gpgpu_ctx);
+              m_accessq[port_index].push_back(access);
+              break;
+            }
+            i++;
+          }
+        } else {
+          //put them in different ports(4-7)
+          unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          assert(port_index < MAX_LDST_UNIT_PORTS);
+          mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+          m_accessq[port_index].push_back(access);
+          num_stores++;
+        }
+
+
+        //check if second access needed
+        if (block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
+            addr = addr + size - 1;
+            unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+            unsigned chunk = (addr & 127) / 32;
+            sector_mask.set(chunk);
+            unsigned idx = (addr & 127);
+            for (unsigned i = 0; i < size; i++)
+              if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) byte_mask.set(idx + i);
+
+            //second access
+            if(!is_write){
+              //use iterator to find the ld_dest_reg
+              unsigned i=0;
+              for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
+                if(it->reg_num() == ld_dest_reg){
+                  unsigned port_index = i;
+                  assert(port_index < (MAX_LDST_UNIT_PORTS/2));
+                  mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+                  m_accessq[port_index].push_back(access);
+                  break;
+                }
+                i++;
+              }
+            } else {
+              //put them in different ports(4-7)
+              unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+              assert(port_index < MAX_LDST_UNIT_PORTS);
+              mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+              m_accessq[port_index].push_back(access);
+              num_stores++;
+            }
+        }
+      }
+    }
+  }
 }

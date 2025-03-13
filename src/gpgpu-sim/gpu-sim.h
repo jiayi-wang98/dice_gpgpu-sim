@@ -366,8 +366,11 @@ class gpgpu_sim_config : public power_config,
     return m_shader_config.dice_cgra_core_max_rf_banks;
   }
 
-  unsigned num_dice_rf_wb_buffer_size() const {
-    return m_shader_config.dice_cgra_core_rf_wb_buffer_size;
+  unsigned num_dice_rf_cgra_wb_buffer_size() const {
+    return m_shader_config.dice_cgra_core_rf_cgra_wb_buffer_size;
+  }
+  unsigned num_dice_rf_ldst_wb_buffer_size() const {
+    return m_shader_config.dice_cgra_core_rf_ldst_wb_buffer_size;
   }
 
   unsigned num_shader() const { return m_shader_config.num_shader(); }
@@ -383,6 +386,7 @@ class gpgpu_sim_config : public power_config,
   }
 
   bool flush_l1() const { return gpgpu_flush_l1_cache; }
+  shader_core_config &get_shader_core_config() { return m_shader_config; }
 
  private:
   void init_clock_domains(void);
@@ -577,6 +581,9 @@ class gpgpu_sim : public gpgpu_t {
   // backward pointer
   class gpgpu_context *gpgpu_ctx;
 
+  //DICE-support
+  bool dice_enabled();
+
  private:
   // clocks
   void reinit_clock_domains(void);
@@ -636,6 +643,9 @@ class gpgpu_sim : public gpgpu_t {
 
   unsigned long long last_liveness_message_time;
 
+  //DICE-support
+  unsigned long long last_gpu_sim_block;
+
   std::map<std::string, FuncCache> m_special_cache_config;
 
   std::vector<std::string>
@@ -652,6 +662,7 @@ class gpgpu_sim : public gpgpu_t {
 
  public:
   unsigned long long gpu_sim_insn;
+  unsigned long long gpu_sim_block;
   unsigned long long gpu_tot_sim_insn;
   unsigned long long gpu_sim_insn_last_update;
   unsigned gpu_sim_insn_last_update_sid;

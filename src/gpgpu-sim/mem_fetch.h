@@ -57,6 +57,11 @@ class mem_fetch {
             unsigned ctrl_size, unsigned wid, unsigned sid, unsigned tpc,
             const memory_config *config, unsigned long long cycle,
             mem_fetch *original_mf = NULL, mem_fetch *original_wr_mf = NULL);
+  //DICE-support
+  mem_fetch(const mem_access_t &access, class cgra_block_state_t* cgra_block,
+            unsigned ctrl_size, unsigned sid, unsigned tpc,
+            const memory_config *config, unsigned long long cycle,
+            mem_fetch *original_mf = NULL, mem_fetch *original_wr_mf = NULL);
   ~mem_fetch();
 
   void set_status(enum mem_fetch_status status, unsigned long long cycle);
@@ -119,6 +124,13 @@ class mem_fetch {
 
   address_type get_pc() const { return m_inst.empty() ? -1 : m_inst.pc; }
   const warp_inst_t &get_inst() { return m_inst; }
+  //DICE-support
+  class cgra_block_state_t* get_cgra_block_state() { return m_cgra_block; }
+  unsigned get_reg_num() { return m_access.get_ld_dest_reg(); }
+  unsigned get_tid() const { return m_access.get_tid(); }
+  unsigned get_ldst_port_num() const { return m_access.get_ldst_port_num(); }
+  memory_space_t get_space() const { return m_access.get_space(); }
+
   enum mem_fetch_status get_status() const { return m_status; }
 
   const memory_config *get_mem_config() { return m_mem_config; }
@@ -158,6 +170,10 @@ class mem_fetch {
                                  // when fixed icnt latency mode is enabled
   // requesting instruction (put last so mem_fetch prints nicer in gdb)
   warp_inst_t m_inst;
+
+  //DICE-support
+  class cgra_block_state_t* m_cgra_block;
+
   static unsigned sm_next_mf_request_uid;
   const memory_config *m_mem_config;
   unsigned icnt_flit_size;

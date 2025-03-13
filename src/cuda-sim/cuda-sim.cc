@@ -2344,7 +2344,7 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         if(pI->has_memory_read()||pI->has_memory_write()){
           CFGBlock->space = insn_space;
-          CFGBlock->add_mem_access(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size);
+          CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num());
         }
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
         //assert(inst.memory_op == insn_memory_op);

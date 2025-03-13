@@ -17,6 +17,35 @@
 
 extern int g_debug_execution;
 
+//map from int to string
+const char *mem_stage_stall_type_str(enum mem_stage_stall_type type) {
+  switch (type) {
+    case NO_RC_FAIL:
+      return "NO_RC_FAIL";
+    case BK_CONF:
+      return "BK_CONF";
+    case MSHR_RC_FAIL:
+      return "MSHR_RC_FAIL";
+    case ICNT_RC_FAIL:
+      return "ICNT_RC_FAIL";
+    case COAL_STALL:
+      return "COAL_STALL";
+    case TLB_STALL:
+      return "TLB_STALL";
+    case DATA_PORT_STALL:
+      return "DATA_PORT_STALL";
+    case WB_ICNT_RC_FAIL:
+      return "WB_ICNT_RC_FAIL";
+    case WB_CACHE_RSRV_FAIL:
+      return "WB_CACHE_RSRV_FAIL";
+    default:
+      assert(0);
+      break;
+  }
+  return "UNKOWN_MEM_STAGE_STALL_TYPE";
+}
+
+
 cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   unsigned cgra_core_id, unsigned tpc_id,const shader_core_config *config,
   const memory_config *mem_config,shader_core_stats *stats){
@@ -117,6 +146,13 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
       printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
     }
     m_thread[tid]->dice_exec_block(cfg_block,tid);
+    //generate memory accesses to ldst unit
+    cfg_block->generate_mem_accesses(tid);
+    if(g_debug_execution==3 &m_cgra_core_id == 0){
+      cfg_block->print_mem_ops_tid(tid);
+      //cfg_block->print_m_accessq();
+    }
+    //check status and update
     checkExecutionStatusAndUpdate(cgra_block,tid);
   }
 }
@@ -503,7 +539,7 @@ void cgra_core_ctx::create_execution_unit(){
     fflush(stdout);
   }
   m_cgra_unit = new cgra_unit(m_config, this, &(m_cgra_block_state[DP_CGRA]));
-  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
+  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, &(m_cgra_block_state[DP_CGRA]), m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
 }
 
 //hardware simulation
@@ -521,7 +557,7 @@ void cgra_core_ctx::accept_metadata_fetch_response(mem_fetch *mf) {
   mf->set_status(IN_SHADER_FETCHED,
                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   if(g_debug_execution >= 3 && m_cgra_core_id==0){
-    printf("DICE Sim uArch: accept_metadata_fetch_response() pc=0x%03x\n", mf->get_addr());
+    printf("DICE Sim uArch: accept_metadata_fetch_response() pc=0x%08x\n", mf->get_addr());
     fflush(stdout);
   }
   m_L1I->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -531,7 +567,7 @@ void cgra_core_ctx::accept_bitstream_fetch_response(mem_fetch *mf) {
   mf->set_status(IN_SHADER_FETCHED,
                  m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
   if(g_debug_execution >= 3 && m_cgra_core_id==0){
-     printf("DICE Sim uArch: accept_bitstream_fetch_response() addr=0x%03x\n", mf->get_addr());
+     printf("DICE Sim uArch: accept_bitstream_fetch_response() addr=0x%08x\n", mf->get_addr());
      fflush(stdout);
   }
   m_L1B->fill(mf, m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle);
@@ -539,7 +575,7 @@ void cgra_core_ctx::accept_bitstream_fetch_response(mem_fetch *mf) {
 
 void cgra_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
   if(g_debug_execution >= 3 && m_cgra_core_id==0){
-    printf("DICE Sim uArch: accept_ladst_unit_response() addr=0x%03x\n", mf->get_addr());
+    printf("DICE Sim uArch: accept_ldst_unit_response() addr=0x%08x\n", mf->get_addr());
     fflush(stdout);
   }
   m_ldst_unit->fill(mf);
@@ -687,6 +723,23 @@ unsigned cgra_block_state_t::active_count() const{
   return m_active_threads.count(); 
 }
 
+void cgra_block_state_t::inc_store_req() { 
+  m_stores_outstanding++;
+  if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+    printf("DICE Sim uArch: inc_store_req() stores_outstanding=%d\n", m_stores_outstanding);
+    fflush(stdout);
+  }
+}
+
+void cgra_block_state_t::dec_store_req() {
+  assert(m_stores_outstanding > 0);
+  m_stores_outstanding--;
+  if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+    printf("DICE Sim uArch: dec_store_req() stores_outstanding=%d\n", m_stores_outstanding);
+    fflush(stdout);
+  }
+}
+
 dice_metadata* cgra_block_state_t::get_current_metadata(){
   return get_current_cfg_block()->get_metadata(); 
 }
@@ -796,7 +849,7 @@ void cgra_core_ctx::fetch_bitstream(){
 dice_cfg_block_t* cgra_core_ctx::get_dice_cfg_block(address_type pc){
   // read the metadata from the functional model
   dice_metadata* metadata = m_gpu->gpgpu_ctx->get_meta_from_pc(pc);
-  dice_cfg_block_t* cfg_block = new dice_cfg_block_t(m_cgra_core_id, m_kernel_block_size, metadata);
+  dice_cfg_block_t* cfg_block = new dice_cfg_block_t(m_cgra_core_id, m_kernel_block_size, metadata, m_gpu->gpgpu_ctx);
   cfg_block->set_active(m_simt_stack->get_active_mask());
   return cfg_block;
 }
@@ -821,11 +874,11 @@ void cgra_core_ctx::decode(){
     if (metadata->is_ret) {
       //wait for previous block to finish
       m_cgra_block_state[MF_DE]->set_done_exit();
-      if(!m_cgra_block_state[DP_CGRA]->dummy() && !m_cgra_block_state[DP_CGRA]->cgra_fabric_done()){
+      if(!m_cgra_block_state[DP_CGRA]->dummy()){
         //printf("DICE-Sim uArch: cycle %d, decode block is exit block but DP-CGRA block is not finished\n", m_gpu->gpu_sim_cycle);
         return;
       }
-      if (!m_cgra_block_state[MEM_WRITEBACK]->dummy() && !m_cgra_block_state[MEM_WRITEBACK]->writeback_done()) {
+      if (!m_cgra_block_state[MEM_WRITEBACK]->dummy() && !m_cgra_block_state[MEM_WRITEBACK]->block_done()) {
         //printf("DICE-Sim uArch: cycle %d, decode block is exit block but MEM_WRITEBACK block is not finished\n", m_gpu->gpu_sim_cycle);
         return;
       }
@@ -879,6 +932,23 @@ void cgra_core_ctx::decode(){
     //set_can_fetch_metadata();
   }
 }
+
+bool cgra_block_state_t::loads_done(){
+  assert(m_num_loads_done <= get_current_cfg_block()->get_num_loads());
+  if(m_num_loads_done == get_current_cfg_block()->get_num_loads()){
+    return true;
+  }
+  return false;
+}
+bool cgra_block_state_t::stores_done(){
+  assert(m_num_stores_done <= get_current_cfg_block()->get_num_stores());
+  if(m_num_stores_done == get_current_cfg_block()->get_num_stores()){
+    return true;
+  }
+  return false;
+}
+
+bool cgra_block_state_t::mem_access_queue_empty(){ return get_current_cfg_block()->accessq_empty(); }
 
 void cgra_core_ctx::set_can_fetch_metadata() {m_metadata_fetch_buffer.m_valid = false;}
 
@@ -935,25 +1005,30 @@ void cgra_core_ctx::cgra_execute_block(){
 }
 
 void cgra_core_ctx::writeback(){
-  //ldst unit writeback
-  //TODO
-
-
-  //register writeback
-  if(m_cgra_unit->out_valid()){//not stalled
-    unsigned tid=m_cgra_unit->out_tid();
-    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA], tid);
-
-    //check if bank conflict with writeback request from ldst unit, if yes, then writeback to writeback_buffer
-    m_dispatcher_rfu->writeback_cgra(m_cgra_block_state[DP_CGRA],tid);//TODO
-    // TODO: need to move to dispatcher to check if bankconflict
-    m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
-    //TODO move to m_dispatcher_rfu->writeback_ldst
-    m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+  //check if cgra fabric is finished
+  //if all load writeback are done, then set writeback done
+  if(!m_cgra_block_state[MEM_WRITEBACK]->dummy()){
+    if(m_cgra_block_state[MEM_WRITEBACK]->loads_done() && m_cgra_block_state[MEM_WRITEBACK]->stores_done() && !m_cgra_block_state[MEM_WRITEBACK]->writeback_done()){
+      m_cgra_block_state[MEM_WRITEBACK]->set_writeback_done();
+      m_gpu->gpu_sim_block += m_cgra_block_state[MEM_WRITEBACK]->active_count();
+      if(g_debug_execution >= 3 && m_cgra_core_id==0){
+        printf("DICE Sim uArch [WRITEBACK]: cycle %d, writeback finished for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
+        fflush(stdout);
+      }
+    } else {
+      if(g_debug_execution >= 3 && m_cgra_core_id==0 && m_gpu->gpu_sim_cycle > 4290 && m_gpu->gpu_sim_cycle < 4295){
+        printf("DICE Sim uArch [WRITEBACK-DEBUG]: cycle %d, writeback state for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
+        printf("loads_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->loads_done());
+        printf("finished number of loads = %d, need number of loads = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_loads_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_loads());
+        printf("stores_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->stores_done());
+        printf("finished number of stores = %d, need number of stores = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_stores_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_stores());
+        fflush(stdout);
+      }
+    }
   }
 
-  //check if cgra fabric is finished
-  if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && (m_cgra_block_state[MEM_WRITEBACK]->writeback_done() || m_cgra_block_state[MEM_WRITEBACK]->dummy())){
+  //if done, move to next stage
+  if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && m_cgra_block_state[DP_CGRA]->mem_access_queue_empty() && (m_cgra_block_state[MEM_WRITEBACK]->block_done() || m_cgra_block_state[MEM_WRITEBACK]->dummy())){
     //move to writeback stage
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
       printf("DICE Sim uArch [WRITEBACK]: cycle %d, writeback on going for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
@@ -962,9 +1037,8 @@ void cgra_core_ctx::writeback(){
     m_cgra_block_state[MEM_WRITEBACK] = m_cgra_block_state[DP_CGRA];
     m_cgra_block_state[DP_CGRA] = new cgra_block_state_t(this, m_kernel_block_size);
     m_cgra_block_state[DP_CGRA]->init(unsigned(-1), m_cgra_block_state[MEM_WRITEBACK]->get_cta_id(), m_cgra_block_state[MEM_WRITEBACK]->get_active_threads());
-    //FAKE writeback now
-    //TODO
-    m_cgra_block_state[MEM_WRITEBACK]->set_writeback_done();
+    
+    
     //if metadata fetch stalled by simt stack,update simt stack and clear it
     if (m_fetch_stalled_by_simt_stack && (!m_cgra_block_state[MEM_WRITEBACK]->dummy())){
       if(m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id == m_fetch_waiting_block_id) {
@@ -975,13 +1049,29 @@ void cgra_core_ctx::writeback(){
         clear_stalled_by_simt_stack();
       }
     }
-    if(g_debug_execution >= 3 && m_cgra_core_id==0){
-      printf("DICE Sim uArch [WRITEBACK]: cycle %d, writeback finished for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
-      fflush(stdout);
-    }
   }
+  //register writeback
+  if(m_cgra_unit->out_valid()){//not stalled
+    unsigned tid=m_cgra_unit->out_tid();
+    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA], tid);
+    //check if bank conflict with writeback request from ldst unit, if yes, then writeback to writeback_buffer
+    m_dispatcher_rfu->writeback_cgra(m_cgra_block_state[DP_CGRA],tid);//TODO
+    //move to dispatcher to check if bankconflict
+    //m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+    //move to m_dispatcher_rfu->writeback_ldst
+    //m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+  }
+  //cycle every RF bank
+  m_dispatcher_rfu->rf_cycle();
+
   //ldst unit writeback
-  //TODO
+  m_ldst_unit->cycle_cgra();
+}
+
+void dispatcher_rfu_t::rf_cycle(){
+  for(unsigned i = 0; i < m_rf_bank_controller.size(); i++){
+    m_rf_bank_controller[i]->cycle();
+  }
 }
 
 void shader_memory_interface::push_cgra(mem_fetch *mf) {
@@ -1063,16 +1153,20 @@ void cgra_core_ctx::clear_exec_stalled_by_writeback_buffer_full(){
 rf_bank_controller::rf_bank_controller(unsigned bank_id, dispatcher_rfu_t *rfu) {
   m_rfu = rfu;
   m_bank_id = bank_id;
-  m_buffer_size = m_rfu->get_config()->dice_cgra_core_rf_wb_buffer_size;
+  m_cgra_buffer_size = m_rfu->get_config()->dice_cgra_core_rf_cgra_wb_buffer_size;
+  m_ldst_buffer_size = m_rfu->get_config()->dice_cgra_core_rf_ldst_wb_buffer_size;
   occupied_by_ldst_unit = false;
 }
 
 bool rf_bank_controller::wb_buffer_full(){
-  return m_cgra_writeback_buffer.size() >= m_buffer_size;
+  return (m_cgra_writeback_buffer.size() >= m_cgra_buffer_size);
 }
 
 void rf_bank_controller::cycle(){
-  if(occupied_by_ldst_unit) return;
+  if(occupied_by_ldst_unit) {
+    occupied_by_ldst_unit = false;
+    return;
+  }
   if(m_cgra_writeback_buffer.size() > 0){
     //std::pair<unsigned,cgra_block_state_t*> wb = m_cgra_writeback_buffer.front();
     m_cgra_writeback_buffer.pop_front();
@@ -1175,16 +1269,35 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
     //push to writeback buffer
     m_rf_bank_controller[reg_num]->push_to_buffer(tid,block);
     num_writeback++;
+    //clear scoreboard
+    m_scoreboard->releaseRegister(tid, reg_num);
   }
-  //cycle every RF bank
-  for(unsigned i = 0; i < m_config->dice_cgra_core_max_rf_banks;i++){
-    m_rf_bank_controller[i]->cycle();
-  }
+  ////cycle every RF bank
+  //for(unsigned i = 0; i < m_config->dice_cgra_core_max_rf_banks;i++){
+  //  m_rf_bank_controller[i]->cycle();
+  //}
   m_num_write_access += num_writeback;
 }
 
-void dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, unsigned tid){
-  //TODO
+bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, unsigned tid){
+  //release scoreboard register
+  //assert(m_rf_bank_controller[reg_num]->occupied_by_ldst_unit == false && "RF bank conflict by ldst_unit.");
+  if(m_rf_bank_controller[reg_num]->occupied_by_ldst_unit == false){
+    m_rf_bank_controller[reg_num]->occupied_by_ldst_unit = true;
+    m_scoreboard->releaseRegister(tid, reg_num);
+    //increase load writeback counter
+    block->inc_number_of_loads_done();
+    if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+      printf("DICE Sim: [WRITEBACK]: cycle %d, load writeback done for thread %d, reg %d, current load done %d, need totoal %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid, reg_num, block->get_number_of_loads_done(), block->get_current_cfg_block()->get_num_loads());
+      fflush(stdout);
+    }
+    return true;
+  }
+  if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+    printf("DICE-Sim: [WRITEBACK]: cycle %d, core %d, RF bank %d conflict from ldst_unit for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle,m_cgra_core->get_id(),reg_num ,tid);
+    fflush(stdout);
+  }
+  return false;
 }
 
 unsigned dispatcher_rfu_t::next_active_thread(){
@@ -1292,10 +1405,527 @@ bool Scoreboard::checkCollision(unsigned tid, const dice_metadata *metadata) con
 }
 
 
-void ldst_unit::cycle_cgra(){
-  writeback_cgra();
-  //TODO
+void ldst_unit::writeback_cgra(){
+  // process next instruction that is going to writeback
+  if (m_next_cgra_writeback!=NULL) {
+    if (m_dispatcher_rfu->writeback_ldst(m_next_cgra_writeback->get_cgra_block_state(), m_next_cgra_writeback->get_reg_num(), m_next_cgra_writeback->get_tid())) {
+      //DICE-TODO handle load to shared space
+      //bool block_completed = false;
+      //if (m_next_cgra_writeback->get_space() != shared_space) {
+      //  assert(m_pending_writes[m_next_cgra_writeback->get_tid()][m_next_cgra_writeback->get_reg_num()] > 0);
+      //  unsigned still_pending = --m_pending_writes[m_next_cgra_writeback->get_tid()][m_next_cgra_writeback->get_reg_num()];
+      //  if (!still_pending) {
+      //    m_pending_writes[m_next_cgra_writeback->get_tid()].erase(m_next_cgra_writeback->get_reg_num());
+      //    block_completed = true;
+      //  }
+      //} 
+      //else {  // shared
+      //  m_scoreboard->releaseRegister(m_next_wb.warp_id(),
+      //                                m_next_wb.out[r]);
+      //  block_completed = true;
+      //}
+      //if (block_completed) {
+      //  m_next_cgra_writeback->get_cgra_block_state()->set_writeback_done();
+      //}
+      m_next_cgra_writeback=NULL;
+      m_last_inst_gpu_sim_cycle = m_cgra_core->get_gpu()->gpu_sim_cycle;
+      m_last_inst_gpu_tot_sim_cycle = m_cgra_core->get_gpu()->gpu_tot_sim_cycle;
+    }
+  }
+
+  unsigned serviced_client = -1;
+  for (unsigned c = 0; (m_next_cgra_writeback==NULL) && (c < m_num_writeback_clients);
+       c++) {
+    unsigned next_client = (c + m_writeback_arb) % m_num_writeback_clients;
+    switch (next_client) {
+      case 0:  // shared memory DICE-TODO
+        //if (!m_pipeline_reg[0]->empty()) {
+        //  m_next_wb = *m_pipeline_reg[0];
+        //  if (m_next_wb.isatomic()) {
+        //    m_next_wb.do_atomic();
+        //    m_core->decrement_atomic_count(m_next_wb.warp_id(),
+        //                                   m_next_wb.active_count());
+        //  }
+        //  m_core->dec_inst_in_pipeline(m_pipeline_reg[0]->warp_id());
+        //  m_pipeline_reg[0]->clear();
+        //  serviced_client = next_client;
+        //}
+        break;
+      case 1:  // texture response
+        if (m_L1T->access_ready()) {
+          mem_fetch *mf = m_L1T->next_access();
+          m_next_cgra_writeback = mf;
+          delete mf;
+          serviced_client = next_client;
+        }
+        break;
+      case 2:  // const cache response
+        if (m_L1C->access_ready()) {
+          mem_fetch *mf = m_L1C->next_access();
+          m_next_cgra_writeback = mf;
+          delete mf;
+          serviced_client = next_client;
+        }
+        break;
+      case 3:  // global/local
+        if (m_next_global_cgra!=NULL) {
+          m_next_cgra_writeback = m_next_global_cgra;
+          //if (m_next_global->isatomic()) {
+          //  m_core->decrement_atomic_count(
+          //      m_next_global->get_wid(),
+          //      m_next_global->get_access_warp_mask().count());
+          //}
+          delete m_next_global_cgra;
+          m_next_global_cgra = NULL;
+          serviced_client = next_client;
+        }
+        break;
+      case 4:
+        if (m_L1D && m_L1D->access_ready()) {
+          mem_fetch *mf = m_L1D->next_access();
+          m_next_cgra_writeback = mf;
+          delete mf;
+          serviced_client = next_client;
+        }
+        break;
+      default:
+        assert(0);abort();
+    }
+  }
+  // update arbitration priority only if:
+  // 1. the writeback buffer was available
+  // 2. a client was serviced
+  if (serviced_client != (unsigned)-1) {
+    m_writeback_arb = (serviced_client + 1) % m_num_writeback_clients;
+  }
 }
 
-void ldst_unit::writeback_cgra(){
+void ldst_unit::process_request(){
 }
+
+void ldst_unit::cycle_cgra(){
+  m_L1T->cycle();
+  m_L1C->cycle();
+  if (m_L1D) {
+    m_L1D->cycle();
+    if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle_cgra();
+  }
+  //handle ld response from cache
+  writeback_cgra();
+  if (!m_response_fifo.empty()) {
+    mem_fetch *mf = m_response_fifo.front();
+    if (mf->get_access_type() == TEXTURE_ACC_R) {
+      if (m_L1T->fill_port_free()) {
+        m_L1T->fill(mf, m_cgra_core->get_gpu()->gpu_sim_cycle +
+        m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+        m_response_fifo.pop_front();
+      }
+    } else if (mf->get_access_type() == CONST_ACC_R) {
+      if (m_L1C->fill_port_free()) {
+        mf->set_status(IN_SHADER_FETCHED,
+          m_cgra_core->get_gpu()->gpu_sim_cycle +
+          m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+        m_L1C->fill(mf, m_cgra_core->get_gpu()->gpu_sim_cycle +
+        m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+        if(g_debug_execution >= 3 && m_cgra_core_id==0){
+          printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, const cache fill for tid %d, addr 0x%08x\n",m_cgra_core->get_gpu()->gpu_sim_cycle, mf->get_tid(), mf->get_addr());
+          fflush(stdout);
+        }
+        m_response_fifo.pop_front();
+      }
+    } else {
+      if (mf->get_type() == WRITE_ACK ||(m_config->gpgpu_perfect_mem && mf->get_is_write())) {
+        m_cgra_core->store_ack(mf);
+        m_response_fifo.pop_front();
+        delete mf;
+      } else {
+        assert(!mf->get_is_write());  // L1 cache is write evict, allocate line
+                                      // on load miss only
+
+        bool bypassL1D = false;
+        //DICE-TODO
+        //if (CACHE_GLOBAL == mf->get_inst().cache_op || (m_L1D == NULL)) {
+        //  bypassL1D = true;
+        //} else if (mf->get_access_type() == GLOBAL_ACC_R ||
+        //           mf->get_access_type() ==
+        //               GLOBAL_ACC_W) {  // global memory access
+        //  if (m_cgra_core->get_config()->gmem_skip_L1D) bypassL1D = true;
+        //}
+        if (bypassL1D) {
+          if (m_next_global_cgra == NULL) {
+            mf->set_status(IN_SHADER_FETCHED,
+              m_cgra_core->get_gpu()->gpu_sim_cycle +
+              m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+            m_response_fifo.pop_front();
+            m_next_global_cgra = mf;
+          }
+        } else {
+          if (m_L1D->fill_port_free()) {
+            m_L1D->fill(mf, m_cgra_core->get_gpu()->gpu_sim_cycle +
+            m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+            m_response_fifo.pop_front();
+          }
+        }
+      }
+    }
+  }
+
+
+
+  cgra_block_state_t* cgra_block = *m_current_cgra_block;
+  enum mem_stage_stall_type rc_fail = NO_RC_FAIL;
+  mem_stage_access_type type;
+  //get current access
+  if(!cgra_block->ready_to_dispatch()) return;
+  if(!(cgra_block->get_current_cfg_block()->accessq_empty())){
+    bool shared_done = true;
+    bool constant_done = true;
+    bool texture_done = true;
+    bool memory_done = true;
+    std::vector<std::list<mem_access_t>> accessq = cgra_block->get_current_cfg_block()->get_accessq();
+    for(unsigned i = 0; i < accessq.size(); i++){
+      if(!accessq[i].empty()){
+        mem_access_t* access = &(accessq[i].front());
+        shared_done = true;
+        constant_done = true;
+        texture_done = true;
+        memory_done = true;
+        shared_done = shared_cycle_cgra(cgra_block,access, rc_fail, type);
+        constant_done = constant_cycle_cgra(cgra_block,access, rc_fail, type);
+        texture_done = texture_cycle_cgra(cgra_block, access,rc_fail, type);
+        memory_done = memory_cycle_cgra(cgra_block, access,rc_fail, type);
+        m_mem_rc = rc_fail;
+        if(!(shared_done && constant_done && texture_done && memory_done)){
+          assert(rc_fail != NO_RC_FAIL);
+          if(g_debug_execution >= 3 && m_cgra_core_id==0){
+            //printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, tid = %d, cgra block id=%d, rc_fail=%s\n",m_cgra_core->get_gpu()->gpu_sim_cycle, access->get_tid(), cgra_block->get_current_metadata()->meta_id, mem_stage_stall_type_str(rc_fail));
+            fflush(stdout);
+          }
+          m_stats->gpgpu_n_stall_shd_mem++;
+          m_stats->gpu_stall_shd_mem_breakdown[type][rc_fail]++;
+          //return;
+        }
+      }
+    }
+  }
+}
+
+
+mem_stage_stall_type ldst_unit::process_memory_access_queue_cgra(cache_t *cache, cgra_block_state_t* cgra_block, mem_access_t* access) {
+  mem_stage_stall_type result = NO_RC_FAIL;
+  if (!cache->data_port_free()) return DATA_PORT_STALL;
+  mem_fetch *mf = m_mf_allocator->alloc_cgra(cgra_block, *access ,m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+  std::list<cache_event> events;
+  enum cache_request_status status = cache->access(mf->get_addr(), mf, m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle, events);
+  return process_cache_access_cgra(cache, cgra_block, events, mf, status);
+}
+
+mem_stage_stall_type ldst_unit::process_cache_access_cgra(
+    cache_t *cache, cgra_block_state_t* cgra_block,
+    std::list<cache_event> &events, mem_fetch *mf,
+    enum cache_request_status status) {
+  mem_stage_stall_type result = NO_RC_FAIL;
+  bool write_sent = was_write_sent(events);
+  bool read_sent = was_read_sent(events);
+  if (write_sent) {
+    unsigned inc_ack = (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                           ? (mf->get_data_size() / SECTOR_SIZE)
+                           : 1;
+
+    for (unsigned i = 0; i < inc_ack; ++i) cgra_block->inc_store_req();
+  }
+  if (status == HIT) {
+    if(m_dispatcher_rfu->writeback_ldst(cgra_block, mf->get_reg_num(), mf->get_tid())){
+      assert(!read_sent);
+      if (mf->is_write()) {
+        m_pending_writes[mf->get_tid()][mf->get_reg_num()]--;
+        //inc write ack
+        cgra_block->inc_number_of_stores_done();
+        if(g_debug_execution >= 3 && m_cgra_core_id==0){
+          printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread %d, reg %d, current store done %d, need total %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, mf->get_tid(), mf->get_reg_num(), cgra_block->get_number_of_stores_done(), cgra_block->get_current_cfg_block()->get_num_stores());
+          fflush(stdout);
+        } 
+      }
+      //direct writeback
+      cgra_block->get_current_cfg_block()->pop_mem_access(mf->get_ldst_port_num());
+      if (!write_sent) delete mf;
+    }
+  } else if (status == RESERVATION_FAIL) {
+    result = BK_CONF;
+    assert(!read_sent);
+    assert(!write_sent);
+    delete mf;
+  } else {
+    assert(status == MISS || status == HIT_RESERVED);
+    cgra_block->get_current_cfg_block()->pop_mem_access(mf->get_ldst_port_num());
+  }
+  //if (!inst.accessq_empty() && result == NO_RC_FAIL) result = COAL_STALL;
+  return result;
+}
+
+void cgra_block_state_t::inc_number_of_stores_done() {
+  m_num_stores_done++;
+}
+
+
+mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache_cgra(l1_cache *cache, cgra_block_state_t* cgra_block, mem_access_t* access) {
+  mem_stage_stall_type result = NO_RC_FAIL;
+  //bool no_bk_conf = 0;
+  if (m_config->m_L1D_config.l1_latency > 0) {
+    //for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle // move to top level
+      mem_fetch *mf = m_mf_allocator->alloc_cgra(cgra_block, *access, m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+      unsigned bank_id = m_config->m_L1D_config.set_bank(mf->get_addr());
+      assert(bank_id < m_config->m_L1D_config.l1_banks);
+
+      if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) ==
+          NULL) {
+        l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1] = mf;
+
+        if (mf->is_write()) {
+          unsigned inc_ack =
+              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                  ? (mf->get_data_size() / SECTOR_SIZE)
+                  : 1;
+
+          for (unsigned i = 0; i < inc_ack; ++i) cgra_block->inc_store_req();
+        }
+        //direct writeback
+        cgra_block->get_current_cfg_block()->pop_mem_access(mf->get_ldst_port_num());
+      } else {
+        result = BK_CONF;
+        delete mf;
+      }
+    //}
+    //if (no_bk_conf==0 && result != BK_CONF) result = COAL_STALL;
+    return result;
+  } else {
+    mem_fetch *mf = m_mf_allocator->alloc_cgra(cgra_block, *access, m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+    std::list<cache_event> events;
+    enum cache_request_status status = cache->access(
+        mf->get_addr(), mf,
+        m_cgra_core->get_gpu()->gpu_sim_cycle + m_core->get_gpu()->gpu_tot_sim_cycle,
+        events);
+    return process_cache_access_cgra(cache,cgra_block, events, mf, status);
+  }
+}
+
+void ldst_unit::L1_latency_queue_cycle_cgra() {
+  for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
+    if ((l1_latency_queue[j][0]) != NULL) {
+      mem_fetch *mf_next = l1_latency_queue[j][0];
+      std::list<cache_event> events;
+      enum cache_request_status status =
+          m_L1D->access(mf_next->get_addr(), mf_next,
+                        m_cgra_core->get_gpu()->gpu_sim_cycle +
+                            m_cgra_core->get_gpu()->gpu_tot_sim_cycle,
+                        events);
+
+      bool write_sent = was_write_sent(events);
+      bool read_sent = was_read_sent(events);
+
+      if (status == HIT) {
+        assert(!read_sent);
+        l1_latency_queue[j][0] = NULL;
+        if (mf_next->is_write()) {
+          if (mf_next->get_reg_num()> 0) {
+            assert(m_pending_writes[mf_next->get_tid()][mf_next->get_reg_num()] > 0);
+            unsigned still_pending =
+                --m_pending_writes[mf_next->get_tid()][mf_next->get_reg_num()];
+            if (!still_pending) {
+              m_pending_writes[mf_next->get_tid()].erase(mf_next->get_reg_num());
+            }
+          }
+          //inc write ack
+          mf_next->get_cgra_block_state()->inc_number_of_stores_done();
+          if(g_debug_execution >= 3 && m_cgra_core_id==0){
+            printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread %d, reg %d, current store done %d, need total %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, mf_next->get_tid(), mf_next->get_reg_num(), mf_next->get_cgra_block_state()->get_number_of_stores_done(), mf_next->get_cgra_block_state()->get_current_cfg_block()->get_num_stores());
+            fflush(stdout);
+          } 
+        } 
+        // For write hit in WB policy
+        if (mf_next->is_write() && !write_sent) {
+          unsigned dec_ack =
+              (m_config->m_L1D_config.get_mshr_type() == SECTOR_ASSOC)
+                  ? (mf_next->get_data_size() / SECTOR_SIZE)
+                  : 1;
+
+          mf_next->set_reply();
+
+          for (unsigned i = 0; i < dec_ack; ++i) m_cgra_core->store_ack(mf_next);
+        }
+        //writeback
+        if(!mf_next->is_write()) {
+          //Add later when complete
+          m_dispatcher_rfu->writeback_ldst(mf_next->get_cgra_block_state(), mf_next->get_reg_num(), mf_next->get_tid());
+        } 
+
+        if (!write_sent) delete mf_next;
+
+      } else if (status == RESERVATION_FAIL) {
+        assert(!read_sent);
+        assert(!write_sent);
+      } else {
+        assert(status == MISS || status == HIT_RESERVED);
+        l1_latency_queue[j][0] = NULL;
+        if(mf_next->is_write()){
+          mf_next->get_cgra_block_state()->inc_number_of_stores_done();
+          if(g_debug_execution >= 3 && m_cgra_core_id==0){
+            printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, store ack for tid %d, addr 0x%08x, number_of_stores_done = %d, need total = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, mf_next->get_tid(), mf_next->get_addr(), mf_next->get_cgra_block_state()->get_number_of_stores_done(), mf_next->get_cgra_block_state()->get_current_cfg_block()->get_num_stores());
+            fflush(stdout);
+          }
+        }
+      }
+    }
+
+    for (unsigned stage = 0; stage < m_config->m_L1D_config.l1_latency - 1;
+         ++stage)
+      if (l1_latency_queue[j][stage] == NULL) {
+        l1_latency_queue[j][stage] = l1_latency_queue[j][stage + 1];
+        l1_latency_queue[j][stage + 1] = NULL;
+      }
+  }
+}
+
+
+void cgra_core_ctx::store_ack(class mem_fetch *mf) {
+  assert(mf->get_type() == WRITE_ACK ||
+         (m_config->gpgpu_perfect_mem && mf->get_is_write()));
+  unsigned thread_id = mf->get_tid();
+  mf->get_cgra_block_state()->dec_store_req();
+}
+
+bool ldst_unit::constant_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+                               mem_stage_access_type &fail_type) {
+  if (!cgra_block->ready_to_dispatch() || ((access->get_type() != CONST_ACC_R) ))
+    return true;
+
+  if(g_debug_execution >= 3 && m_cgra_core_id==0){
+    printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, constant access from tid %d, addr = 0x%04x, block = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, access->get_tid(), access->get_addr(), cgra_block->get_current_metadata()->meta_id);
+    fflush(stdout);
+  }
+  mem_stage_stall_type fail;
+  fail = process_memory_access_queue_cgra(m_L1C, cgra_block, access);
+
+  if (fail != NO_RC_FAIL) {
+    rc_fail = fail;  // keep other fails if this didn't fail.
+    fail_type = C_MEM;
+    if (rc_fail == BK_CONF or rc_fail == COAL_STALL) {
+      m_stats->gpgpu_n_cmem_portconflict++;  // coal stalls aren't really a bank
+                                             // conflict, but this maintains
+                                             // previous behavior.
+    }
+  } else {
+    return true;
+  }
+  return false;  // DICE-TODO: what does this indicate?
+}
+
+bool ldst_unit::texture_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+  mem_stage_access_type &fail_type) {
+  if (!cgra_block->ready_to_dispatch() || ((access->get_type() != TEXTURE_ACC_R) ))
+    return true;
+  mem_stage_stall_type fail = process_memory_access_queue_cgra(m_L1T, cgra_block, access);
+  if (fail != NO_RC_FAIL) {
+    rc_fail = fail;  // keep other fails if this didn't fail.
+    fail_type = T_MEM;
+  } else{
+    return true;
+  }
+  return false;  // DICE-TODO: what does this indicate?
+}
+
+bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+                             mem_stage_access_type &fail_type) {
+  if (access->get_space() != shared_space) return true;
+  
+  //DICE-TODO: need to check bank conflict here, currently assume perfect memory , no bank conflict
+  cgra_block->get_current_cfg_block()->pop_mem_access(access->get_ldst_port_num());
+  m_dispatcher_rfu->writeback_ldst(cgra_block, access->get_ld_dest_reg(), access->get_tid());
+  //increment writeback or store num
+  if(access->is_write()){
+    cgra_block->inc_number_of_stores_done();
+    if(g_debug_execution >= 3 && m_cgra_core_id==0){
+      printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread %d, reg %d, current store done %d, need total %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, access->get_tid(), access->get_ld_dest_reg(), cgra_block->get_number_of_stores_done(), cgra_block->get_current_cfg_block()->get_num_stores());
+      fflush(stdout);
+    } 
+  } else {
+    cgra_block->inc_number_of_loads_done();
+    //Writeback
+  }
+  m_stats->gpgpu_n_shmem_bank_access[m_cgra_core_id]++;
+
+  bool stall = false;
+  if (stall) {
+    fail_type = S_MEM;
+    rc_fail = BK_CONF;
+  } else
+    rc_fail = NO_RC_FAIL;
+  return !stall;
+}
+
+
+bool ldst_unit::memory_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access,
+                             mem_stage_stall_type &stall_reason,
+                             mem_stage_access_type &access_type) {
+  if (!cgra_block->ready_to_dispatch()  || ((access->get_space() != global_space) &&
+                       (access->get_space() != local_space) &&
+                       (access->get_space() != param_space_local)))
+    return true;
+  if (cgra_block->get_current_cfg_block()->accessq_empty()) return true;
+
+  mem_stage_stall_type stall_cond = NO_RC_FAIL;
+  bool bypassL1D = false;
+  //DICE-TODO: not bypass L1D for now
+  //if (CACHE_GLOBAL == inst.cache_op || (m_L1D == NULL)) {
+  //  bypassL1D = true;
+  //} else 
+  //{
+  //  if (access->get_space().is_global()) {  // global memory access
+  //    // skip L1 cache if the option is enabled
+  //    if (m_cgra_core->get_config()->gmem_skip_L1D )//&& (CACHE_L1 != inst.cache_op))
+  //      bypassL1D = true;
+  //  }
+  //}
+  //if (bypassL1D) {
+  //  // bypass L1 cache
+  //  unsigned control_size =
+  //      inst.is_store() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+  //  unsigned size = access.get_size() + control_size;
+  //  // printf("Interconnect:Addr: %x, size=%d\n",access.get_addr(),size);
+  //  if (m_icnt->full(size, inst.is_store() || inst.isatomic())) {
+  //    stall_cond = ICNT_RC_FAIL;
+  //  } else {
+  //    mem_fetch *mf =
+  //        m_mf_allocator->alloc(inst, access,
+  //                              m_core->get_gpu()->gpu_sim_cycle +
+  //                                  m_core->get_gpu()->gpu_tot_sim_cycle);
+  //    m_icnt->push(mf);
+  //    inst.accessq_pop_back();
+  //    // inst.clear_active( access.get_warp_mask() );
+  //    if (inst.is_load()) {
+  //      for (unsigned r = 0; r < MAX_OUTPUT_VALUES; r++)
+  //        if (inst.out[r] > 0)
+  //          assert(m_pending_writes[inst.warp_id()][inst.out[r]] > 0);
+  //    } else if (inst.is_store())
+  //      m_cgra_core->inc_store_req(inst.warp_id());
+  //  }
+  //} else 
+  {
+    //assert(CACHE_UNDEFINED != inst.cache_op);
+    stall_cond = process_memory_access_queue_l1cache_cgra(m_L1D, cgra_block,access);
+  }
+  //if (!cgra_block->get_current_cfg_block()->accessq_empty() && stall_cond == NO_RC_FAIL)
+  //  stall_cond = COAL_STALL;
+  if (stall_cond != NO_RC_FAIL) {
+    stall_reason = stall_cond;
+    bool iswrite = access->is_write();
+    if (access->get_space().is_local())
+      access_type = (iswrite) ? L_MEM_ST : L_MEM_LD;
+    else
+      access_type = (iswrite) ? G_MEM_ST : G_MEM_LD;
+  } else {
+    return true;
+  }
+  return false;
+}
+

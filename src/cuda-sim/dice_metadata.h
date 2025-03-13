@@ -181,11 +181,13 @@ struct dice_block_t {
 
 void dice_metadata_assemble(std::string kname, void *kinfo);
 
+
+#define MAX_LDST_UNIT_PORTS 8
 //for performance simulation
 class dice_cfg_block_t{
   public:
     dice_cfg_block_t(dice_metadata *metadata);
-    dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata);
+    dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata, gpgpu_context* ctx);
     ~dice_cfg_block_t(){
       if(m_block_active_mask) delete m_block_active_mask;
     }
@@ -195,9 +197,12 @@ class dice_cfg_block_t{
     op_type op;  // operation type
     addr_t branch_target_meta_pc;  // program counter address of branch target
     memory_space_t space;
+    gpgpu_context* gpgpu_ctx;
 
     bool active(unsigned tid) const { return m_block_active_mask->test(tid); }
     unsigned active_count() const { return m_block_active_mask->count(); }
+    unsigned get_num_stores();
+    unsigned get_num_loads();
     simt_mask_t get_active_mask() const { return *m_block_active_mask; }
     void set_active(const active_mask_t &active);
     void set_not_active(unsigned tid);
@@ -210,7 +215,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].memreqaddr[0] = addr;
       m_per_scalar_thread[n].count++;
     }
-    void add_mem_access(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size) {
+    void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0) {
       if (!m_per_scalar_thread_valid) {
         m_per_scalar_thread.resize(m_block_size);
         m_per_scalar_thread_valid = true;
@@ -222,6 +227,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].space[index] = space;
       m_per_scalar_thread[n].mem_op[index] = insn_memory_op;
       m_per_scalar_thread[n].size[index] = size;
+      m_per_scalar_thread[n].ld_dest_reg[index] = ld_dest_reg;
       m_per_scalar_thread[n].count++;
       //printf("DICE Sim uArch [MEM_ACCESS]: thread %u, addr 0x%04x, space %d, mem_op %d, size %d ,num_of_mem_access = %d\n", n, addr, space, insn_memory_op , size,index);
       //fflush(stdout);
@@ -237,12 +243,62 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
-    void generate_mem_accesses();
+    void generate_mem_accesses(unsigned tid);
+
+    bool accessq_empty() const {
+      for(unsigned i=0; i<MAX_LDST_UNIT_PORTS; i++){
+        if(!m_accessq[i].empty()) return false;
+      }
+      return true;
+    }
+
+    std::vector<std::list<mem_access_t>> get_accessq() { return m_accessq; }
+
+    void pop_mem_access(unsigned port) {
+      assert(!m_accessq[port].empty());
+      m_accessq[port].pop_front();
+    }
+
+    void print_m_accessq() {
+      if (accessq_empty())
+        return;
+      else {
+        printf("Printing mem access generated\n");
+        for(int i=0;i<MAX_LDST_UNIT_PORTS;i++){
+          if(m_accessq[i].empty()) continue;
+          printf("LDST Unit: Port %d\n",i);
+          std::list<mem_access_t>::iterator it;
+          for (it = m_accessq[i].begin(); it != m_accessq[i].end(); ++it) {
+            printf("MEM_TXN_GEN:%s:%llx, Size:%d, LDST Unit Port:%d \n",
+                   mem_access_type_str(it->get_type()), it->get_addr(),
+                   it->get_size(), it->get_ldst_port_num());
+          }
+        }
+      }
+    }
     dice_block_t *get_diceblock() { return m_diceblock; }
+    void print_mem_ops(unsigned core_id = 0){
+      for (unsigned i = 0; i < m_per_scalar_thread.size(); i++){
+        for (unsigned j = 0; j < m_per_scalar_thread[i].count; j++){
+          printf("DICE Sim: [MEM_ACCESS]: core %d, thread %u, addr 0x%04x, space %d, mem_op %d, size %d, ld_dest_reg %d\n",core_id, i, m_per_scalar_thread[i].memreqaddr[j], m_per_scalar_thread[i].space[j], m_per_scalar_thread[i].mem_op[j], m_per_scalar_thread[i].size[j], m_per_scalar_thread[i].ld_dest_reg[j]);
+          fflush(stdout);
+        }
+      }
+    }
+    void print_mem_ops_tid(unsigned tid, unsigned core_id = 0){
+      assert(tid < m_per_scalar_thread.size());
+      for (unsigned j = 0; j < m_per_scalar_thread[tid].count; j++){
+        printf("DICE Sim: [MEM_ACCESS]: core %d, thread %u, addr 0x%04x, space %d, mem_op %d, size %d, ld_dest_reg %d\n",core_id, tid, m_per_scalar_thread[tid].memreqaddr[j], m_per_scalar_thread[tid].space[j], m_per_scalar_thread[tid].mem_op[j], m_per_scalar_thread[tid].size[j], m_per_scalar_thread[tid].ld_dest_reg[j]);
+        fflush(stdout);
+      }
+      
+    }
   protected:
     unsigned m_uid;
     unsigned m_block_size;
+    class shader_core_config *m_config;
     simt_mask_t* m_block_active_mask;
+    unsigned m_active_count;
     dice_metadata *m_metadata;
     dice_block_t *m_diceblock;
     bool m_per_scalar_thread_valid;
@@ -266,9 +322,11 @@ class dice_cfg_block_t{
       memory_space_t space[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       _memory_op_t mem_op[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned size[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
+      unsigned ld_dest_reg[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned count;
     };
     std::vector<per_thread_info> m_per_scalar_thread;
+    std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port
 };
 
 #endif
