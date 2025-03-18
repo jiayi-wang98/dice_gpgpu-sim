@@ -80,7 +80,6 @@ mem_fetch::mem_fetch(const mem_access_t &access, cgra_block_state_t* cgra_block,
 {
   m_wid = m_access.get_tid();
   m_request_uid = sm_next_mf_request_uid++;
-  m_access = access;
   m_cgra_block = cgra_block;
   m_data_size = access.get_size();
   m_ctrl_size = ctrl_size;

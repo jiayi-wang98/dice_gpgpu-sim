@@ -1315,6 +1315,9 @@ class ldst_unit : public pipelined_simd_unit {
   void get_L1D_sub_stats(struct cache_sub_stats &css) const;
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
+  void dice_push_accesses(class dice_cfg_block_t *cfg_block, class cgra_block_state_t *cgra_block);
+  bool one_mem_access_queue_full(unsigned port_id);
+  bool mem_access_queue_full();
 
  protected:
   ldst_unit(mem_fetch_interface *icnt,
@@ -1347,13 +1350,13 @@ class ldst_unit : public pipelined_simd_unit {
                     mem_stage_access_type &fail_type);
   
   //DICE-support
-  bool constant_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+  bool constant_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t access, mem_stage_stall_type &rc_fail,
     mem_stage_access_type &fail_type);
-  bool texture_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+  bool texture_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t access, mem_stage_stall_type &rc_fail,
     mem_stage_access_type &fail_type);
-  bool shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+  bool shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t access, mem_stage_stall_type &rc_fail,
     mem_stage_access_type &fail_type);
-  bool memory_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t* access, mem_stage_stall_type &rc_fail,
+  bool memory_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t access, mem_stage_stall_type &rc_fail,
     mem_stage_access_type &fail_type);
 
   virtual mem_stage_stall_type process_cache_access(
@@ -1367,10 +1370,10 @@ class ldst_unit : public pipelined_simd_unit {
   mem_stage_stall_type process_memory_access_queue(cache_t *cache,
                                                    warp_inst_t &inst);
   //DICE-support
-  mem_stage_stall_type process_memory_access_queue_cgra(cache_t *cache, class cgra_block_state_t* cgra_block, mem_access_t* access);
-  mem_stage_stall_type process_memory_access_queue_l1cache_cgra(l1_cache *cache, class cgra_block_state_t* cgra_block, mem_access_t* access);
+  mem_stage_stall_type process_memory_access_queue_cgra(cache_t *cache, class cgra_block_state_t* cgra_block, mem_access_t access);
+  mem_stage_stall_type process_memory_access_queue_l1cache_cgra(l1_cache *cache, class cgra_block_state_t* cgra_block, mem_access_t access);
   mem_stage_stall_type process_memory_access_queue_l1cache(l1_cache *cache, warp_inst_t &inst);
-
+  
   const memory_config *m_memory_config;
   class mem_fetch_interface *m_icnt;
   shader_core_mem_fetch_allocator *m_mf_allocator;
@@ -1400,6 +1403,8 @@ class ldst_unit : public pipelined_simd_unit {
   class dispatcher_rfu_t *m_dispatcher_rfu;
   mem_fetch *m_next_cgra_writeback;
   mem_fetch *m_next_global_cgra;
+  //request queue and MSHR and coallescing buffer
+  class dice_mem_request_queue *m_dice_mem_request_queue;
 
   unsigned m_writeback_arb;  // round-robin arbiter for writeback contention
                              // between L1T, L1C, shared
@@ -1658,6 +1663,10 @@ class shader_core_config : public core_config {
   unsigned dice_cgra_core_max_rf_banks;
   unsigned dice_cgra_core_rf_cgra_wb_buffer_size;
   unsigned dice_cgra_core_rf_ldst_wb_buffer_size;
+  unsigned dice_cgra_core_num_ld_ports;
+  unsigned dice_cgra_core_num_st_ports;
+  unsigned dice_cgra_core_num_ld_ports_queue_size;
+  unsigned dice_cgra_core_num_st_ports_queue_size;
 };
 
 struct shader_core_stats_pod {

@@ -112,6 +112,11 @@ class cgra_core_ctx {
     void clear_exec_stalled_by_writeback_buffer_full();
     bool is_stalled_by_simt_stack() const { return m_fetch_stalled_by_simt_stack; }
     bool is_exec_stalled_by_writeback_buffer_full() const { return m_exec_stalled_by_writeback_buffer_full; }
+    bool is_exec_stalled_by_ldst_unit_queue_full() const { return m_exec_stalled_by_ldst_unit_queue_full; }
+    bool check_ldst_unit_stall();
+    bool is_exec_stalled() const { return m_exec_stalled_by_writeback_buffer_full || m_exec_stalled_by_ldst_unit_queue_full; }
+    void set_exec_stalled_by_ldst_unit_queue_full() { m_exec_stalled_by_ldst_unit_queue_full = true; }
+    void clear_exec_stalled_by_ldst_unit_queue_full() { m_exec_stalled_by_ldst_unit_queue_full = false; }
     void fetch_metadata();
     void fetch_bitstream();
     void decode();
@@ -121,6 +126,7 @@ class cgra_core_ctx {
     void dispatch();
     void cgra_execute_block();
     void writeback();
+
 
     //issue block to core
     unsigned isactive() const {
@@ -207,6 +213,7 @@ class cgra_core_ctx {
     // fetch
     bool m_fetch_stalled_by_simt_stack;
     bool m_exec_stalled_by_writeback_buffer_full;
+    bool m_exec_stalled_by_ldst_unit_queue_full;
     unsigned m_fetch_waiting_block_id;
     read_only_cache *m_L1I;  // instruction cache
     ifetch_buffer_t m_metadata_fetch_buffer;
@@ -484,10 +491,18 @@ class cgra_unit {
    // modifiers
    void reinit(){
       is_busy = false;
-      stalled = false;
+      stalled_by_ldst_unit_queue_full = false;
+      stalled_by_wb_buffer_full = false;
       for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
         shift_registers[i] = unsigned(-1);
       }
+      m_num_executed_thread = 0;
+   }
+   void flush_pipeline() {
+      for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
+        shift_registers[i] = unsigned(-1);
+      }
+      m_num_executed_thread = 0;
    }
    void exec(unsigned tid) {
     shift_registers[0]=tid;
@@ -498,21 +513,26 @@ class cgra_unit {
       return shift_registers[m_latency];
    }
    unsigned out_valid() {
-      if(stalled) return false;
+      if(stalled()) return false;
       return out_tid() != unsigned(-1);
    }
  
    // accessors
-   bool can_exec() const {
+   bool is_idle() const {
      return !is_busy;
    }
    bool stallable() const {};
    void print() const;
    const char *get_name() { return m_name.c_str(); }
-   bool is_stalled() { return stalled; }
-   void set_stalled() { stalled = true; }
-   void clear_stalled() { stalled = false; }
- 
+   bool is_stalled() { return (stalled_by_wb_buffer_full || stalled_by_ldst_unit_queue_full); }
+   void set_stalled_by_wb_buffer_full() { stalled_by_wb_buffer_full = true; }
+   void clear_stalled_by_wb_buffer_full() { stalled_by_wb_buffer_full = false; }
+   void set_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = true; m_cgra_core->set_exec_stalled_by_ldst_unit_queue_full(); }
+   void clear_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = false; m_cgra_core->clear_exec_stalled_by_ldst_unit_queue_full(); }
+   bool stalled() const { return stalled_by_ldst_unit_queue_full || stalled_by_wb_buffer_full; }
+   void inc_num_executed_thread() { m_num_executed_thread++; }
+   unsigned get_num_executed_thread() { return m_num_executed_thread; }
+
   protected:
    unsigned m_latency;
    std::string m_name;
@@ -521,7 +541,9 @@ class cgra_unit {
    unsigned shift_registers[MAX_CGRA_FABRIC_LATENCY]; //storing thread id
    bool is_busy;
    cgra_block_state_t **m_executing_block;
-   bool stalled;
+   bool stalled_by_wb_buffer_full;
+   bool stalled_by_ldst_unit_queue_full;
+   unsigned m_num_executed_thread;
  };
 
  class rf_bank_controller {
@@ -579,7 +601,7 @@ class cgra_unit {
     bool current_finished() { return (*m_dispatching_block)->dispatch_done(); }
     bool writeback_buffer_full(dice_metadata *metadata) const;
     const shader_core_config *get_config() { return m_config; }
-    bool exec_stalled() const { return m_cgra_core->is_exec_stalled_by_writeback_buffer_full(); }
+    bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
 
   private:
@@ -597,4 +619,110 @@ class cgra_unit {
     unsigned long long m_num_write_access;
  };
 
+
+ class dice_mem_request_queue{
+  //TODO coallesce memory request 
+  //Add mshr for memory request
+  public:
+    dice_mem_request_queue(const shader_core_config *config, class ldst_unit* ldst_unit);
+
+    void push_ld_request(mem_access_t access, unsigned port) {
+      m_ld_req_queue[port].push_back(access);
+      m_ld_port_credit[port]--;
+      printf("DICE-Sim uArch:  push_ld_request, port = %d, credit = %d\n",  port, m_ld_port_credit[port]);
+      fflush(stdout);
+      assert(access.get_cgra_block_state() != NULL);
+    }
+
+    void push_st_request(mem_access_t access, unsigned port) {
+      m_st_req_queue[port].push_back(access);
+      m_st_port_credit[port]--;
+    }
+
+    void pop_ld_request(unsigned port) {
+      m_ld_req_queue[port].pop_front();
+      m_ld_port_credit[port]++;
+    }
+
+    void pop_st_request(unsigned port) {
+      m_st_req_queue[port].pop_front();
+      m_st_port_credit[port]++;
+    }
+
+    void pop_request(unsigned port) {
+      if(port<m_ld_req_queue.size()) pop_ld_request(port);
+      else {
+        if(port-m_ld_req_queue.size() >= m_st_req_queue.size()) {
+          printf("DICE-Sim uArch: pop_request, port = %d, m_ld_req_queue.size() = %d, m_st_req_queue.size() = %d\n", port, m_ld_req_queue.size(), m_st_req_queue.size());
+          fflush(stdout);
+        }
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        pop_st_request(port-m_ld_req_queue.size());
+      }
+    }
+
+    bool ld_port_full(unsigned port) const {
+      return m_ld_port_credit[port] == 0;
+    }
+
+    bool st_port_full(unsigned port) const {
+      return m_st_port_credit[port] == 0;
+    }
+
+    bool is_full(unsigned port) const {
+      if(port<m_ld_req_queue.size()) return ld_port_full(port);
+      else {
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        return st_port_full(port-m_ld_req_queue.size());
+      }
+    }
+
+    mem_access_t get_ld_request(unsigned port) {
+      assert(!m_ld_req_queue[port].empty());
+      return m_ld_req_queue[port].front();
+    }
+
+    mem_access_t get_st_request(unsigned port) {
+      assert(!m_st_req_queue[port].empty());
+      return m_st_req_queue[port].front();
+    }
+
+    mem_access_t get_request(unsigned port) {
+      if(port<m_ld_req_queue.size()) return get_ld_request(port);
+      else {
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        return get_st_request(port-m_ld_req_queue.size());
+      } 
+    }
+
+    bool queue_empty(unsigned port) {
+      if(port<m_ld_req_queue.size()) return m_ld_req_queue[port].empty();
+      else {
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        return m_st_req_queue[port-m_ld_req_queue.size()].empty();
+      }
+    }
+
+    unsigned port_num() const { return m_ld_req_queue.size() + m_st_req_queue.size(); }
+
+    unsigned get_next_process_port_constant();
+    unsigned get_next_process_port_texture();
+    unsigned get_next_process_port_memory();
+    unsigned get_next_process_port_shared();
+    void set_last_processed_port_constant(unsigned port) { m_last_processed_port_contant = port; }
+    void set_last_processed_port_texture(unsigned port) { m_last_processed_port_texture = port; }
+    void set_last_processed_port_memory(unsigned port) { m_last_processed_port_memory = port; }
+    void set_last_processed_port_shared(unsigned port) { m_last_processed_port_shared = port; }
+
+    const shader_core_config *m_config;
+    ldst_unit *m_ldst_unit;
+    std::vector<unsigned> m_ld_port_credit;
+    std::vector<unsigned> m_st_port_credit;
+    std::vector<std::list<mem_access_t>> m_ld_req_queue;
+    std::vector<std::list<mem_access_t>> m_st_req_queue;
+    unsigned m_last_processed_port_contant;
+    unsigned m_last_processed_port_texture;
+    unsigned m_last_processed_port_memory;
+    unsigned m_last_processed_port_shared;
+ };
 #endif

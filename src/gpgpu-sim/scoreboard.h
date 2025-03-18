@@ -53,6 +53,7 @@ class Scoreboard {
   void reserveRegisters(const class dice_metadata *metadata, unsigned tid);
   void releaseRegisters(const class dice_metadata *metadata, unsigned tid);
   void releaseRegistersFromLoad(const class dice_metadata *metadata, unsigned tid);
+  void releaseRegisterFromLoad(unsigned tid, unsigned regnum);
   bool checkCollision(unsigned tid, const dice_metadata *metadata) const;
 
   void reserveRegisters(const warp_inst_t *inst);

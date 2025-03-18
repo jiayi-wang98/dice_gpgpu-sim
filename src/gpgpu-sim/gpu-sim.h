@@ -373,6 +373,22 @@ class gpgpu_sim_config : public power_config,
     return m_shader_config.dice_cgra_core_rf_ldst_wb_buffer_size;
   }
 
+  unsigned num_dice_ld_ports() const {
+    return m_shader_config.dice_cgra_core_num_ld_ports;
+  }
+
+  unsigned num_dice_st_ports() const {
+    return m_shader_config.dice_cgra_core_num_st_ports;
+  }
+
+  unsigned num_dice_ld_ports_queue_size() const {
+    return m_shader_config.dice_cgra_core_num_ld_ports_queue_size;
+  }
+
+  unsigned num_dice_st_ports_queue_size() const {
+    return m_shader_config.dice_cgra_core_num_st_ports_queue_size;
+  }
+
   unsigned num_shader() const { return m_shader_config.num_shader(); }
   unsigned num_cluster() const { return m_shader_config.n_simt_clusters; }
   unsigned get_max_concurrent_kernel() const { return max_concurrent_kernel; }

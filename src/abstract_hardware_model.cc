@@ -1446,10 +1446,10 @@ void core_t::updateSIMTStack_sid(unsigned warpId, warp_inst_t *inst, unsigned si
     }
   }
   //Jiayi Test
-  if (sid==0)
-    m_simt_stack[warpId]->update_sid(thread_done, next_pc, inst->reconvergence_pc,
-                               inst->op, inst->isize, inst->pc);
-  else
+  //if (sid==0)
+  //  m_simt_stack[warpId]->update_sid(thread_done, next_pc, inst->reconvergence_pc,
+  //                             inst->op, inst->isize, inst->pc);
+  //else
     m_simt_stack[warpId]->update(thread_done, next_pc, inst->reconvergence_pc,
                                inst->op, inst->isize, inst->pc);
 }

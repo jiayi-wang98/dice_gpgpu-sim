@@ -252,7 +252,7 @@ class dice_cfg_block_t{
       return true;
     }
 
-    std::vector<std::list<mem_access_t>> get_accessq() { return m_accessq; }
+    std::vector<std::list<mem_access_t>>& get_accessq() { return m_accessq; }
 
     void pop_mem_access(unsigned port) {
       assert(!m_accessq[port].empty());

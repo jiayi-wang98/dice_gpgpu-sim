@@ -1091,8 +1091,16 @@ class mem_access_t {
     m_ld_dest_reg = access.m_ld_dest_reg;
     m_ldst_port_num = access.m_ldst_port_num;
     m_space = access.m_space;
+    m_cgra_block_state = access.m_cgra_block_state;
   }
 
+  void assign_cgra_block_state(class cgra_block_state_t *cgra_block_state) {
+    m_cgra_block_state = cgra_block_state;
+  }
+
+  class cgra_block_state_t *get_cgra_block_state(){
+    return m_cgra_block_state;
+  }
   unsigned get_tid() const { return m_tid; }
   unsigned get_ld_dest_reg() const { return m_ld_dest_reg; }
   unsigned get_ldst_port_num() const { return m_ldst_port_num; }
@@ -1142,6 +1150,10 @@ class mem_access_t {
         fprintf(fp, "unknown ");
         break;
     }
+    fprintf(fp, " tid = %d\n", m_tid);
+    fprintf(fp, " m_ld_dest_reg = %d\n", m_ld_dest_reg);
+    fprintf(fp, " m_ldst_port_num = %d\n", m_ldst_port_num);
+    fprintf(fp, " m_space = %d\n", get_space());
   }
 
   gpgpu_context *gpgpu_ctx;
@@ -1162,6 +1174,7 @@ class mem_access_t {
   unsigned m_ld_dest_reg;
   unsigned m_ldst_port_num;
   memory_space_t m_space;
+  class cgra_block_state_t *m_cgra_block_state;
 };
 
 class mem_fetch;

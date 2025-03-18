@@ -2359,6 +2359,7 @@ void ldst_unit::init(mem_fetch_interface *icnt,
   m_icnt = icnt;
   m_mf_allocator = mf_allocator;
   m_core = core;
+  m_cgra_core = NULL;
   m_operand_collector = operand_collector;
   m_scoreboard = scoreboard;
   m_stats = stats;
@@ -2425,6 +2426,7 @@ void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
   m_current_cgra_block = cgra_block;
+  m_dice_mem_request_queue = new dice_mem_request_queue(config,this);
 }
 
 ldst_unit::ldst_unit(mem_fetch_interface *icnt,
@@ -2728,6 +2730,7 @@ void ldst_unit::cycle() {
   done &= memory_cycle(pipe_reg, rc_fail, type);
   m_mem_rc = rc_fail;
 
+  //if current instruction's mem access not done
   if (!done) {  // log stall types and return
     assert(rc_fail != NO_RC_FAIL);
     m_stats->gpgpu_n_stall_shd_mem++;

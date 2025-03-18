@@ -243,8 +243,30 @@ void shader_core_config::reg_options(class OptionParser *opp) {
 
   option_parser_register(
     opp, "-dice_cgra_core_rf_ldst_wb_buffer_size", OPT_UINT32,
-    &dice_cgra_core_rf_cgra_wb_buffer_size,
+    &dice_cgra_core_rf_ldst_wb_buffer_size,
     "DICE cgra core RF LDST unit writeback buffer size, i.e.,","16, 32, 64, 128");
+
+  option_parser_register(
+    opp, "-dice_cgra_core_num_ld_ports", OPT_UINT32,
+    &dice_cgra_core_num_ld_ports,
+    "DICE cgra core LDST unit number of load ports, i.e.,","1,2,4,8,16");
+
+  option_parser_register(
+    opp, "-dice_cgra_core_num_ld_ports_queue_size", OPT_UINT32,
+    &dice_cgra_core_num_ld_ports_queue_size,
+    "DICE cgra core LDST unit ld port queue size, i.e.,","32,64,128,256");
+
+
+  option_parser_register(
+    opp, "-dice_cgra_core_num_st_ports_queue_size", OPT_UINT32,
+    &dice_cgra_core_num_st_ports_queue_size,
+    "DICE cgra core LDST unit st port queue size, i.e.,","32,64,128,256");
+
+  
+  option_parser_register(
+    opp, "-dice_cgra_core_num_st_ports", OPT_UINT32,
+    &dice_cgra_core_num_st_ports,
+    "DICE cgra core LDST unit number of store ports, i.e.,","1,2,4,8,16");
 
       
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
