@@ -1054,13 +1054,14 @@ class mem_access_t {
     m_req_size = size;
     m_write = wr;
     m_tid = tid;
-    m_ld_dest_reg = ld_dest_reg;
+    m_ldst_regs.insert(ld_dest_reg);
     m_ldst_port_num = port_num;
     m_space = space;
   }
 
+
   mem_access_t( mem_access_type type, new_addr_type address, memory_space_t space, unsigned size,
-               bool wr,  unsigned tid, unsigned ld_dest_reg, unsigned port_num, const active_mask_t &active_mask,
+               bool wr,  unsigned tid, std::set<unsigned>ldst_regs, unsigned port_num, const active_mask_t &active_mask,
                const mem_access_byte_mask_t &byte_mask,
                const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx) 
               :m_warp_mask(active_mask),
@@ -1072,10 +1073,11 @@ class mem_access_t {
     m_req_size = size;
     m_write = wr;
     m_tid = tid;
-    m_ld_dest_reg = ld_dest_reg;
+    m_ldst_regs = ldst_regs;
     m_ldst_port_num = port_num;
     m_space = space;
   }
+
   //copy constructor
   mem_access_t(const mem_access_t &access) {
     init(access.gpgpu_ctx);
@@ -1088,7 +1090,7 @@ class mem_access_t {
     m_sector_mask = access.m_sector_mask;
     //DICE-support
     m_tid = access.m_tid;
-    m_ld_dest_reg = access.m_ld_dest_reg;
+    m_ldst_regs = access.m_ldst_regs;
     m_ldst_port_num = access.m_ldst_port_num;
     m_space = access.m_space;
     m_cgra_block_state = access.m_cgra_block_state;
@@ -1102,7 +1104,7 @@ class mem_access_t {
     return m_cgra_block_state;
   }
   unsigned get_tid() const { return m_tid; }
-  unsigned get_ld_dest_reg() const { return m_ld_dest_reg; }
+  std::set<unsigned> get_ldst_regs() const { return m_ldst_regs; }
   unsigned get_ldst_port_num() const { return m_ldst_port_num; }
   memory_space_t get_space() const { return m_space.get_type(); }
 
@@ -1151,7 +1153,11 @@ class mem_access_t {
         break;
     }
     fprintf(fp, " tid = %d\n", m_tid);
-    fprintf(fp, " m_ld_dest_reg = %d\n", m_ld_dest_reg);
+    fprintf(fp, " m_ldst_regs = ");
+    for(std::set<unsigned>::iterator it = m_ldst_regs.begin(); it != m_ldst_regs.end(); ++it){
+      fprintf(fp, "%d ", *it);
+    }
+    fprintf(fp, "\n");
     fprintf(fp, " m_ldst_port_num = %d\n", m_ldst_port_num);
     fprintf(fp, " m_space = %d\n", get_space());
   }
@@ -1171,7 +1177,7 @@ class mem_access_t {
   mem_access_sector_mask_t m_sector_mask;
   //DICE-support
   unsigned m_tid;
-  unsigned m_ld_dest_reg;
+  std::set<unsigned> m_ldst_regs;
   unsigned m_ldst_port_num;
   memory_space_t m_space;
   class cgra_block_state_t *m_cgra_block_state;

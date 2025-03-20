@@ -603,6 +603,8 @@ class cgra_unit {
     const shader_core_config *get_config() { return m_config; }
     bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
+    bool can_writeback_ldst_reg(unsigned reg_num);
+    bool can_writeback_ldst_regs(std::set<unsigned> regs);
 
   private:
     const shader_core_config *m_config;

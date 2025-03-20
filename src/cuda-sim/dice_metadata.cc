@@ -394,7 +394,25 @@ return address & ~(line_size - 1);
 }
 
 void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
+  std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
+  std::map<new_addr_type, dice_transaction_info> wr_transactions;  // each block addr maps to a list of transactions
   //convert memory ops to mem_access_t
+  bool sector_segment_size = false; //TODO understand this
+  unsigned segment_size = 128;
+  //switch (size) {
+  //  case 1:
+  //    segment_size = 32;
+  //    break;
+  //  case 2:
+  //    segment_size = sector_segment_size ? 32 : 64;
+  //    break;
+  //  case 4:
+  //  case 8:
+  //  case 16:
+  //    segment_size = sector_segment_size ? 32 : 128;
+  //    break;
+  //}
+  //step 1, get all transactions
   if(m_per_scalar_thread_valid){
     unsigned num_stores=0;
     new_addr_type cache_block_size = 0;  // in bytes
@@ -437,7 +455,6 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
         unsigned block_address = line_size_based_tag_func_cgra(addr, cache_block_size);
         unsigned idx = addr - block_address;
         for (unsigned i = 0; i < size; i++) byte_mask.set(idx + i);
-
         if(!is_write){
           //use iterator to find the ld_dest_reg
           unsigned i=0;
@@ -445,7 +462,9 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
               assert(port_index < (MAX_LDST_UNIT_PORTS/2));
-              mem_access_t access(access_type, addr,space, cache_block_size, is_write, tid, ld_dest_reg, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
+              std::set<unsigned> ld_dest_regs;
+              ld_dest_regs.insert(ld_dest_reg);
+              mem_access_t access(access_type, addr,space, cache_block_size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
               m_accessq[port_index].push_back(access);
               break;
             }
@@ -455,38 +474,34 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
           //put them in different ports(4-7)
           unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
           assert(port_index < MAX_LDST_UNIT_PORTS);
-          mem_access_t access(access_type, addr, space, cache_block_size, is_write, tid, ld_dest_reg, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
+          std::set<unsigned> ld_dest_regs;
+          ld_dest_regs.insert(ld_dest_reg);
+          mem_access_t access(access_type, addr, space, cache_block_size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
       } else { //L1D cache
-        //assume sector cache now
-        bool sector_segment_size = false; //TODO understand this
-        unsigned segment_size;
-        switch (size) {
-          case 1:
-            segment_size = 32;
-            break;
-          case 2:
-            segment_size = sector_segment_size ? 32 : 64;
-            break;
-          case 4:
-          case 8:
-          case 16:
-            segment_size = sector_segment_size ? 32 : 128;
-            break;
-        }
         unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+        dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];
         unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
                                             // chunk does this thread access?
-        mem_access_sector_mask_t sector_mask;
-        sector_mask.set(chunk);
+        info.chunks.set(chunk);
+        //info.active.set(tid);
+        info.access_type = access_type;
+        info.space = space;
+        info.active_threads.insert(tid);
+        //mem_access_sector_mask_t sector_mask;
+        //sector_mask.set(chunk);
 
         unsigned idx = (addr & 127);
-        std::bitset<128> byte_mask;
-        active_mask_t active_mask = *m_block_active_mask;
-        for (unsigned i = 0; i < size; i++)
-          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) byte_mask.set(idx + i);
+        //std::bitset<128> byte_mask;
+        //active_mask_t active_mask = *m_block_active_mask;
+        for (unsigned i = 0; i < size; i++){
+          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+            //byte_mask.set(idx + i);
+            info.bytes.set(idx + i);
+          }
+        }
         //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
         if(!is_write){
           //use iterator to find the ld_dest_reg
@@ -495,8 +510,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
               assert(port_index < (MAX_LDST_UNIT_PORTS/2));
-              mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask, gpgpu_ctx);
-              m_accessq[port_index].push_back(access);
+              info.ld_dest_regs.insert(ld_dest_reg);
+              info.port_idx.insert(port_index);
+              //mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask, gpgpu_ctx);
+              //m_accessq[port_index].push_back(access);
               break;
             }
             i++;
@@ -505,8 +522,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
           //put them in different ports(4-7)
           unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
           assert(port_index < MAX_LDST_UNIT_PORTS);
-          mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
-          m_accessq[port_index].push_back(access);
+          info.ld_dest_regs.insert(ld_dest_reg);
+          info.port_idx.insert(port_index);
+          //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+          //m_accessq[port_index].push_back(access);
           num_stores++;
         }
 
@@ -515,12 +534,22 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
         if (block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
             addr = addr + size - 1;
             unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
-            unsigned chunk = (addr & 127) / 32;
-            sector_mask.set(chunk);
-            unsigned idx = (addr & 127);
-            for (unsigned i = 0; i < size; i++)
-              if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) byte_mask.set(idx + i);
+            dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];
 
+            unsigned chunk = (addr & 127) / 32;
+            info.chunks.set(chunk);
+            //info.active.set(tid);
+            info.active_threads.insert(tid);
+            info.access_type = access_type;
+            info.space = space;
+            //sector_mask.set(chunk);
+            unsigned idx = (addr & 127);
+            for (unsigned i = 0; i < size; i++){
+              if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+                //byte_mask.set(idx + i);
+                info.bytes.set(idx + i);
+              }
+            }
             //second access
             if(!is_write){
               //use iterator to find the ld_dest_reg
@@ -529,8 +558,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
                 if(it->reg_num() == ld_dest_reg){
                   unsigned port_index = i;
                   assert(port_index < (MAX_LDST_UNIT_PORTS/2));
-                  mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
-                  m_accessq[port_index].push_back(access);
+                  info.ld_dest_regs.insert(ld_dest_reg);
+                  info.port_idx.insert(port_index);
+                  //mem_access_t access(access_type, addr,space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+                  //m_accessq[port_index].push_back(access);
                   break;
                 }
                 i++;
@@ -539,12 +570,82 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
               //put them in different ports(4-7)
               unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
               assert(port_index < MAX_LDST_UNIT_PORTS);
-              mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
-              m_accessq[port_index].push_back(access);
+              info.ld_dest_regs.insert(ld_dest_reg);
+              info.port_idx.insert(port_index);
+              //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
+              //m_accessq[port_index].push_back(access);
               num_stores++;
             }
         }
       }
     }
+
+    //step 2, reduce size of each transaction
+    for (std::map<new_addr_type, dice_transaction_info>::iterator t = rd_transactions.begin(); t != rd_transactions.end(); t++) {
+      new_addr_type addr = t->first;
+      const dice_transaction_info &info = t->second;
+      memory_coalescing_arch_reduce_and_send(false, info, addr, segment_size);
+    }
+    for (std::map<new_addr_type, dice_transaction_info>::iterator t = wr_transactions.begin(); t != wr_transactions.end(); t++) {
+      new_addr_type addr = t->first;
+      const dice_transaction_info &info = t->second;
+      memory_coalescing_arch_reduce_and_send(true, info, addr, segment_size);
+    }
   }
+}
+
+void dice_cfg_block_t::memory_coalescing_arch_reduce_and_send(bool is_write, const dice_transaction_info &info,new_addr_type addr, unsigned segment_size) {
+  mem_access_type access_type = info.access_type;
+  assert((addr & (segment_size - 1)) == 0);
+
+  const std::bitset<4> &q = info.chunks;
+  assert(q.count() >= 1);
+  std::bitset<2> h;  // halves (used to check if 64 byte segment can be
+                     // compressed into a single 32 byte segment)
+
+  unsigned size = segment_size;
+  if (segment_size == 128) {
+    bool lower_half_used = q[0] || q[1];
+    bool upper_half_used = q[2] || q[3];
+    if (lower_half_used && !upper_half_used) {
+      // only lower 64 bytes used
+      size = 64;
+      if (q[0]) h.set(0);
+      if (q[1]) h.set(1);
+    } else if ((!lower_half_used) && upper_half_used) {
+      // only upper 64 bytes used
+      addr = addr + 64;
+      size = 64;
+      if (q[2]) h.set(0);
+      if (q[3]) h.set(1);
+    } else {
+      assert(lower_half_used && upper_half_used);
+    }
+  } else if (segment_size == 64) {
+    // need to set halves
+    if ((addr % 128) == 0) {
+      if (q[0]) h.set(0);
+      if (q[1]) h.set(1);
+    } else {
+      assert((addr % 128) == 64);
+      if (q[2]) h.set(0);
+      if (q[3]) h.set(1);
+    }
+  }
+  if (size == 64) {
+    bool lower_half_used = h[0];
+    bool upper_half_used = h[1];
+    if (lower_half_used && !upper_half_used) {
+      size = 32;
+    } else if ((!lower_half_used) && upper_half_used) {
+      addr = addr + 32;
+      size = 32;
+    } else {
+      assert(lower_half_used && upper_half_used);
+    }
+  }
+  //assume no cross thread coalescing right now
+  //get the first 
+  m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, *(info.active_threads.begin()), info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
+  //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
 }

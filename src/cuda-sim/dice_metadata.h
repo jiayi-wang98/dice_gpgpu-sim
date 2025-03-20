@@ -293,6 +293,23 @@ class dice_cfg_block_t{
       }
       
     }
+    struct dice_transaction_info {
+      std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
+      mem_access_byte_mask_t bytes;
+      active_mask_t active;  // threads in this transaction
+  
+      bool test_bytes(unsigned start_bit, unsigned end_bit) {
+        for (unsigned i = start_bit; i <= end_bit; i++)
+          if (bytes.test(i)) return true;
+        return false;
+      }
+      std::set<unsigned> ld_dest_regs;
+      std::set<unsigned> port_idx;
+      mem_access_type access_type;
+      memory_space_t space;
+      std::set<unsigned> active_threads;
+    };
+    void memory_coalescing_arch_reduce_and_send(bool is_write, const dice_transaction_info &info, new_addr_type addr, unsigned segment_size);
   protected:
     unsigned m_uid;
     unsigned m_block_size;
