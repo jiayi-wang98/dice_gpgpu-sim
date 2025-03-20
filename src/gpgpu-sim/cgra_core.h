@@ -115,8 +115,8 @@ class cgra_core_ctx {
     bool is_exec_stalled_by_ldst_unit_queue_full() const { return m_exec_stalled_by_ldst_unit_queue_full; }
     bool check_ldst_unit_stall();
     bool is_exec_stalled() const { return m_exec_stalled_by_writeback_buffer_full || m_exec_stalled_by_ldst_unit_queue_full; }
-    void set_exec_stalled_by_ldst_unit_queue_full() { m_exec_stalled_by_ldst_unit_queue_full = true; }
-    void clear_exec_stalled_by_ldst_unit_queue_full() { m_exec_stalled_by_ldst_unit_queue_full = false; }
+    void set_exec_stalled_by_ldst_unit_queue_full();
+    void clear_exec_stalled_by_ldst_unit_queue_full();
     void fetch_metadata();
     void fetch_bitstream();
     void decode();
@@ -527,8 +527,8 @@ class cgra_unit {
    bool is_stalled() { return (stalled_by_wb_buffer_full || stalled_by_ldst_unit_queue_full); }
    void set_stalled_by_wb_buffer_full() { stalled_by_wb_buffer_full = true; }
    void clear_stalled_by_wb_buffer_full() { stalled_by_wb_buffer_full = false; }
-   void set_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = true; m_cgra_core->set_exec_stalled_by_ldst_unit_queue_full(); }
-   void clear_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = false; m_cgra_core->clear_exec_stalled_by_ldst_unit_queue_full(); }
+   void set_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = true; }
+   void clear_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = false; }
    bool stalled() const { return stalled_by_ldst_unit_queue_full || stalled_by_wb_buffer_full; }
    void inc_num_executed_thread() { m_num_executed_thread++; }
    unsigned get_num_executed_thread() { return m_num_executed_thread; }

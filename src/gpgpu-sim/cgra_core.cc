@@ -1165,6 +1165,16 @@ void cgra_core_ctx::clear_exec_stalled_by_writeback_buffer_full(){
   m_cgra_unit->clear_stalled_by_wb_buffer_full();
 }
 
+void cgra_core_ctx::set_exec_stalled_by_ldst_unit_queue_full() { 
+  m_exec_stalled_by_ldst_unit_queue_full = true; 
+  m_cgra_unit->set_stalled_by_ldst_unit_queue_full(); 
+}
+
+void cgra_core_ctx::clear_exec_stalled_by_ldst_unit_queue_full() { 
+  m_exec_stalled_by_ldst_unit_queue_full = false; 
+  m_cgra_unit->clear_stalled_by_ldst_unit_queue_full(); 
+}
+
 bool cgra_core_ctx::check_ldst_unit_stall(){
   return m_ldst_unit->mem_access_queue_full();
 }
@@ -1230,7 +1240,7 @@ void dispatcher_rfu_t::dispatch(){
         //stall the exec
         m_cgra_core->set_exec_stalled_by_writeback_buffer_full();
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch stalled because of writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, exec stalled because of writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
           fflush(stdout);
         }
       }
@@ -1238,7 +1248,7 @@ void dispatcher_rfu_t::dispatch(){
         //stall the exec
         m_cgra_core->set_exec_stalled_by_ldst_unit_queue_full();
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch stalled because of ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, exec stalled because of ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
           fflush(stdout);
         }
       }

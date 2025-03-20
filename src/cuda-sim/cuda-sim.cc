@@ -3395,7 +3395,11 @@ void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) 
   bool skip = false;
   int op_classification = 0;
   addr_t metadata_pc = next_metadata();
-  //printf("DICE: next_metadata pc= %p, while giving %p\n", metadata_pc,metadata->get_PC());fflush(stdout);
+  //if(m_cgra_core->get_id()==0)
+  //{
+  //  printf("DICE: Core %d, next_metadata pc= %p, while giving %p for tid=%d, block=%d\n",m_cgra_core->get_id() ,metadata_pc,CFGBlock->get_metadata()->get_PC(),tid, CFGBlock->get_metadata()->meta_id);
+  //  fflush(stdout);
+  //}
   assert(metadata_pc == CFGBlock->get_metadata()->get_PC());   // make sure timing model and functional model are in sync
   set_next_meta_pc(metadata_pc + CFGBlock->get_metadata()->metadata_size());
   //if(m_cgra_core->get_id()==0){
