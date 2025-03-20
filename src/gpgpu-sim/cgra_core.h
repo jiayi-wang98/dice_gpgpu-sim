@@ -87,7 +87,9 @@ class cgra_core_ctx {
     void deleteSIMTStack();
     void get_pdom_stack_top_info(unsigned *pc,unsigned *rpc) const;
     void updateSIMTStack(dice_cfg_block_t *cfg_block);
-
+    void set_predict_pc(address_type pc);
+    void clear_predict_pc();
+    address_type branch_predictor(class dice_metadata *metadata);
     //thread operation
     bool ptx_thread_done(unsigned hw_thread_id) const;
     void execute_CFGBlock(cgra_block_state_t* cfg_block);
@@ -187,6 +189,8 @@ class cgra_core_ctx {
     const memory_config *m_memory_config;
     kernel_info_t *m_kernel;
     simt_stack *m_simt_stack;  // pdom based reconvergence context for each cta/block
+    address_type m_predict_pc;
+    bool m_predict_pc_set;//if m_predict_pc is valid or not
     class ptx_thread_info **m_thread;
     unsigned m_max_block_size; //hardware support maximum block size
     unsigned m_kernel_block_size; //in DICE, there's no warp, programs are executed block by block
@@ -282,7 +286,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        n_completed = m_block_size;
        m_n_atomic = 0;
        m_membar = false;
-       m_done_exit = true;
+       m_done_exit = false;
        m_last_fetch = 0;
        m_last_bitstream_fetch = 0;
        m_next = 0;
@@ -291,6 +295,9 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        m_num_loads_done = 0;
        m_num_stores_done = 0;
        writeback_completed = false;
+       is_prefetch = false;
+       m_metadata_buffer.m_valid = false;
+       m_metadata_buffer.m_bitstream_valid = false;
      }
      void init(address_type start_metadata_pc, unsigned cta_id,
                const simt_mask_t &active) {
@@ -301,6 +308,8 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        n_completed -= active.count();  // active threads are not yet completed
        m_active_threads = active;
        m_done_exit = false;
+       m_metadata_buffer.m_valid = false;
+       m_metadata_buffer.m_bitstream_valid = false;
      }
 
      void set_completed(unsigned lane) {
@@ -324,10 +333,13 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
 
      void set_decode_done() { m_decoded = true; }
 
+     void clear_decode_done() { m_decoded = false; }//this will happen when prefetching
+
      bool decode_done() const { return m_decoded; }
 
      bool ready_to_dispatch() const {
        if (m_metadata_buffer.m_valid && m_metadata_buffer.m_bitstream_valid) {
+         if(is_prefetch) return false;
          if(m_decoded) return true;
        }
        return false;
@@ -437,6 +449,10 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      void dec_number_of_stores_done() { m_num_stores_done--; }
      unsigned get_number_of_stores_done() { return m_num_stores_done; }
 
+    void set_prefetch() { is_prefetch = true; }
+    bool is_prefetch_block() { return is_prefetch; }
+    void clear_prefetch();
+
     private:
      class cgra_core_ctx *m_cgra_core;
      unsigned m_cta_id;
@@ -480,6 +496,8 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      unsigned m_num_loads_done;  // number of load that have been done       
      unsigned m_num_stores_done;  // number of stores that have been acknowledged                   
      unsigned m_thread_in_pipeline;
+
+     bool is_prefetch;
 };
 
 #define MAX_CGRA_FABRIC_LATENCY 32

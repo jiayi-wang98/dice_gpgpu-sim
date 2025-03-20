@@ -1098,6 +1098,15 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
   }
 
   address_type not_taken_pc = next_inst_pc + next_inst_size;
+  if(num_divergent_paths > 2){
+    printf("num_divergent_paths > 2\n");
+    printf("divergence_path_pc = : ");
+    for(auto it = divergent_paths.begin(); it != divergent_paths.end(); it++){
+      printf("0x%08x ", it->first);
+    }
+    printf("\n");
+    fflush(stdout);
+  }
   assert(num_divergent_paths <= 2);
   for (unsigned i = 0; i < num_divergent_paths; i++) {
     address_type tmp_next_pc = null_pc;

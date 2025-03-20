@@ -476,6 +476,7 @@ void cgra_core_ctx::reinit(unsigned start_thread, unsigned end_thread,bool reset
   }
 
   //reset cgra_unit state
+  m_predict_pc_set=0;
   m_cgra_unit->reinit();
   //reinit fetch buffer
   m_metadata_fetch_buffer = ifetch_buffer_t();
@@ -593,32 +594,38 @@ void cgra_core_ctx::fetch_metadata(){
   if (!m_metadata_fetch_buffer.m_valid) { //if there is no metadata in the buffer
     if (m_L1I->access_ready()) { //if the instruction cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1I->next_access(); //get response from the instruction cache
-      m_cgra_block_state[MF_DE]->clear_imiss_pending(); //clear the metadata miss flag
-      m_metadata_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_metadata_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
-      if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-        printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+      if(m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
+        assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
+        printf("DICE Sim uArch [PREFETCH_META_DISCARD]: Cycle %d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_metadata_pc(),mf->get_addr());
         fflush(stdout);
+      } else {
+        m_cgra_block_state[MF_DE]->clear_imiss_pending(); //clear the metadata miss flag
+        m_metadata_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_metadata_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
+        if(g_debug_execution >= 3 && m_cgra_core_id==0){
+          dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
+          printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+          fflush(stdout);
+        }
+        assert(m_cgra_block_state[MF_DE]->get_metadata_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
+        //m_metadata_fetch_buffer.m_valid = true; //set valid in the fetch buffer
+        m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle); //set status;
       }
-      assert(m_cgra_block_state[MF_DE]->get_metadata_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
-      //m_metadata_fetch_buffer.m_valid = true; //set valid in the fetch buffer
-      m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle); //set status;
       delete mf;
     } else {
       // check if it's waiting on cache miss or can fetch new instruction
-      //TODO, add pending writes clear check
+      //TODO, add pending writes clear chec
+
       if (m_cgra_block_state[MF_DE]->done_exit()){
-        return;
+        //do nothing
       }
-      // this code fetches metadata from the i-cache or generates memory
-      if (!m_fetch_stalled_by_simt_stack && !m_cgra_block_state[MF_DE]->imiss_pending() &&
+      else if (!m_fetch_stalled_by_simt_stack && !m_cgra_block_state[MF_DE]->imiss_pending() &&
           m_cgra_block_state[MF_DE]->metadata_buffer_empty()) {
         address_type pc;
         //set next pc according to stack top
         address_type next_pc, rpc;
         m_simt_stack->get_pdom_stack_top_info(&next_pc, &rpc);
         m_cgra_block_state[MF_DE]->set_next_pc(next_pc);
-        pc = m_cgra_block_state[MF_DE]->get_metadata_pc();
+        pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
         address_type ppc = pc + PROGRAM_MEM_START;
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
@@ -661,7 +668,78 @@ void cgra_core_ctx::fetch_metadata(){
           assert(status == RESERVATION_FAIL);
           delete mf;
         }
+      } else {
+        //if stalled by simt stack and have predict pc, prefetch predicted pc
+        if ((m_fetch_stalled_by_simt_stack && m_predict_pc_set && !m_cgra_block_state[MF_DE]->imiss_pending() && m_cgra_block_state[MF_DE]->metadata_buffer_empty())) {
+          address_type pc;
+          m_cgra_block_state[MF_DE]->set_next_pc(m_predict_pc);
+          m_cgra_block_state[MF_DE]->set_prefetch();//set as a prefetch block
+          pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
+          address_type ppc = pc + PROGRAM_MEM_START;
+          if(g_debug_execution >= 3 && m_cgra_core_id==0){
+            dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
+            printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+            fflush(stdout);
+          }
+          unsigned nbytes = 32; //32 bytes for each metadata
+          unsigned offset_in_block =
+              pc & (m_config->m_L1I_config.get_line_sz() - 1);
+          if ((offset_in_block + nbytes) > m_config->m_L1I_config.get_line_sz())
+            nbytes = (m_config->m_L1I_config.get_line_sz() - offset_in_block);
+          // TODO: replace with use of allocator
+          // mem_fetch *mf = m_mem_fetch_allocator->alloc()
+          mem_access_t acc(INST_ACC_R, ppc, nbytes, false, m_gpu->gpgpu_ctx);
+          mem_fetch *mf = new mem_fetch(
+              acc, NULL /*we don't have an instruction yet*/, READ_PACKET_SIZE,
+              0, m_cgra_core_id, m_tpc, m_memory_config,
+              m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+          std::list<cache_event> events;
+          enum cache_request_status status;
+          if (m_config->perfect_inst_const_cache)
+            status = HIT;
+          else
+            status = m_L1I->access(
+                (new_addr_type)ppc, mf,
+                m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+          if (status == MISS) {
+            m_cgra_block_state[MF_DE]->set_imiss_pending();
+            m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle);
+          } else if (status == HIT) {
+            if(g_debug_execution >= 3 && m_cgra_core_id==0){
+              dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
+              printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+              fflush(stdout);
+            }
+            m_metadata_fetch_buffer = ifetch_buffer_t(pc, nbytes, 0);
+            m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle);
+            delete mf;
+          } else {
+            assert(status == RESERVATION_FAIL);
+            delete mf;
+          }
+        }
       }
+    }
+  }
+  //handle branch prediction flush or continue
+  if(m_cgra_block_state[MF_DE]->is_prefetch_block()){
+    //if prefetch stall clear, which means actual stack is updated
+    if(!m_fetch_stalled_by_simt_stack){
+      m_cgra_block_state[MF_DE]->clear_prefetch();
+      //check if the block metadata align with stack top
+      address_type next_pc, rpc;
+      m_simt_stack->get_pdom_stack_top_info(&next_pc, &rpc);
+      //branch hit
+      if (m_cgra_block_state[MF_DE]->get_metadata_pc() == next_pc){
+        //need to reset active mask 
+        if(m_cgra_block_state[MF_DE]->decode_done()){
+          m_cgra_block_state[MF_DE]->clear_decode_done();
+        }
+      } else {
+        //branch miss, reset the block
+        m_cgra_block_state[MF_DE]->reset();
+      }
+      clear_predict_pc();
     }
   }
   m_L1I->cycle();
@@ -777,17 +855,23 @@ void cgra_core_ctx::fetch_bitstream(){
   if (!m_bitstream_fetch_buffer.m_valid) { //if there is no bitstream in the buffer
     if (m_L1B->access_ready()) { //if the bitstream cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
-      m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
-      m_bitstream_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_bitstream_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
-      if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-        printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+      if(m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
+        assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
+        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_bitstream_pc(),mf->get_addr());
         fflush(stdout);
+      } else {
+        m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
+        m_bitstream_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_bitstream_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
+        if(g_debug_execution >= 3 && m_cgra_core_id==0){
+          dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
+          printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+          fflush(stdout);
+        }
+        assert(m_cgra_block_state[MF_DE]->get_bitstream_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
+        //m_bitstream_fetch_buffer.m_valid = true; //set valid in the fetch buffer
+        m_cgra_block_state[MF_DE]->set_last_bitstream_fetch(m_gpu->gpu_sim_cycle); //set status
+        m_cgra_block_state[MF_DE]->bitstream_buffer_fill(); //fill the bitstream buffer
       }
-      assert(m_cgra_block_state[MF_DE]->get_bitstream_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
-      //m_bitstream_fetch_buffer.m_valid = true; //set valid in the fetch buffer
-      m_cgra_block_state[MF_DE]->set_last_bitstream_fetch(m_gpu->gpu_sim_cycle); //set status
-      m_cgra_block_state[MF_DE]->bitstream_buffer_fill(); //fill the bitstream buffer
       delete mf;
     } else {
       // this code fetches metadata from the bitstream-cache or generates memory
@@ -923,14 +1007,20 @@ void cgra_core_ctx::decode(){
       printf("DICE Sim uArch [DECODE]: cycle %d, decode metadata pc=0x%04x\n",m_gpu->gpu_sim_cycle, pc);
       fflush(stdout);
     }
-    if (metadata->branch) {
+
+    if(m_cgra_block_state[MF_DE]->is_prefetch_block()){
+      //do nothing with the stack
+    } else if (metadata->branch) {
       if(metadata->uni_bra){
         //update simt stack top with branch target pc
         m_simt_stack->update_no_divergence(metadata->branch_target_meta_pc);
       }
       else {
         //predicate branch, wait for active mask to be done to update
+        //create fake stack first and mark waiting for active mask
         set_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id);
+        address_type predict_pc = branch_predictor(metadata);
+        set_predict_pc(predict_pc);
       }
     } else {
       //update simt stack top with next pc
@@ -940,6 +1030,29 @@ void cgra_core_ctx::decode(){
     m_cgra_block_state[MF_DE]->set_decode_done();
     //set_can_fetch_metadata();
   }
+}
+
+//simple predict rule: if target pc > current pc, then predict not taken
+//if target pc < current pc, then predict taken
+address_type cgra_core_ctx::branch_predictor(dice_metadata* metadata){
+  address_type pc = metadata->get_PC();
+  address_type target_pc = metadata->branch_target_meta_pc;
+  if(target_pc > pc){
+    return pc + metadata->metadata_size();
+  }
+  else{
+    return target_pc;
+  }
+}
+
+void cgra_core_ctx::set_predict_pc(address_type pc){
+  m_predict_pc = pc;
+  m_predict_pc_set = true;
+}
+
+void cgra_core_ctx::clear_predict_pc(){
+  m_predict_pc = 0;
+  m_predict_pc_set = false;
 }
 
 bool cgra_block_state_t::loads_done(){
@@ -955,6 +1068,14 @@ bool cgra_block_state_t::stores_done(){
     return true;
   }
   return false;
+}
+
+void cgra_block_state_t::clear_prefetch() { 
+  is_prefetch = false; 
+  if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+    printf("DICE Sim uArch: Cycle %d, clear_prefetch() for block id = %d\n", m_cgra_core->get_gpu()->gpu_sim_cycle, get_current_metadata()->meta_id);
+    fflush(stdout);
+  }
 }
 
 bool cgra_block_state_t::mem_access_queue_empty(){ return get_current_cfg_block()->accessq_empty(); }
