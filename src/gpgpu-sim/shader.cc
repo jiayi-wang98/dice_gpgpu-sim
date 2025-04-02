@@ -716,6 +716,19 @@ void shader_core_stats::print(FILE *fout) const {
   m_incoming_traffic_stats->print(fout);
 }
 
+
+void shader_core_stats::print_regfile_stats(FILE *fout) const {
+  unsigned total_regfile_accesses = 0;
+  for(int i=0; i< m_config->num_shader(); i++) {
+    fprintf(fout, "SHADER %d:\n", i);
+    fprintf(fout, "gpgpu_n_m_read_regfile_acesses = %d\n", m_read_regfile_acesses[i]);
+    fprintf(fout, "gpgpu_n_m_write_regfile_acesses = %d\n", m_write_regfile_acesses[i]);
+    fprintf(fout, "\n");
+    total_regfile_accesses += m_read_regfile_acesses[i] + m_write_regfile_acesses[i];
+  }
+  fprintf(fout, "gpgpu_n_tot_regfile_acesses = %d\n", total_regfile_accesses);
+}
+
 void shader_core_stats::event_warp_issued(unsigned s_id, unsigned warp_id,
                                           unsigned num_issued,
                                           unsigned dynamic_warp_id) {

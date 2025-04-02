@@ -2173,7 +2173,11 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     int inst_opcode = pI->get_opcode();
     
     if (skip) {
-      CFGBlock->set_not_active(tid);
+      if(pI->has_memory_read() || pI->has_memory_write()){ //if last instruction branch, then not set not active
+        //printf("DICE Sim: Skip instruction %s for tid = %d\n", pI->get_source(),tid);
+        //fflush(stdout);
+        CFGBlock->set_not_active(tid);
+      }
     } else {
       //const ptx_instruction *pI_saved = pI;
       //ptx_instruction *pJ = NULL;
@@ -2340,16 +2344,17 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     }
     
     // "Return values"
-    if (!skip) {
+    //if skip then the memory request is still generated but skipped in LD/ST queue.
+    //if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         if(pI->has_memory_read()||pI->has_memory_write()){
           CFGBlock->space = insn_space;
-          CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num());
+          CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num(),!skip);
         }
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
         //assert(inst.memory_op == insn_memory_op);
       }
-    }
+    //}
   } catch (int x) {
     printf("GPGPU-Sim PTX: ERROR (%d) executing intruction (%s:%u)\n", x,
            pI->source_file(), pI->source_line());

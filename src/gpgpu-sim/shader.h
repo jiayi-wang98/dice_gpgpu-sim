@@ -1883,6 +1883,7 @@ class shader_core_stats : public shader_core_stats_pod {
   void visualizer_print(gzFile visualizer_file);
 
   void print(FILE *fout) const;
+  void print_regfile_stats(FILE *fout) const;
 
   const std::vector<std::vector<unsigned>> &get_dynamic_warp_issue() const {
     return m_shader_dynamic_warp_issue_distro;
@@ -2416,6 +2417,9 @@ class simt_core_cluster {
   void get_L1C_sub_stats(struct cache_sub_stats &css) const;
   void get_L1T_sub_stats(struct cache_sub_stats &css) const;
   void get_L1B_sub_stats(struct cache_sub_stats &css) const;
+  shader_core_stats * get_shader_core_stats() {
+    return m_stats;
+  }
 
   void get_icnt_stats(long &n_simt_to_mem, long &n_mem_to_simt) const;
   float get_current_occupancy(unsigned long long &active,

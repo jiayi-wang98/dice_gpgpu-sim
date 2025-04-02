@@ -33,6 +33,7 @@ class dice_metadata {
       is_exit = false;
       is_ret = false;
       is_entry = false;
+      is_parameter_load = false;
       m_dicemeta_mem_index = 0;
       m_PC = 0;
       m_size = 32; //bytes
@@ -75,6 +76,7 @@ class dice_metadata {
     bool is_exit;
     bool is_ret;
     bool is_entry;
+    bool is_parameter_load;
     dice_block_t *dice_block;
 
     unsigned m_dicemeta_mem_index;
@@ -143,6 +145,9 @@ class dice_metadata_parser {
   }
   void set_is_ret(){
     g_current_dbb->is_ret = true;
+  }
+  void set_is_parameter_load(){
+    g_current_dbb->is_parameter_load = true;
   }
   void set_bitstream_label(const char* label){
     g_current_dbb->bitstream_label = std::string(label);
@@ -215,7 +220,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].memreqaddr[0] = addr;
       m_per_scalar_thread[n].count++;
     }
-    void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0) {
+    void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0, unsigned enable = 1) {
       if (!m_per_scalar_thread_valid) {
         m_per_scalar_thread.resize(m_block_size);
         m_per_scalar_thread_valid = true;
@@ -229,6 +234,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].size[index] = size;
       m_per_scalar_thread[n].ld_dest_reg[index] = ld_dest_reg;
       m_per_scalar_thread[n].count++;
+      m_per_scalar_thread[n].enable = enable;
       //printf("DICE Sim uArch [MEM_ACCESS]: thread %u, addr 0x%04x, space %d, mem_op %d, size %d ,num_of_mem_access = %d\n", n, addr, space, insn_memory_op , size,index);
       //fflush(stdout);
     }
@@ -243,7 +249,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
-    void generate_mem_accesses(unsigned tid);
+    void generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg);
 
     bool accessq_empty() const {
       for(unsigned i=0; i<MAX_LDST_UNIT_PORTS; i++){
@@ -328,6 +334,7 @@ class dice_cfg_block_t{
           size[i] = 0;
         }
         count = 0;
+        enable = 0;
       }
       dram_callback_t callback;
       new_addr_type
@@ -341,6 +348,7 @@ class dice_cfg_block_t{
       unsigned size[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned ld_dest_reg[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned count;
+      unsigned enable;
     };
     std::vector<per_thread_info> m_per_scalar_thread;
     std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port

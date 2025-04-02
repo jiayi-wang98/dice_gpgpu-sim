@@ -337,6 +337,8 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
 
      bool decode_done() const { return m_decoded; }
 
+     bool is_parameter_load();
+
      bool ready_to_dispatch() const {
        if (m_metadata_buffer.m_valid && m_metadata_buffer.m_bitstream_valid) {
          if(is_prefetch) return false;

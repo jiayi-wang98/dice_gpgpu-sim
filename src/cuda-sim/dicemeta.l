@@ -46,6 +46,7 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 "BRANCH_RECVPC" TC; return BRANCH_RECVPC; 
 "BRANCH" TC; return BRANCH; 
 "RET" TC; return RET; 
+"IS_PARAMETER_LOAD" TC; return PARAMETER_LOAD;
 "BITSTREAM_ADDR" TC; return BITSTREAM_ADDR;
 "BITSTREAM_LENGTH" TC; return BITSTREAM_LENGTH;
 "FUNCTION" TC; return FUNCTION;

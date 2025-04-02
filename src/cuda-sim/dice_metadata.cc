@@ -153,6 +153,7 @@ void dice_metadata::dump(){
   printf("Is Exit: %d\n", is_exit);
   printf("Is Ret: %d\n", is_ret);
   printf("Is Entry: %d\n", is_entry);
+  printf("Is_parameter_load: %d\n", is_parameter_load);
   printf("\n\n");
   fflush(stdout);
 }
@@ -376,15 +377,19 @@ void dice_cfg_block_t::set_active(const active_mask_t &active) {
 }
 
 unsigned dice_cfg_block_t::get_num_stores(){
+  if(get_metadata()->is_parameter_load) return 0;
   return (m_metadata->num_store)*m_active_count;
 }
 
 unsigned dice_cfg_block_t::get_num_loads(){
+  if(get_metadata()->is_parameter_load) return (m_metadata->load_destination_regs).size();
   return ((m_metadata->load_destination_regs).size())*m_active_count;
 }
 
 void dice_cfg_block_t::set_not_active(unsigned tid) {
+  //printf("DICE_CFG_BLOCK: set_not_active %d\n", tid); fflush(stdout);
   m_block_active_mask->reset(tid);
+  m_active_count = m_block_active_mask->count();
 }
 
 address_type line_size_based_tag_func_cgra(new_addr_type address,
@@ -393,7 +398,7 @@ address_type line_size_based_tag_func_cgra(new_addr_type address,
 return address & ~(line_size - 1);
 }
 
-void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
+void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg) {
   std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
   std::map<new_addr_type, dice_transaction_info> wr_transactions;  // each block addr maps to a list of transactions
   //convert memory ops to mem_access_t
@@ -417,6 +422,12 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
     unsigned num_stores=0;
     new_addr_type cache_block_size = 0;  // in bytes
     for(unsigned i=0; i<m_per_scalar_thread[tid].count; i++){
+      if(m_per_scalar_thread[tid].enable == 0) {
+        //enable is 0 means this access is masked out
+        //need to tell scoreboard to release this.
+        masked_ops_reg.push_back(m_per_scalar_thread[tid].ld_dest_reg[i]);
+        continue; 
+      }
       new_addr_type addr = m_per_scalar_thread[tid].memreqaddr[i];
       memory_space_t space = m_per_scalar_thread[tid].space[i];
       _memory_op_t insn_memory_op = m_per_scalar_thread[tid].mem_op[i];
@@ -461,7 +472,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid) {
           for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
-              assert(port_index < (MAX_LDST_UNIT_PORTS/2));
+              if(port_index >= (MAX_LDST_UNIT_PORTS/2)){
+                assert(get_metadata()->is_parameter_load);
+                port_index = port_index % (MAX_LDST_UNIT_PORTS/2);
+              }
               std::set<unsigned> ld_dest_regs;
               ld_dest_regs.insert(ld_dest_reg);
               mem_access_t access(access_type, addr,space, cache_block_size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
