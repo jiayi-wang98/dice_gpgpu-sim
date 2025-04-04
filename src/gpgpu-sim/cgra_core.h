@@ -37,6 +37,7 @@ class dice_metadata;
 class dice_block_t;
 class cgra_unit;
 class dispatcher_rfu_t;
+class block_commit_table;
 
 #define MAX_CTA_PER_CGRA_CORE 8
 #define MAX_THREAD_PER_CGRA_CORE 2048
@@ -44,7 +45,6 @@ class dispatcher_rfu_t;
 enum cgra_block_stage {
   MF_DE,
   DP_CGRA,
-  MEM_WRITEBACK,
   NUM_DICE_STAGE
 };
 
@@ -109,6 +109,10 @@ class cgra_core_ctx {
     }
     void clear_stalled_by_simt_stack(){
       m_fetch_stalled_by_simt_stack = false;
+    }
+
+    unsigned get_fetch_waiting_block_id() const {
+      return m_fetch_waiting_block_id;
     }
     void set_exec_stalled_by_writeback_buffer_full();
     void clear_exec_stalled_by_writeback_buffer_full();
@@ -235,8 +239,81 @@ class cgra_core_ctx {
     
     //ldst_unit
     ldst_unit *m_ldst_unit;
+
+    //writeback block commit table
+    block_commit_table *m_block_commit_table;
   };
 
+
+class block_commit_table{
+  public:
+    block_commit_table(class gpgpu_sim* gpu, class cgra_core_ctx* cgra_core);
+    ~block_commit_table() {
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i]) delete m_commit_table[i];
+      }
+    }
+    cgra_block_state_t *get(unsigned index) { return m_commit_table[index]; }
+    void reserve(unsigned index, cgra_block_state_t *block) { assert(m_commit_table[index]==NULL); m_commit_table[index] = block; }
+    void release(unsigned index) {
+      assert(m_commit_table[index] != NULL);
+      delete m_commit_table[index];
+      m_commit_table[index] = NULL;
+    }
+
+    bool available() {
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] == NULL) return true;
+      }
+      return false;
+    }
+
+    unsigned get_available_index() {
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] == NULL) return i;
+      }
+      assert(0);
+      return 0;
+    }
+
+    bool is_full() {
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] == NULL) return false;
+      }
+      return true;
+    }
+
+    bool is_empty() {
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] != NULL) return false;
+      }
+      return true;
+    }
+
+    unsigned number_of_occupied() {
+      unsigned count = 0;
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] != NULL) count++;
+      }
+      return count;
+    }
+
+    unsigned number_of_empty() {
+      unsigned count = 0;
+      for (unsigned i = 0; i < m_max_block_size; i++) {
+        if (m_commit_table[i] == NULL) count++;
+      }
+      return count;
+    }
+
+    void check_and_release();
+
+  private:
+    class gpgpu_sim *m_gpu;
+    class cgra_core_ctx *m_cgra_core;
+    unsigned m_max_block_size;
+    std::vector<cgra_block_state_t *> m_commit_table;
+};
 
 class exec_cgra_core_ctx : public cgra_core_ctx {
   public:
@@ -355,7 +432,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
       m_last_bitstream_fetch = sim_cycle;
      }
 
-     bool hardware_done() const {
+     bool hardware_done() {
       return functional_done() && stores_done() && !thread_in_pipeline();
      }
 
@@ -385,23 +462,15 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
       cgra_fabric_completed = true;
      }
 
-     void set_writeback_done() {
-      writeback_completed = true;
-     }
-
-     bool writeback_done() const {
-      return writeback_completed; 
-     }
-
-     bool block_done() const {
-      return writeback_completed & stores_done(); 
+     bool block_done(){
+      return loads_done() && stores_done(); 
      }
 
      bool loads_done();
-     bool stores_done();
+     bool stores_out();
      bool mem_access_queue_empty();
 
-     bool stores_done() const { return m_stores_outstanding == 0; }
+     bool stores_done() { return stores_out() && (m_stores_outstanding == 0); }
      void inc_store_req();
      void dec_store_req();
      unsigned get_stores_outstanding() const { return m_stores_outstanding; }

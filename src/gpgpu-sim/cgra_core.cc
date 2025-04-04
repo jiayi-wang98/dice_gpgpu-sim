@@ -572,6 +572,7 @@ void cgra_core_ctx::create_execution_unit(){
   }
   m_cgra_unit = new cgra_unit(m_config, this, &(m_cgra_block_state[DP_CGRA]));
   m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, &(m_cgra_block_state[DP_CGRA]), m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
+  m_block_commit_table = new block_commit_table(m_gpu, this);
 }
 
 //hardware simulation
@@ -1003,8 +1004,14 @@ void cgra_core_ctx::decode(){
         //printf("DICE-Sim uArch: cycle %d, decode block is exit block but DP-CGRA block is not finished\n", m_gpu->gpu_sim_cycle);
         return;
       }
-      if (!m_cgra_block_state[MEM_WRITEBACK]->dummy() && !m_cgra_block_state[MEM_WRITEBACK]->block_done()) {
-        //printf("DICE-Sim uArch: cycle %d, decode block is exit block but MEM_WRITEBACK block is not finished\n", m_gpu->gpu_sim_cycle);
+
+      //switch this to block_commit_table 
+      //if (!m_cgra_block_state[MEM_WRITEBACK]->dummy() && !m_cgra_block_state[MEM_WRITEBACK]->block_done()) {
+      //  //printf("DICE-Sim uArch: cycle %d, decode block is exit block but MEM_WRITEBACK block is not finished\n", m_gpu->gpu_sim_cycle);
+      //  return;
+      //}
+      if(!m_block_commit_table->is_empty()){
+        //still have pending writebacks
         return;
       }
       //direct exit here instead of run ret
@@ -1094,7 +1101,7 @@ bool cgra_block_state_t::loads_done(){
   }
   return false;
 }
-bool cgra_block_state_t::stores_done(){
+bool cgra_block_state_t::stores_out(){
   assert(m_num_stores_done <= get_current_cfg_block()->get_num_stores());
   if(m_num_stores_done == get_current_cfg_block()->get_num_stores()){
     return true;
@@ -1173,6 +1180,7 @@ void cgra_core_ctx::cgra_execute_block(){
 void cgra_core_ctx::writeback(){
   //check if cgra fabric is finished
   //if all load writeback are done, then set writeback done
+  /*
   if(!m_cgra_block_state[MEM_WRITEBACK]->dummy()){
     if(m_cgra_block_state[MEM_WRITEBACK]->loads_done() && m_cgra_block_state[MEM_WRITEBACK]->stores_done() && !m_cgra_block_state[MEM_WRITEBACK]->writeback_done()){
       m_cgra_block_state[MEM_WRITEBACK]->set_writeback_done();
@@ -1192,28 +1200,37 @@ void cgra_core_ctx::writeback(){
           clear_stalled_by_simt_stack();
         }
       }
-    } else {
-      if(g_debug_execution >= 3 && m_cgra_core_id==0 && m_gpu->gpu_sim_cycle > 4290 && m_gpu->gpu_sim_cycle < 4295){
-        printf("DICE Sim uArch [WRITEBACK-DEBUG]: cycle %d, writeback state for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
-        printf("loads_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->loads_done());
-        printf("finished number of loads = %d, need number of loads = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_loads_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_loads());
-        printf("stores_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->stores_done());
-        printf("finished number of stores = %d, need number of stores = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_stores_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_stores());
-        fflush(stdout);
-      }
-    }
+    } 
+    //else {
+    //  //if(g_debug_execution >= 3 && m_cgra_core_id==0 && m_gpu->gpu_sim_cycle > 4290 && m_gpu->gpu_sim_cycle < 4295){
+    //  //  printf("DICE Sim uArch [WRITEBACK-DEBUG]: cycle %d, writeback state for dice block id=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MEM_WRITEBACK]->get_current_metadata()->meta_id);
+    //  //  printf("loads_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->loads_done());
+    //  //  printf("finished number of loads = %d, need number of loads = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_loads_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_loads());
+    //  //  printf("stores_done = %d\n", m_cgra_block_state[MEM_WRITEBACK]->stores_done());
+    //  //  printf("finished number of stores = %d, need number of stores = %d, \n", m_cgra_block_state[MEM_WRITEBACK]->get_number_of_stores_done(),m_cgra_block_state[MEM_WRITEBACK]->get_current_cfg_block()->get_num_stores());
+    //  //  fflush(stdout);
+    //  //}
+    //}
   }
+  */
+  
+  m_block_commit_table->check_and_release();
 
   //if done, move to next stage
-  if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && m_cgra_block_state[DP_CGRA]->mem_access_queue_empty() && (m_cgra_block_state[MEM_WRITEBACK]->block_done() || m_cgra_block_state[MEM_WRITEBACK]->dummy())){
+  //if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && m_cgra_block_state[DP_CGRA]->mem_access_queue_empty() && (m_cgra_block_state[MEM_WRITEBACK]->block_done() || m_cgra_block_state[MEM_WRITEBACK]->dummy())){
+  if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && m_cgra_block_state[DP_CGRA]->mem_access_queue_empty() && (m_block_commit_table->available())){
     //move to writeback stage
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
       printf("DICE Sim uArch [WRITEBACK_START]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
       fflush(stdout);
     }
-    m_cgra_block_state[MEM_WRITEBACK] = m_cgra_block_state[DP_CGRA];
+    unsigned index=m_block_commit_table->get_available_index();
+    m_block_commit_table->reserve(index, m_cgra_block_state[DP_CGRA]);
+    unsigned cta_id = m_cgra_block_state[DP_CGRA]->get_cta_id();
+    simt_mask_t active_mask = m_cgra_block_state[DP_CGRA]->get_active_threads();
+    //m_cgra_block_state[MEM_WRITEBACK] = m_cgra_block_state[DP_CGRA];
     m_cgra_block_state[DP_CGRA] = new cgra_block_state_t(this, m_kernel_block_size);
-    m_cgra_block_state[DP_CGRA]->init(unsigned(-1), m_cgra_block_state[MEM_WRITEBACK]->get_cta_id(), m_cgra_block_state[MEM_WRITEBACK]->get_active_threads());
+    m_cgra_block_state[DP_CGRA]->init(unsigned(-1), cta_id, active_mask);
     m_cgra_unit->flush_pipeline();
   }
 
@@ -2490,6 +2507,46 @@ unsigned dice_mem_request_queue::get_next_process_port_shared(){
     next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
     if(next_port == m_last_processed_port_shared){
       return unsigned(-1);
+    }
+  }
+}
+
+
+block_commit_table::block_commit_table(class gpgpu_sim* gpu, class cgra_core_ctx* cgra_core) {
+  m_cgra_core = cgra_core;
+  m_gpu = gpu;
+  m_max_block_size = m_gpu->max_cta_per_core();
+  m_commit_table.resize(m_max_block_size);
+  for (unsigned i = 0; i < m_max_block_size; i++) {
+    m_commit_table[i] = NULL;
+  }
+}
+
+void block_commit_table::check_and_release() {
+  for (unsigned i = 0; i < m_max_block_size; i++) {
+    if (m_commit_table[i] != NULL) {
+      if (m_commit_table[i]->block_done()) {
+        m_gpu->gpu_sim_block += m_commit_table[i]->active_count();
+
+        //TODO, can prefetch next block here or better SIMT stack operation
+        if (m_cgra_core->is_stalled_by_simt_stack()){
+          if(m_commit_table[i]->get_current_metadata()->meta_id == m_cgra_core->get_fetch_waiting_block_id()) {
+            assert(m_commit_table[i]->get_current_metadata()->branch);
+            dice_cfg_block_t *cfg_block = m_commit_table[i]->get_current_cfg_block();
+            assert(cfg_block != NULL);
+            //check if predicate registers are all written back
+            m_cgra_core->updateSIMTStack(cfg_block);
+            m_cgra_core->clear_stalled_by_simt_stack();
+          }
+        }
+
+        if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+          printf("DICE Sim uArch [WRITEBACK_END]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_commit_table[i]->get_current_metadata()->meta_id);
+          fflush(stdout);
+        }
+        delete m_commit_table[i];
+        m_commit_table[i] = NULL;
+      }
     }
   }
 }
