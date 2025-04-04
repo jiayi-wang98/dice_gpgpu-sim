@@ -18,4 +18,4 @@ If there's an empty entry in CTA table (active number of CTAs < number of table 
 
 ## Pop a finished CTA
 
-If a CTA finishes (which means the stack top active mask is 0x0), then it's flushed out in CTA table and send a signal back to top level through interconnect.
+If a CTA finishes (which means the stack top active mask is all 0), then it's flushed out in CTA table and send a signal back to top level through interconnect.
