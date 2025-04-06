@@ -62,7 +62,6 @@ cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   m_kernel_block_size = m_max_block_size;
   m_liveThreadCount = 0;
   m_not_completed = 0;
-  m_fetch_stalled_by_simt_stack = false;
   m_exec_stalled_by_writeback_buffer_full = false;
   m_exec_stalled_by_ldst_unit_queue_full = false;
   m_active_blocks = 0;
@@ -74,49 +73,53 @@ cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
   m_thread = (ptx_thread_info **)calloc(m_max_block_size,sizeof(ptx_thread_info *));
-  initializeSIMTStack(m_max_block_size);
-}
-
-
-void cgra_core_ctx::initializeSIMTStack(unsigned num_threads){
-  m_simt_stack = new simt_stack(m_cgra_core_id, m_max_block_size, m_gpu);
-}
-
-void cgra_core_ctx::resizeSIMTStack(unsigned num_threads){
-  m_simt_stack->resize_warp(num_threads);
-}
-
-void cgra_core_ctx::get_pdom_stack_top_info(unsigned *pc,
-  unsigned *rpc) const {
-  m_simt_stack->get_pdom_stack_top_info(pc, rpc);
-}
-
-void cgra_core_ctx::deleteSIMTStack() {
-  if (m_simt_stack) {
-    delete m_simt_stack;
-    m_simt_stack = NULL;
+  m_simt_stack.resize(MAX_CTA_PER_SHADER);
+  for (unsigned i = 0; i < m_gpu->max_cta_per_core(); i++) {
+    initializeSIMTStack(i,m_max_block_size);
+    //initializeSIMTStack(i,256);
   }
 }
 
-void cgra_core_ctx::updateSIMTStack(dice_cfg_block_t *cfg_block) {
-  simt_mask_t thread_done(m_kernel_block_size);
+
+void cgra_core_ctx::initializeSIMTStack(unsigned hw_cta_id, unsigned num_threads){
+  m_simt_stack[hw_cta_id] = new simt_stack(m_cgra_core_id, num_threads, m_gpu);
+}
+
+void cgra_core_ctx::get_pdom_stack_top_info(unsigned hw_cta_id, unsigned *pc,
+  unsigned *rpc) const {
+  m_simt_stack[hw_cta_id]->get_pdom_stack_top_info(pc, rpc);
+}
+
+void cgra_core_ctx::deleteSIMTStack() {
+  for (unsigned i = 0; i < m_simt_stack.size(); i++) {
+    if (m_simt_stack[i]) {
+      delete m_simt_stack[i];
+      m_simt_stack[i] = NULL;
+    }
+  }
+}
+
+void cgra_core_ctx::updateSIMTStack(unsigned hw_cta_id, dice_cfg_block_t *cfg_block) {
+  unsigned kernel_cta_size = get_cta_size(hw_cta_id);
+  simt_mask_t thread_done(kernel_cta_size);
   addr_vector_t next_pc;
-  for (unsigned i = 0; i < m_kernel_block_size; i++) {
-    if (ptx_thread_done(i)) {
+  for (unsigned i = 0; i < kernel_cta_size; i++) {
+    unsigned thread_offset = get_cta_start_tid(hw_cta_id);
+    if (ptx_thread_done(thread_offset+i)) {
       thread_done.set(i);
       next_pc.push_back((address_type)-1);
     } else {
       if (cfg_block->reconvergence_pc == RECONVERGE_RETURN_PC) {
-        cfg_block->reconvergence_pc = get_return_meta_pc(m_thread[i]);
+        cfg_block->reconvergence_pc = get_return_meta_pc(m_thread[thread_offset+i]);
       }
-      next_pc.push_back(m_thread[i]->get_meta_pc());
+      next_pc.push_back(m_thread[thread_offset+i]->get_meta_pc());
     }
   }
   if(m_cgra_core_id == 0){
-    m_simt_stack->update_sid(thread_done, next_pc, cfg_block->reconvergence_pc,
+    m_simt_stack[hw_cta_id]->update_sid(thread_done, next_pc, cfg_block->reconvergence_pc,
     cfg_block->op, cfg_block->get_metadata()->m_size, cfg_block->get_metadata()->m_PC);
   } else {
-    m_simt_stack->update(thread_done, next_pc, cfg_block->reconvergence_pc,
+    m_simt_stack[hw_cta_id]->update(thread_done, next_pc, cfg_block->reconvergence_pc,
     cfg_block->op, cfg_block->get_metadata()->m_size, cfg_block->get_metadata()->m_PC);
   }
 }
@@ -145,34 +148,36 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
   dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
   if(cgra_block->is_parameter_load()){
     for (unsigned t = 0; t < m_kernel_block_size; t++) {
+      unsigned core_tid=t+get_cta_start_tid(cgra_block->get_cta_id());
       if (cfg_block->active(t)) {
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, t,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
         }
-        m_thread[t]->dice_exec_block(cfg_block,t);
+        m_thread[core_tid]->dice_exec_block(cfg_block,t);
         //only generate one memory accesses 
-        if(t==tid) {
+        if(core_tid==tid) {
           std::list<unsigned> masked_ops_reg;
-          cfg_block->generate_mem_accesses(tid,masked_ops_reg);
+          cfg_block->generate_mem_accesses(t,masked_ops_reg);
           //push mem_access to ldst_unit's queue
           m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
         }
         if(g_debug_execution==3 &m_cgra_core_id == 0){
-          cfg_block->print_mem_ops_tid(tid);
+          //cfg_block->print_mem_ops_tid(t);
         }
         //check status and update
-        checkExecutionStatusAndUpdate(cgra_block,t);
+        checkExecutionStatusAndUpdate(cgra_block,core_tid);
       }
     }
   } else {
-    if (cfg_block->active(tid)) {
+    unsigned local_tid = tid - get_cta_start_tid(cgra_block->get_cta_id());
+    if (cfg_block->active(local_tid)) {
       if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
+        printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle, m_cgra_core_id, local_tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
       }
-      m_thread[tid]->dice_exec_block(cfg_block,tid);
+      m_thread[tid]->dice_exec_block(cfg_block,local_tid);
       //generate memory accesses to ldst unit
       std::list<unsigned> masked_ops_reg;
-      cfg_block->generate_mem_accesses(tid,masked_ops_reg);
+      cfg_block->generate_mem_accesses(local_tid,masked_ops_reg);
       //push mem_access to ldst_unit's queue
       m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
       //release masked scoreboard record
@@ -205,7 +210,7 @@ void cgra_core_ctx::checkExecutionStatusAndUpdate(cgra_block_state_t* cgra_block
     }
   }
   if (ptx_thread_done(tid)) {
-    cgra_block->set_completed(tid);
+    cgra_block->set_completed(tid-get_cta_start_tid(cgra_block->get_cta_id()));
   }
   if (m_thread[tid] == NULL || m_thread[tid]->is_done()) {
     m_liveThreadCount--;
@@ -287,9 +292,15 @@ return num_accesses;
 void cgra_core_ctx::set_max_cta(const kernel_info_t &kernel){
   // calculate the max cta count and cta size for local memory address mapping
   //DICE-TODO in the future. For now, we assume that each core can only run 1 CTA at a time.
+  // this is on going ...
   //In the next gen, a cgra_core can run multiple CTAs at a time and there's a similar "CTA scheduler" as warp scheduler to handle concurrent CTA execution.
-  kernel_max_cta_per_shader = 1;
-  kernel_padded_threads_per_cta = kernel.threads_per_cta();
+  //kernel_max_cta_per_shader = 1;
+  //kernel_padded_threads_per_cta = kernel.threads_per_cta();
+
+  kernel_max_cta_per_shader = m_config->max_cta(kernel);
+  unsigned int gpu_cta_size = kernel.threads_per_cta();
+  //align to multiples of 256
+  kernel_padded_threads_per_cta = (gpu_cta_size % 256) ? 256 * ((gpu_cta_size / 256) + 1): gpu_cta_size;
 }
 
 void cgra_core_ctx::get_icnt_power_stats(long &n_simt_to_mem,
@@ -333,7 +344,7 @@ void cgra_core_ctx::issue_block2core(kernel_info_t &kernel){
   unsigned max_cta_per_core;
   max_cta_per_core = kernel_max_cta_per_shader; //1 CTA per core for now
   for (unsigned i = 0; i < max_cta_per_core; i++) {
-    if (m_cta_status[i] == 0) {
+    if (m_cta_status_table->is_free(i)) {
       free_cta_hw_id = i;
       break;
     }
@@ -341,9 +352,12 @@ void cgra_core_ctx::issue_block2core(kernel_info_t &kernel){
   assert(free_cta_hw_id != (unsigned)-1);
   // determine hardware threads that will be used for this CTA
   int cta_size = kernel.threads_per_cta();
+  int padded_cta_size = cta_size;
+  if (cta_size % 256)
+    padded_cta_size = ((cta_size / 256) + 1) * (256);
 
   unsigned int start_thread, end_thread;
-  start_thread = free_cta_hw_id * cta_size; //0 for now
+  start_thread = free_cta_hw_id * padded_cta_size; 
   end_thread = start_thread + cta_size; //according to kernel's block_size
 
   // reset the microarchitecture state of the selected hardware thread contexts
@@ -377,7 +391,8 @@ void cgra_core_ctx::issue_block2core(kernel_info_t &kernel){
   assert(nthreads_in_block > 0 && nthreads_in_block <=m_config->dice_cgra_core_max_threads);  
   // should be at least one, but less than max
 
-  m_cta_status[free_cta_hw_id] = nthreads_in_block;
+  m_cta_status_table->init_cta(free_cta_hw_id);
+  m_cta_status_table->set_num_live_threads(free_cta_hw_id, start_thread, end_thread);
 
   if (m_gpu->resume_option == 1 && kernel.get_uid() == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
@@ -407,8 +422,8 @@ address_type cgra_core_ctx::next_meta_pc(int tid) const {
 }
 
 bool cgra_core_ctx::can_issue_1block(kernel_info_t &kernel) {
-  //return (m_active_blocks < m_config->max_cta(kernel));
-  return (m_active_blocks < 1);//TODO
+  return (m_active_blocks < m_config->max_cta(kernel));
+  //return (m_active_blocks < 1);//TODO
 }
 
 void cgra_core_ctx::init_CTA(unsigned cta_id, unsigned start_thread,
@@ -418,23 +433,24 @@ void cgra_core_ctx::init_CTA(unsigned cta_id, unsigned start_thread,
   if (m_config->model == POST_DOMINATOR) {
     unsigned n_active = 0;
     simt_mask_t active_threads(end_thread - start_thread);
-    for (unsigned tid = 0; tid < m_config->dice_cgra_core_max_threads; tid++) {
-      if (tid < end_thread) {
-        n_active++;
-        assert(!m_active_threads.test(tid));
-        m_active_threads.set(tid);
-        active_threads.set(tid);
-      }
+    //set core-level threads state
+    for (unsigned tid = start_thread; tid < end_thread; tid++) {
+      n_active++;
+      assert(!m_active_threads.test(tid));
+      m_active_threads.set(tid);
+      active_threads.set(tid-start_thread);
     }
     //init simt stack
-    m_simt_stack->launch(start_pc, active_threads);
+    m_simt_stack[cta_id]->reset();
+    m_simt_stack[cta_id]->resize_warp(cta_size);
+    m_simt_stack[cta_id]->launch(start_pc, active_threads);
     if (m_gpu->resume_option == 1 && kernel_id == m_gpu->resume_kernel &&
       ctaid >= m_gpu->resume_CTA && ctaid < m_gpu->checkpoint_CTA_t) {
         char fname[2048];
         snprintf(fname, 2048, "checkpoint_files/warp_0_%d_simt.txt",ctaid);
         unsigned pc, rpc;
-        m_simt_stack->resume(fname);
-        m_simt_stack->get_pdom_stack_top_info(&pc, &rpc);
+        m_simt_stack[cta_id]->resume(fname);
+        m_simt_stack[cta_id]->get_pdom_stack_top_info(&pc, &rpc);
         for (unsigned t = 0; t < m_config->dice_cgra_core_max_threads; t++) {
           if (m_thread != NULL) {
             m_thread[t]->set_next_meta_pc(pc);
@@ -443,7 +459,7 @@ void cgra_core_ctx::init_CTA(unsigned cta_id, unsigned start_thread,
         }
       start_pc = pc;
     }
-    m_cgra_block_state[MF_DE]->init(start_pc, cta_id, active_threads);
+    //m_cgra_block_state[MF_DE]->init(start_pc, cta_id, active_threads);
     m_not_completed += n_active;
     ++m_active_blocks;
   }
@@ -482,33 +498,31 @@ void cgra_core_ctx::reinit(unsigned start_thread, unsigned end_thread,bool reset
     m_threadState[i].n_insn = 0;
     m_threadState[i].m_cta_id = -1;
   }
-  //set actual kernel block size
-  m_kernel_block_size = end_thread - start_thread;
-  resizeSIMTStack(m_kernel_block_size);
-  m_simt_stack->reset();
-
-  m_scoreboard->clear();
-  m_scoreboard->resize(m_kernel_block_size);
-  
+  //do this later
+  //for (unsigned i = start_thread / 256;
+  //     i < end_thread / 256; ++i) {
+  //  m_simt_stack[i]->reset(); //reset all simt stacks in the range, although just use the first one.
+  //}
+  m_scoreboard->clear_tid(start_thread, end_thread);
   //reset block state block size
   //delete existing block state
-  for (unsigned i = 0; i < NUM_DICE_STAGE; i++) {
-    delete m_cgra_block_state[i];
-  }
-  m_cgra_block_state.clear();
-  //create new block state
-  unsigned total_pipeline_stages = NUM_DICE_STAGE;
-  m_cgra_block_state.reserve(total_pipeline_stages);
-  for (unsigned i = 0; i < total_pipeline_stages; i++) {
-    m_cgra_block_state.push_back(new cgra_block_state_t(this, m_kernel_block_size));
-  }
+  //for (unsigned i = 0; i < NUM_DICE_STAGE; i++) {
+  //  delete m_cgra_block_state[i];
+  //}
+  //m_cgra_block_state.clear();
+  ////create new block state
+  //unsigned total_pipeline_stages = NUM_DICE_STAGE;
+  //m_cgra_block_state.reserve(total_pipeline_stages);
+  //for (unsigned i = 0; i < total_pipeline_stages; i++) {
+  //  m_cgra_block_state.push_back(new cgra_block_state_t(this, m_kernel_block_size));
+  //}
 
   //reset cgra_unit state
-  m_predict_pc_set=0;
-  m_cgra_unit->reinit();
+  //m_predict_pc_set=0;
+  //m_cgra_unit->reinit();
   //reinit fetch buffer
-  m_metadata_fetch_buffer = ifetch_buffer_t();
-  m_bitstream_fetch_buffer = ifetch_buffer_t();
+  //m_metadata_fetch_buffer = ifetch_buffer_t();
+  //m_bitstream_fetch_buffer = ifetch_buffer_t();
 }
 
 
@@ -522,11 +536,17 @@ void cgra_core_ctx::create_front_pipeline(){
   for (unsigned i = 0; i < total_pipeline_stages; i++) {
     m_cgra_block_state.push_back(new cgra_block_state_t(this, m_kernel_block_size));
   }
+
   m_threadState = (thread_ctx_t *)calloc(sizeof(thread_ctx_t),m_config->dice_cgra_core_max_threads);
   m_not_completed = 0;
   m_active_threads.reset();
   m_active_blocks = 0;
-  for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_cta_status[i] = 0;
+  //for (unsigned i = 0; i < MAX_CTA_PER_SHADER; i++) m_num_cta_live_threads[i] = 0;
+
+  //create fetch_scheduler hardware
+  m_cta_status_table = new cta_status_table(m_gpu, this, MAX_CTA_PER_SHADER);
+  m_fetch_scheduler = new fetch_scheduler(m_gpu,this,m_cta_status_table);
+
   for (unsigned i = 0; i < m_config->dice_cgra_core_max_threads; i++) {
     m_thread[i] = NULL;
     m_threadState[i].m_cta_id = -1;
@@ -584,6 +604,7 @@ void cgra_core_ctx::cycle(){
   decode();
   fetch_bitstream();
   fetch_metadata();
+  cta_schedule();
 }
 
 void cgra_core_ctx::accept_metadata_fetch_response(mem_fetch *mf) {
@@ -625,14 +646,14 @@ void cgra_core_ctx::fetch_metadata(){
       mem_fetch *mf = m_L1I->next_access(); //get response from the instruction cache
       if(m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
-        printf("DICE Sim uArch [PREFETCH_META_DISCARD]: Cycle %d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_metadata_pc(),mf->get_addr());
+        printf("DICE Sim uArch [PREFETCH_META_DISCARD]: Cycle %d, hw_cta=%d ,Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_metadata_pc(),mf->get_addr());
         fflush(stdout);
       } else {
         m_cgra_block_state[MF_DE]->clear_imiss_pending(); //clear the metadata miss flag
         m_metadata_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_metadata_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-          printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+          printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_cta_id(),meta->meta_id,mf->get_addr());
           fflush(stdout);
         }
         assert(m_cgra_block_state[MF_DE]->get_metadata_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
@@ -641,24 +662,24 @@ void cgra_core_ctx::fetch_metadata(){
       }
       delete mf;
     } else {
+      if(m_cgra_block_state[MF_DE]->dummy()) return;
       // check if it's waiting on cache miss or can fetch new instruction
-      //TODO, add pending writes clear chec
-
       if (m_cgra_block_state[MF_DE]->done_exit()){
         //do nothing
       }
-      else if (!m_fetch_stalled_by_simt_stack && !m_cgra_block_state[MF_DE]->imiss_pending() &&
-          m_cgra_block_state[MF_DE]->metadata_buffer_empty()) {
+      else if (!m_cta_status_table->fetch_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_cta_id()) && !m_cgra_block_state[MF_DE]->imiss_pending() &&
+          m_cgra_block_state[MF_DE]->metadata_buffer_empty()) {//if not stalled by simt stack
         address_type pc;
         //set next pc according to stack top
         address_type next_pc, rpc;
-        m_simt_stack->get_pdom_stack_top_info(&next_pc, &rpc);
+        unsigned cta_id = m_cgra_block_state[MF_DE]->get_cta_id();
+        m_simt_stack[cta_id]->get_pdom_stack_top_info(&next_pc, &rpc);
         m_cgra_block_state[MF_DE]->set_next_pc(next_pc);
         pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
         address_type ppc = pc + PROGRAM_MEM_START;
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
-          printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+          printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id ,pc);
           fflush(stdout);
         }
         unsigned nbytes = 32; //32 bytes for each metadata
@@ -687,7 +708,7 @@ void cgra_core_ctx::fetch_metadata(){
         } else if (status == HIT) {
           if(g_debug_execution >= 3 && m_cgra_core_id==0){
             dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
-            printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+            printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id ,pc);
             fflush(stdout);
           }
           m_metadata_fetch_buffer = ifetch_buffer_t(pc, nbytes, 0);
@@ -699,15 +720,16 @@ void cgra_core_ctx::fetch_metadata(){
         }
       } else {
         //if stalled by simt stack and have predict pc, prefetch predicted pc
-        if ((m_fetch_stalled_by_simt_stack && m_predict_pc_set && !m_cgra_block_state[MF_DE]->imiss_pending() && m_cgra_block_state[MF_DE]->metadata_buffer_empty())) {
+        if (m_cta_status_table->fetch_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_cta_id()) && !m_cgra_block_state[MF_DE]->imiss_pending() && m_cgra_block_state[MF_DE]->metadata_buffer_empty()) {
           address_type pc;
-          m_cgra_block_state[MF_DE]->set_next_pc(m_predict_pc);
+          address_type predict_pc = m_cta_status_table->get_prefetch_pc(m_cgra_block_state[MF_DE]->get_cta_id()); 
+          m_cgra_block_state[MF_DE]->set_next_pc(predict_pc);
           m_cgra_block_state[MF_DE]->set_prefetch();//set as a prefetch block
           pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
           address_type ppc = pc + PROGRAM_MEM_START;
           if(g_debug_execution >= 3 && m_cgra_core_id==0){
             dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
-            printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+            printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id ,pc);
             fflush(stdout);
           }
           unsigned nbytes = 32; //32 bytes for each metadata
@@ -736,7 +758,7 @@ void cgra_core_ctx::fetch_metadata(){
           } else if (status == HIT) {
             if(g_debug_execution >= 3 && m_cgra_core_id==0){
               dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
-              printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, meta->meta_id ,pc);
+              printf("DICE Sim uArch [FETCH_META_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id ,pc);
               fflush(stdout);
             }
             m_metadata_fetch_buffer = ifetch_buffer_t(pc, nbytes, 0);
@@ -753,11 +775,12 @@ void cgra_core_ctx::fetch_metadata(){
   //handle branch prediction flush or continue
   if(m_cgra_block_state[MF_DE]->is_prefetch_block()){
     //if prefetch stall clear, which means actual stack is updated
-    if(!m_fetch_stalled_by_simt_stack){
+    if(!m_cta_status_table->fetch_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_cta_id())){
       m_cgra_block_state[MF_DE]->clear_prefetch();
       //check if the block metadata align with stack top
       address_type next_pc, rpc;
-      m_simt_stack->get_pdom_stack_top_info(&next_pc, &rpc);
+      unsigned cta_id = m_cgra_block_state[MF_DE]->get_cta_id();
+      m_simt_stack[cta_id]->get_pdom_stack_top_info(&next_pc, &rpc);
       //branch hit
       if (m_cgra_block_state[MF_DE]->get_metadata_pc() == next_pc){
         //need to reset active mask 
@@ -768,16 +791,15 @@ void cgra_core_ctx::fetch_metadata(){
         //branch miss, reset the block
         m_cgra_block_state[MF_DE]->reset();
       }
-      clear_predict_pc();
     }
   }
   m_L1I->cycle();
 }
 
 void cgra_core_ctx::register_cta_thread_exit(unsigned cta_num, kernel_info_t *kernel) {
-  assert(m_cta_status[cta_num] > 0);
-  m_cta_status[cta_num]--;
-  if (!m_cta_status[cta_num]) {
+  assert(m_cta_status_table->is_free(cta_num) == false);
+  m_cta_status_table->decrease_num_live_threads(cta_num);
+  if (m_cta_status_table->is_free(cta_num)) {
     // Increment the completed CTAs
     m_stats->ctas_completed++;
     m_gpu->inc_completed_cta();
@@ -885,19 +907,20 @@ void cgra_block_state_t::metadata_buffer_fill(dice_cfg_block_t *cfg_block) {
  }
 
 void cgra_core_ctx::fetch_bitstream(){
+  if(m_cgra_block_state[MF_DE]->dummy()) return;
   if (!m_bitstream_fetch_buffer.m_valid) { //if there is no bitstream in the buffer
     if (m_L1B->access_ready()) { //if the bitstream cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
       if(m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
-        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_bitstream_pc(),mf->get_addr());
+        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), m_cgra_block_state[MF_DE]->get_bitstream_pc(),mf->get_addr());
         fflush(stdout);
       } else {
         m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
         m_bitstream_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_bitstream_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-          printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,mf->get_addr());
+          printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id,mf->get_addr());
           fflush(stdout);
         }
         assert(m_cgra_block_state[MF_DE]->get_bitstream_pc() ==(mf->get_addr()-PROGRAM_MEM_START));  // Verify that we got the instruction we were expecting.
@@ -918,7 +941,7 @@ void cgra_core_ctx::fetch_bitstream(){
         pc = m_cgra_block_state[MF_DE]->get_bitstream_pc();
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-          printf("DICE Sim uArch [FETCH_BITS_START]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,pc);
+          printf("DICE Sim uArch [FETCH_BITS_START]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_cta_id(),meta->meta_id,pc);
           fflush(stdout);
         }
         address_type ppc = pc + PROGRAM_MEM_START;
@@ -948,7 +971,7 @@ void cgra_core_ctx::fetch_bitstream(){
         } else if (status == HIT) {
           if(g_debug_execution >= 3 && m_cgra_core_id==0){
             dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
-            printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,meta->meta_id,pc);
+            printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle,m_cgra_block_state[MF_DE]->get_cta_id(),meta->meta_id,pc);
             fflush(stdout);
           }
           m_bitstream_fetch_buffer = ifetch_buffer_t(pc, nbytes, 0);
@@ -972,11 +995,11 @@ void cgra_core_ctx::fetch_bitstream(){
   m_L1B->cycle();
 }
 
-dice_cfg_block_t* cgra_core_ctx::get_dice_cfg_block(address_type pc){
+dice_cfg_block_t* cgra_core_ctx::get_dice_cfg_block(address_type pc, unsigned cta_id) {
   // read the metadata from the functional model
   dice_metadata* metadata = m_gpu->gpgpu_ctx->get_meta_from_pc(pc);
   dice_cfg_block_t* cfg_block = new dice_cfg_block_t(m_cgra_core_id, m_kernel_block_size, metadata, m_gpu->gpgpu_ctx);
-  cfg_block->set_active(m_simt_stack->get_active_mask());
+  cfg_block->set_active(m_simt_stack[cta_id]->get_active_mask());
   return cfg_block;
 }
 
@@ -985,10 +1008,14 @@ void cgra_core_ctx::cache_flush() { m_ldst_unit->flush(); }
 void cgra_core_ctx::cache_invalidate() { m_ldst_unit->invalidate(); }
 
 void cgra_core_ctx::decode(){
+  if(m_cgra_block_state[MF_DE]->dummy()) return;
+  unsigned cta_id = m_cgra_block_state[MF_DE]->get_cta_id();
+  unsigned start_thread = m_cta_status_table->get_start_thread(cta_id);
+  unsigned end_thread = m_cta_status_table->get_end_thread(cta_id);
   if (m_metadata_fetch_buffer.m_valid && m_cgra_block_state[MF_DE]->decode_done() == false) {
     // decode and place them into ibuffer
     address_type pc = m_metadata_fetch_buffer.m_pc;
-    dice_cfg_block_t *cfg_block = get_dice_cfg_block(pc);
+    dice_cfg_block_t *cfg_block = get_dice_cfg_block(pc,m_cgra_block_state[MF_DE]->get_cta_id());
     m_cgra_block_state[MF_DE]->metadata_buffer_fill(cfg_block);
     if (cfg_block) {
       m_stats->m_num_decoded_insn[m_cgra_core_id]++;
@@ -1000,9 +1027,10 @@ void cgra_core_ctx::decode(){
     if (metadata->is_ret) {
       //wait for previous block to finish
       m_cgra_block_state[MF_DE]->set_done_exit();
-      if(!m_cgra_block_state[DP_CGRA]->dummy()){
+      if(!m_cgra_block_state[DP_CGRA]->dummy() && (m_cgra_block_state[DP_CGRA]->get_cta_id() == cta_id)){
+        //which means for this cta, DP-CGRA block is not finished yet
         //printf("DICE-Sim uArch: cycle %d, decode block is exit block but DP-CGRA block is not finished\n", m_gpu->gpu_sim_cycle);
-        return;
+        return; 
       }
 
       //switch this to block_commit_table 
@@ -1010,18 +1038,19 @@ void cgra_core_ctx::decode(){
       //  //printf("DICE-Sim uArch: cycle %d, decode block is exit block but MEM_WRITEBACK block is not finished\n", m_gpu->gpu_sim_cycle);
       //  return;
       //}
-      if(!m_block_commit_table->is_empty()){
-        //still have pending writebacks
+      if(m_block_commit_table->check_block_exist(cta_id)){
+        //still have pending writebacks in current cta
         return;
       }
       //direct exit here instead of run ret
       //iterate through all active threads
       //register exit
       if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        printf("DICE Sim uArch [DECODE-RETURN]: cycle %d, decode metadata pc=0x%04x\n",m_gpu->gpu_sim_cycle, pc);
+        printf("DICE Sim uArch [DECODE-RETURN]: cycle %d, hw_cta=%d, decode metadata pc=0x%04x\n",m_gpu->gpu_sim_cycle, cta_id, pc);
         fflush(stdout);
       }
-      for (unsigned tid = 0; tid < m_config->dice_cgra_core_max_threads; tid++) {
+
+      for (unsigned tid = start_thread; tid < end_thread; tid++) {
         if (m_threadState[tid].m_active == true) {
           bool empty = m_thread[tid]->callstack_pop();
           if (empty) {
@@ -1029,7 +1058,6 @@ void cgra_core_ctx::decode(){
             m_thread[tid]->registerExit();
           }
           m_threadState[tid].m_active = false;
-          unsigned cta_id = m_cgra_block_state[MF_DE]->get_cta_id();
           if (m_thread[tid] == NULL) {
             register_cta_thread_exit(cta_id, m_kernel);
           } else {
@@ -1040,10 +1068,18 @@ void cgra_core_ctx::decode(){
           m_active_threads.reset(tid);
         }
       }
+
+      //initialize fetch hardware
+      m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
+      //m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
+      //m_cgra_block_state[MF_DE] = m_fetch_scheduler->next_fetch_block();
+      m_metadata_fetch_buffer = ifetch_buffer_t();
+      m_bitstream_fetch_buffer = ifetch_buffer_t();
+
       return;
     }
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
-      printf("DICE Sim uArch [DECODE]: cycle %d, decode metadata pc=0x%04x\n",m_gpu->gpu_sim_cycle, pc);
+      printf("DICE Sim uArch [DECODE]: cycle %d, hw_cta=%d, decode metadata pc=0x%04x\n",m_gpu->gpu_sim_cycle, cta_id ,pc);
       fflush(stdout);
     }
 
@@ -1052,22 +1088,20 @@ void cgra_core_ctx::decode(){
     } else if (metadata->branch) {
       if(metadata->uni_bra){
         //update simt stack top with branch target pc
-        m_simt_stack->update_no_divergence(metadata->branch_target_meta_pc);
+        m_simt_stack[m_cgra_block_state[MF_DE]->get_cta_id()]->update_no_divergence(metadata->branch_target_meta_pc);
       }
       else {
         //predicate branch, wait for active mask to be done to update
         //create fake stack first and mark waiting for active mask
-        set_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id);
         address_type predict_pc = branch_predictor(metadata);
-        set_predict_pc(predict_pc);
+        m_cta_status_table->set_fetch_stalled_by_simt_stack(m_cgra_block_state[MF_DE]->get_cta_id(),m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id,predict_pc);
       }
     } else {
       //update simt stack top with next pc
-      m_simt_stack->update_no_divergence(metadata->get_PC()+metadata->metadata_size());
+      m_simt_stack[m_cgra_block_state[MF_DE]->get_cta_id()]->update_no_divergence(metadata->get_PC()+metadata->metadata_size());
     }
     //set state and fill the cfg block
     m_cgra_block_state[MF_DE]->set_decode_done();
-    //set_can_fetch_metadata();
   }
 }
 
@@ -1082,16 +1116,6 @@ address_type cgra_core_ctx::branch_predictor(dice_metadata* metadata){
   else{
     return target_pc;
   }
-}
-
-void cgra_core_ctx::set_predict_pc(address_type pc){
-  m_predict_pc = pc;
-  m_predict_pc_set = true;
-}
-
-void cgra_core_ctx::clear_predict_pc(){
-  m_predict_pc = 0;
-  m_predict_pc_set = false;
 }
 
 bool cgra_block_state_t::loads_done(){
@@ -1118,8 +1142,6 @@ void cgra_block_state_t::clear_prefetch() {
 }
 
 bool cgra_block_state_t::mem_access_queue_empty(){ return get_current_cfg_block()->accessq_empty(); }
-
-void cgra_core_ctx::set_can_fetch_metadata() {m_metadata_fetch_buffer.m_valid = false;}
 
 void cgra_core_ctx::execute(){
   writeback();
@@ -1149,15 +1171,27 @@ void cgra_core_ctx::dispatch(){
     //check if there is a block in MF_DE stage and ready to dispatch
     if(m_cgra_block_state[MF_DE]->ready_to_dispatch()){
       if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        printf("DICE Sim uArch [DISPATCH_START]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id,m_cgra_block_state[MF_DE]->get_current_metadata()->get_PC());
+        printf("DICE Sim uArch [DISPATCH_START]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id,m_cgra_block_state[MF_DE]->get_current_metadata()->get_PC());
         fflush(stdout);
       }
       m_cgra_block_state[DP_CGRA] = m_cgra_block_state[MF_DE];
       m_cgra_unit->set_latency(m_cgra_block_state[DP_CGRA]->get_block_latency());
       m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
-      m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
+      //m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
+      //m_cgra_block_state[MF_DE] = m_fetch_scheduler->next_fetch_block();
       m_metadata_fetch_buffer = ifetch_buffer_t();
       m_bitstream_fetch_buffer = ifetch_buffer_t();
+    }
+  }
+}
+
+void cgra_core_ctx::cta_schedule(){
+  if(m_cgra_block_state[MF_DE]->dummy()){ //no content
+    unsigned next_cta = m_fetch_scheduler->next_fetch_block();
+    if(next_cta!=unsigned(-1)){
+      const simt_mask_t &temp = m_simt_stack[next_cta]->get_active_mask();
+      m_cgra_block_state[MF_DE]->init(unsigned(-1), next_cta, temp); //set as valid now
+      printf("DICE Sim uArch [CTA_SCHEDULE]: Cycle %d, hw_cta=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
     }
   }
 }
@@ -1165,10 +1199,13 @@ void cgra_core_ctx::dispatch(){
 void cgra_core_ctx::cgra_execute_block(){
   if(m_cgra_block_state[DP_CGRA]->dispatch_done()) {
     //set total number of execute
+    unsigned cta_id = m_cgra_block_state[DP_CGRA]->get_cta_id();
     unsigned total_need_exec = m_cgra_block_state[DP_CGRA]->is_parameter_load()? 1 : m_cgra_block_state[DP_CGRA]->active_count();
+    printf("DICE Sim uArch [CGRA_EXECU_START]: Cycle %d, hw_cta=%d, Block=%d, total need exec=%d\n",m_gpu->gpu_sim_cycle, cta_id,m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id, total_need_exec);
+    printf("m_cgra_unit->get_num_executed_thread() = %d\n", m_cgra_unit->get_num_executed_thread());
     if((m_cgra_unit->get_num_executed_thread()==total_need_exec) && !m_cgra_block_state[DP_CGRA]->cgra_fabric_done()){
       if(g_debug_execution >= 3 && m_cgra_core_id==0){
-        printf("DICE Sim uArch [CGRA_EXECU_END]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
+        printf("DICE Sim uArch [CGRA_EXECU_END]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle, cta_id, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
         fflush(stdout);
       }
       m_cgra_block_state[DP_CGRA]->set_cgra_fabric_done();
@@ -1221,7 +1258,7 @@ void cgra_core_ctx::writeback(){
   if(m_cgra_block_state[DP_CGRA]->cgra_fabric_done() && m_cgra_block_state[DP_CGRA]->mem_access_queue_empty() && (m_block_commit_table->available())){
     //move to writeback stage
     if(g_debug_execution >= 3 && m_cgra_core_id==0){
-      printf("DICE Sim uArch [WRITEBACK_START]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
+      printf("DICE Sim uArch [WRITEBACK_START]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle, m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id);
       fflush(stdout);
     }
     unsigned index=m_block_commit_table->get_available_index();
@@ -1230,7 +1267,7 @@ void cgra_core_ctx::writeback(){
     simt_mask_t active_mask = m_cgra_block_state[DP_CGRA]->get_active_threads();
     //m_cgra_block_state[MEM_WRITEBACK] = m_cgra_block_state[DP_CGRA];
     m_cgra_block_state[DP_CGRA] = new cgra_block_state_t(this, m_kernel_block_size);
-    m_cgra_block_state[DP_CGRA]->init(unsigned(-1), cta_id, active_mask);
+    //m_cgra_block_state[DP_CGRA]->init(unsigned(-1), cta_id, active_mask);
     m_cgra_unit->flush_pipeline();
   }
 
@@ -1251,6 +1288,37 @@ void cgra_core_ctx::writeback(){
 
   //ldst unit writeback
   m_ldst_unit->cycle_cgra();
+}
+
+unsigned cgra_core_ctx::get_cta_start_tid(unsigned hw_cta_id) const {
+  assert(hw_cta_id < m_cta_status_table->get_size());
+  return m_cta_status_table->get_start_thread(hw_cta_id);
+}
+
+unsigned cgra_core_ctx::get_cta_end_tid(unsigned hw_cta_id) const {
+  assert(hw_cta_id < m_cta_status_table->get_size());
+  return m_cta_status_table->get_end_thread(hw_cta_id);
+}
+
+void cgra_core_ctx::clear_fetch_stalled_by_simt_stack(unsigned hw_cta_id, unsigned fetch_waiting_block_id){
+  m_cta_status_table->clear_fetch_stalled_by_simt_stack(hw_cta_id, fetch_waiting_block_id);
+}
+
+bool cgra_core_ctx::fetch_stalled_by_simt_stack(unsigned hw_cta_id){
+  assert(!m_cta_status_table->is_free(hw_cta_id));
+  return m_cta_status_table->fetch_stalled_by_simt_stack(hw_cta_id);
+}
+unsigned cgra_core_ctx::get_fetch_waiting_block_id(unsigned hw_cta_id) {
+  assert(!m_cta_status_table->is_free(hw_cta_id));
+  assert(fetch_stalled_by_simt_stack(hw_cta_id));
+  return m_cta_status_table->get_fetch_waiting_block_id(hw_cta_id);
+}
+
+bool block_commit_table::check_block_exist(unsigned hw_cta_id) {
+  for(unsigned i = 0; i < m_max_block_size; i++) {
+    if (m_commit_table[i] != NULL && m_commit_table[i]->get_cta_id() == hw_cta_id) return true;
+  }
+  return false;
 }
 
 void dispatcher_rfu_t::rf_cycle(){
@@ -1316,6 +1384,8 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
   stalled_by_ldst_unit_queue_full = false;
   stalled_by_wb_buffer_full = false;
   is_busy = false;
+  m_num_executed_thread = 0;
+  reinit();
 }
 
 void cgra_core_ctx::exec(unsigned tid){
@@ -1351,6 +1421,10 @@ void cgra_core_ctx::clear_exec_stalled_by_ldst_unit_queue_full() {
 
 bool cgra_core_ctx::check_ldst_unit_stall(){
   return m_ldst_unit->mem_access_queue_full();
+}
+
+unsigned cgra_core_ctx::get_cta_size(unsigned hw_cta_id) {
+  return m_cta_status_table->get_cta_size(hw_cta_id);
 }
 
 rf_bank_controller::rf_bank_controller(unsigned bank_id, dispatcher_rfu_t *rfu) {
@@ -1394,7 +1468,7 @@ void dispatcher_rfu_t::dispatch(){
     if(!exec_stalled()){
       unsigned tid = m_ready_threads.front();
       if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-        printf("DICE Sim uArch [DISPATCHER]: cycle %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+        printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id(), tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
         fflush(stdout);
       }
       m_ready_threads.pop_front();
@@ -1413,7 +1487,7 @@ void dispatcher_rfu_t::dispatch(){
         //stall the exec
         m_cgra_core->set_exec_stalled_by_writeback_buffer_full();
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, exec stalled because of writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, exec stalled because of writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id());
           fflush(stdout);
         }
       }
@@ -1421,7 +1495,7 @@ void dispatcher_rfu_t::dispatch(){
         //stall the exec
         m_cgra_core->set_exec_stalled_by_ldst_unit_queue_full();
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, exec stalled because of ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, exec stalled because of ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id());
           fflush(stdout);
         }
       }
@@ -1430,7 +1504,7 @@ void dispatcher_rfu_t::dispatch(){
         //restart the exec
         m_cgra_core->clear_exec_stalled_by_writeback_buffer_full();
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0 ){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, clear stall caused by writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, clear stall caused by writeback buffer full\n",m_cgra_core->get_gpu()->gpu_sim_cycle,(*m_dispatching_block)->get_cta_id());
           fflush(stdout);
         }
       }
@@ -1439,7 +1513,7 @@ void dispatcher_rfu_t::dispatch(){
         m_cgra_core->clear_exec_stalled_by_ldst_unit_queue_full();
         
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0 ){
-          printf("DICE Sim uArch [DISPATCHER]: cycle %d, clear stall caused by ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle);
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, clear stall caused by ldst unit queue full\n",m_cgra_core->get_gpu()->gpu_sim_cycle,(*m_dispatching_block)->get_cta_id());
           fflush(stdout);
         }
       }
@@ -1458,24 +1532,26 @@ void dispatcher_rfu_t::dispatch(){
       //  fflush(stdout);
       //}
       if(!exec_stalled()){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
-        if(!m_scoreboard->checkCollision(tid, (*m_dispatching_block)->get_current_metadata())){
-          read_operands((*m_dispatching_block)->get_current_metadata(), tid);
+        unsigned core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
+        if(!m_scoreboard->checkCollision(core_tid, (*m_dispatching_block)->get_current_metadata())){
+          read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
           if((*m_dispatching_block)->is_parameter_load()){
             //check active mask
-            for(unsigned t=0;t<(*m_dispatching_block)->get_block_size();t++){
+            unsigned cta_id = (*m_dispatching_block)->get_cta_id();
+            for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
               if((*m_dispatching_block)->active(t) == true){
-                m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), t);
+                m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), t+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id()));
               }
             }
           } else {
-            m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), tid);
+            m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), core_tid);
           }
 
           if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-            printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+            printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
             fflush(stdout);
           }
-          m_ready_threads.push_back(tid);
+          m_ready_threads.push_back(core_tid);
           m_last_dispatched_tid = tid;
         }
       }
@@ -1484,7 +1560,7 @@ void dispatcher_rfu_t::dispatch(){
       //all threads in the block are dispatched
       //DICE-TODO: simulate writeback
       if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-        printf("DICE Sim uArch [DISPATCH_END]: Cycle %d, Block=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_current_metadata()->meta_id);
+        printf("DICE Sim uArch [DISPATCH_END]: Cycle %d, hw_cta=%d, Block=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id(), (*m_dispatching_block)->get_current_metadata()->meta_id);
         fflush(stdout);
       }
       (*m_dispatching_block)->set_dispatch_done();
@@ -1492,7 +1568,7 @@ void dispatcher_rfu_t::dispatch(){
       m_last_dispatched_tid = unsigned(-1);
     }
   } else {
-    //if(m_cgra_core->get_id()==0 && m_cgra_core->get_gpu()->gpu_sim_cycle>553 && m_cgra_core->get_gpu()->gpu_sim_cycle<555){
+    //if(m_cgra_core->get_id()==0 && m_cgra_core->get_gpu()->gpu_sim_cycle>1785 && m_cgra_core->get_gpu()->gpu_sim_cycle<1790){
     //  printf("DICE-Sim uArch: cycle %d, dispatch() block id = %d, stalled because of\n", (*m_dispatching_block)->get_current_metadata()->meta_id ,m_cgra_core->get_gpu()->gpu_sim_cycle);
     //  printf("ready_to_dispatch = %d\n", (*m_dispatching_block)->ready_to_dispatch());
     //  printf("dispatch_done = %d\n", (*m_dispatching_block)->dispatch_done());
@@ -1529,14 +1605,17 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
   if(m_rf_bank_controller[reg_num]->occupied_by_ldst_unit == false){
     m_rf_bank_controller[reg_num]->occupied_by_ldst_unit = true;
     if(block->is_parameter_load()){
-      for(unsigned t=0;t<block->get_block_size();t++){
+      unsigned cta_id = block->get_cta_id();
+      for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
         if(block->active(t) == true) 
         {
-          m_scoreboard->releaseRegisterFromLoad(t, reg_num);
+          unsigned cta_start_tid = m_cgra_core->get_cta_start_tid(cta_id);
+          m_scoreboard->releaseRegisterFromLoad(t+cta_start_tid, reg_num);
         }
       }
     } else {
-      m_scoreboard->releaseRegisterFromLoad(tid, reg_num);
+      unsigned hw_tid_offset = m_cgra_core->get_cta_start_tid(block->get_cta_id());
+      m_scoreboard->releaseRegisterFromLoad(hw_tid_offset+tid, reg_num);
     }
     //increase load writeback counter
     block->inc_number_of_loads_done();
@@ -1575,21 +1654,21 @@ bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs){
 
 unsigned dispatcher_rfu_t::next_active_thread(){
   unsigned next_tid=m_last_dispatched_tid+1;
-  assert(next_tid < m_config->dice_cgra_core_max_threads);
-  if(next_tid >= (*m_dispatching_block)->get_block_size()){
+  unsigned hw_cta_id = (*m_dispatching_block)->get_cta_id();
+  if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
     printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle, m_cgra_core->get_id());
     printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",m_dispatched_thread+m_ready_threads.size(), (*m_dispatching_block)->active_count());
     fflush(stdout);
-    assert(next_tid < (*m_dispatching_block)->get_block_size());
+    assert(0);
   }
   while((*m_dispatching_block)->active(next_tid) == false){
-    if(next_tid >= (*m_dispatching_block)->get_block_size()-1){
+    if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)-1){
       printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle, m_cgra_core->get_id());
       printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",m_dispatched_thread+m_ready_threads.size(), (*m_dispatching_block)->active_count());
       fflush(stdout);
     }
     next_tid++;
-    assert(next_tid < (*m_dispatching_block)->get_block_size());
+    assert(next_tid < m_cgra_core->get_cta_size(hw_cta_id));
   }
   return next_tid;
 }
@@ -1644,6 +1723,7 @@ void Scoreboard::releaseRegistersFromLoad(const dice_metadata *metadata, unsigne
 
 void Scoreboard::releaseRegisterFromLoad(unsigned tid, unsigned reg_num){
   if (reg_num > 0) {
+    assert(longopregs[tid].find(reg_num) != longopregs[tid].end());
     longopregs[tid].erase(reg_num);
     SHADER_DPRINTF(SCOREBOARD, "Release New longopreg - tid:%d, reg: %d\n",tid, reg_num);
   }
@@ -1949,7 +2029,7 @@ mem_stage_stall_type ldst_unit::process_cache_access_cgra(
     if(can_writeback){
       std::set<unsigned> writeback_regs = mf->get_regs_num();
       for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
-        if(m_dispatcher_rfu->writeback_ldst(mf->get_cgra_block_state(), *it, mf->get_tid())){
+        if(m_dispatcher_rfu->writeback_ldst(cgra_block, *it, mf->get_tid())){
         } else {
           assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
         }
@@ -2527,21 +2607,22 @@ void block_commit_table::check_and_release() {
     if (m_commit_table[i] != NULL) {
       if (m_commit_table[i]->block_done()) {
         m_gpu->gpu_sim_block += m_commit_table[i]->active_count();
-
+        unsigned cta_id = m_commit_table[i]->get_cta_id();
         //TODO, can prefetch next block here or better SIMT stack operation
-        if (m_cgra_core->is_stalled_by_simt_stack()){
-          if(m_commit_table[i]->get_current_metadata()->meta_id == m_cgra_core->get_fetch_waiting_block_id()) {
+        if (m_cgra_core->fetch_stalled_by_simt_stack(cta_id)){
+          if(m_commit_table[i]->get_current_metadata()->meta_id == m_cgra_core->get_fetch_waiting_block_id(cta_id)){
             assert(m_commit_table[i]->get_current_metadata()->branch);
             dice_cfg_block_t *cfg_block = m_commit_table[i]->get_current_cfg_block();
             assert(cfg_block != NULL);
             //check if predicate registers are all written back
-            m_cgra_core->updateSIMTStack(cfg_block);
-            m_cgra_core->clear_stalled_by_simt_stack();
+            m_cgra_core->updateSIMTStack(m_commit_table[i]->get_cta_id(),cfg_block);
+            m_cgra_core->clear_fetch_stalled_by_simt_stack(m_commit_table[i]->get_cta_id(),m_commit_table[i]->get_current_metadata()->meta_id);
+            //m_cgra_core->clear_stalled_by_simt_stack();
           }
         }
 
         if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-          printf("DICE Sim uArch [WRITEBACK_END]: Cycle %d, Block=%d\n",m_gpu->gpu_sim_cycle, m_commit_table[i]->get_current_metadata()->meta_id);
+          printf("DICE Sim uArch [WRITEBACK_END]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle, cta_id, m_commit_table[i]->get_current_metadata()->meta_id);
           fflush(stdout);
         }
         delete m_commit_table[i];
@@ -2549,4 +2630,61 @@ void block_commit_table::check_and_release() {
       }
     }
   }
+}
+
+unsigned fetch_scheduler::next_fetch_block(){
+  //find all ctas that is not blocked by simt stack
+  std::vector<unsigned> ready_cta_index;
+  std::vector<address_type> ready_cta_pc;
+  std::vector<unsigned> valid_cta_index;
+  std::vector<address_type> valid_cta_pc;
+  for(unsigned i = 0; i < cta_status_table_size; i++){
+    unsigned start_index = (i+m_last_fetch_cta_id+1)%cta_status_table_size;
+    if(!m_cta_status_table->is_free(start_index)){
+      if(!m_cta_status_table->fetch_stalled_by_simt_stack(start_index)){
+        //get stack top info
+        //among ready ctas, find if any ctas next metadata pc is the same as current metadata pc
+        address_type next_pc, rpc;
+        m_cgra_core->get_simt_stack(start_index)->get_pdom_stack_top_info(&next_pc, &rpc);
+        if(next_pc==m_previous_fetch_pc) {
+          printf("DICE Sim uArch [FETCH_SCHEDULER_META_MATCH]: Cycle %d, Block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, start_index);
+          m_last_fetch_cta_id = start_index;
+          m_previous_fetch_pc = next_pc;
+          return start_index;
+        } else {
+          ready_cta_pc.push_back(next_pc);
+          ready_cta_index.push_back(start_index);
+        }
+      } else {
+        address_type next_pc, rpc;
+        m_cgra_core->get_simt_stack(start_index)->get_pdom_stack_top_info(&next_pc, &rpc);
+        if(next_pc==m_previous_fetch_pc) {
+          printf("DICE Sim uArch [FETCH_SCHEDULER_META_MATCH]: Cycle %d, Block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, start_index);
+          m_last_fetch_cta_id = start_index;
+          m_previous_fetch_pc = next_pc;
+          return start_index;
+        } else {
+          valid_cta_pc.push_back(next_pc);
+          valid_cta_index.push_back(start_index);
+        }
+      }
+    }
+  }
+  //find one in ready state
+  if(ready_cta_index.size() > 0){
+    printf("DICE Sim uArch [FETCH_SCHEDULER_READY]: Cycle %d, Block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, ready_cta_index[0]);
+    m_last_fetch_cta_id = ready_cta_index[0];
+    m_previous_fetch_pc = ready_cta_pc[0];
+    return ready_cta_index[0];
+  } 
+
+  //find one in valid state
+  if(valid_cta_index.size() > 0){
+    printf("DICE Sim uArch [FETCH_SCHEDULER_VALID]: Cycle %d, Block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, valid_cta_index[0]);
+    m_last_fetch_cta_id = valid_cta_index[0];
+    m_previous_fetch_pc = valid_cta_pc[0];
+    return valid_cta_index[0];
+  }
+  
+  return unsigned(-1);
 }

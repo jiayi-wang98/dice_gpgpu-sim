@@ -50,6 +50,14 @@ class Scoreboard {
     }
   }
   //DICE-support, here use warps as threads.
+  void clear_tid(unsigned start_tid, unsigned end_tid) {
+    for (unsigned i = start_tid; i < end_tid; i++) {
+      reg_table[i].clear();
+    }
+    for (unsigned i = start_tid; i < end_tid; i++) {
+      longopregs[i].clear();
+    }
+  }
   void reserveRegisters(const class dice_metadata *metadata, unsigned tid);
   void releaseRegisters(const class dice_metadata *metadata, unsigned tid);
   void releaseRegistersFromLoad(const class dice_metadata *metadata, unsigned tid);

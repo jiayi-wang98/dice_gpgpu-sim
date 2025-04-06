@@ -82,11 +82,10 @@ class cgra_core_ctx {
     void get_cache_stats(cache_stats &cs);
     float get_current_occupancy(unsigned long long &active,unsigned long long &total) const;
     //stack operation
-    void initializeSIMTStack(unsigned num_threads);
-    void resizeSIMTStack(unsigned num_threads);
+    void initializeSIMTStack(unsigned hw_cta_id, unsigned num_threads);
     void deleteSIMTStack();
-    void get_pdom_stack_top_info(unsigned *pc,unsigned *rpc) const;
-    void updateSIMTStack(dice_cfg_block_t *cfg_block);
+    void get_pdom_stack_top_info(unsigned hw_cta_id, unsigned *pc,unsigned *rpc) const;
+    void updateSIMTStack(unsigned hw_cta_id, dice_cfg_block_t *cfg_block);
     void set_predict_pc(address_type pc);
     void clear_predict_pc();
     address_type branch_predictor(class dice_metadata *metadata);
@@ -101,28 +100,21 @@ class cgra_core_ctx {
     void create_dispatcher();
     void create_execution_unit();
     void cycle();
-    //outer execution pipeline
-    void set_can_fetch_metadata();
-    void set_stalled_by_simt_stack(unsigned block_id){
-      m_fetch_stalled_by_simt_stack = true;
-      m_fetch_waiting_block_id = block_id;
-    }
-    void clear_stalled_by_simt_stack(){
-      m_fetch_stalled_by_simt_stack = false;
-    }
+    //outer execution pipeline 
+    void clear_fetch_stalled_by_simt_stack(unsigned hw_cta_id, unsigned fetch_waiting_block_id);
+    bool fetch_stalled_by_simt_stack(unsigned hw_cta_id);
+    unsigned get_fetch_waiting_block_id(unsigned hw_cta_id);
 
-    unsigned get_fetch_waiting_block_id() const {
-      return m_fetch_waiting_block_id;
-    }
     void set_exec_stalled_by_writeback_buffer_full();
     void clear_exec_stalled_by_writeback_buffer_full();
-    bool is_stalled_by_simt_stack() const { return m_fetch_stalled_by_simt_stack; }
     bool is_exec_stalled_by_writeback_buffer_full() const { return m_exec_stalled_by_writeback_buffer_full; }
     bool is_exec_stalled_by_ldst_unit_queue_full() const { return m_exec_stalled_by_ldst_unit_queue_full; }
     bool check_ldst_unit_stall();
     bool is_exec_stalled() const { return m_exec_stalled_by_writeback_buffer_full || m_exec_stalled_by_ldst_unit_queue_full; }
     void set_exec_stalled_by_ldst_unit_queue_full();
     void clear_exec_stalled_by_ldst_unit_queue_full();
+
+    void cta_schedule();
     void fetch_metadata();
     void fetch_bitstream();
     void decode();
@@ -144,7 +136,7 @@ class cgra_core_ctx {
 
     void cache_flush();
     void cache_invalidate();
-    dice_cfg_block_t* get_dice_cfg_block(address_type pc);
+    dice_cfg_block_t* get_dice_cfg_block(address_type pc, unsigned cta_id);
     void set_max_cta(const kernel_info_t &kernel);
     unsigned get_kernel_block_size() const { return m_kernel_block_size; }
     void set_kernel_block_size(unsigned block_size) { m_kernel_block_size = block_size; }
@@ -175,7 +167,17 @@ class cgra_core_ctx {
     void accept_bitstream_fetch_response(mem_fetch *mf);
     void accept_ldst_unit_response(mem_fetch *mf);
     unsigned get_id() const { return m_cgra_core_id; }
+    unsigned get_cta_size(unsigned hw_cta_id);
     void store_ack(class mem_fetch *mf);
+
+    //get stack
+    simt_stack* get_simt_stack(unsigned hw_cta_id) const {
+      return m_simt_stack[hw_cta_id];
+    }
+
+    unsigned get_cta_start_tid(unsigned hw_cta_id) const;
+
+    unsigned get_cta_end_tid(unsigned hw_cta_id) const;
 
     //status
     void get_L1I_sub_stats(struct cache_sub_stats &css) const ;
@@ -192,14 +194,14 @@ class cgra_core_ctx {
     const shader_core_config *m_config; //DICE-TODO: need to change to cgra_core_config or dice_config
     const memory_config *m_memory_config;
     kernel_info_t *m_kernel;
-    simt_stack *m_simt_stack;  // pdom based reconvergence context for each cta/block
+    
     address_type m_predict_pc;
     bool m_predict_pc_set;//if m_predict_pc is valid or not
     class ptx_thread_info **m_thread;
     unsigned m_max_block_size; //hardware support maximum block size
     unsigned m_kernel_block_size; //in DICE, there's no warp, programs are executed block by block
     unsigned m_liveThreadCount;
-    unsigned m_cta_status[MAX_CTA_PER_CGRA_CORE];  // CTAs status
+    //unsigned m_num_cta_live_threads[MAX_CTA_PER_CGRA_CORE];  // CTAs status
     unsigned m_not_completed;  // number of threads to be completed (==0 when all thread on this core completed)
     std::bitset<MAX_THREAD_PER_CGRA_CORE> m_active_threads;
     unsigned m_active_blocks;
@@ -219,13 +221,16 @@ class cgra_core_ctx {
 
     std::vector<cgra_block_state_t*> m_cgra_block_state;//current decoded block state
     // fetch
-    bool m_fetch_stalled_by_simt_stack;
     bool m_exec_stalled_by_writeback_buffer_full;
     bool m_exec_stalled_by_ldst_unit_queue_full;
     unsigned m_fetch_waiting_block_id;
+  
+    class cta_status_table *m_cta_status_table;//holding status for multiple CTAs
+    class fetch_scheduler *m_fetch_scheduler;
     read_only_cache *m_L1I;  // instruction cache
     ifetch_buffer_t m_metadata_fetch_buffer;
 
+    std::vector <simt_stack *> m_simt_stack;  // pdom based reconvergence context for each cta/block
     //decode & bitstream fetch and load
     read_only_cache *m_L1B;  // bitstreamcache
     ifetch_buffer_t m_bitstream_fetch_buffer;
@@ -308,6 +313,8 @@ class block_commit_table{
 
     void check_and_release();
 
+    bool check_block_exist(unsigned hw_cta_id);
+
   private:
     class gpgpu_sim *m_gpu;
     class cgra_core_ctx *m_cgra_core;
@@ -328,23 +335,175 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
      create_dispatcher();
      create_execution_unit();
    }
- 
-   //virtual void checkExecutionStatusAndUpdate(warp_inst_t &inst, unsigned t,
-   //                                           unsigned tid);
-   //virtual void func_exec_inst(warp_inst_t &inst);
-   //virtual unsigned sim_init_thread(kernel_info_t &kernel,
-   //                                 ptx_thread_info **thread_info, int sid,
-   //                                 unsigned tid, unsigned threads_left,
-   //                                 unsigned num_threads, core_t *core,
-   //                                 unsigned hw_cta_id, unsigned hw_warp_id,
-   //                                 gpgpu_t *gpu);
-   //virtual const warp_inst_t *get_next_inst(unsigned warp_id, address_type pc);
-   //virtual void get_pdom_stack_top_info(unsigned warp_id, const warp_inst_t *pI,
-   //                                     unsigned *pc, unsigned *rpc);
-   //virtual const active_mask_t &get_active_mask(unsigned warp_id,
-   //                                             const warp_inst_t *pI);
  };
-    
+
+
+class cta_status_table{
+  public:
+    cta_status_table(class gpgpu_sim* gpu, cgra_core_ctx* m_cgra_core, unsigned max_cta_per_core) {
+      m_gpu = gpu;
+      m_cgra_core = m_cgra_core;
+      m_max_cta_per_core = max_cta_per_core;
+      m_cta_status.resize(max_cta_per_core);
+    }
+    ~cta_status_table() {
+    }
+
+    unsigned get_size() const {
+      return m_max_cta_per_core;
+    }
+
+    void reset() {
+      for (unsigned i = 0; i < m_max_cta_per_core; i++) {
+        m_cta_status[i].m_valid = false;
+      }
+    }
+
+    bool full() const {
+      for (unsigned i = 0; i < m_max_cta_per_core; i++) {
+        if (!m_cta_status[i].m_valid) return false;
+      }
+      return true;
+    }
+
+    unsigned get_free_index() {
+      for (unsigned i = 0; i < m_max_cta_per_core; i++) {
+        if (!m_cta_status[i].m_valid) return i;
+      }
+      assert(0);
+      return 0;
+    }
+
+
+    void init_cta(unsigned hw_cta_id) {
+      assert(hw_cta_id < m_max_cta_per_core);
+      m_cta_status[hw_cta_id].m_valid = true;
+      m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack = false;
+      m_cta_status[hw_cta_id].m_fetch_waiting_block_id = 0;
+      m_cta_status[hw_cta_id].m_num_live_threads = 0;
+    }
+
+    void set_num_live_threads(unsigned hw_cta_id, unsigned start_thread, unsigned end_thread) {
+      assert(hw_cta_id < m_max_cta_per_core);
+      unsigned num_live_threads = end_thread - start_thread;
+      m_cta_status[hw_cta_id].m_num_live_threads = num_live_threads;
+      m_cta_status[hw_cta_id].m_start_thread = start_thread;
+      m_cta_status[hw_cta_id].m_end_thread = end_thread;
+      m_cta_status[hw_cta_id].m_cta_size = (num_live_threads % 256) ? 256*(num_live_threads/256+1) : num_live_threads;
+    }
+
+    void deactive_cta(unsigned hw_cta_id) {
+      assert(hw_cta_id < m_max_cta_per_core);
+      m_cta_status[hw_cta_id].m_valid = false;
+    }
+
+    bool is_free(unsigned hw_cta_id) const {
+      assert(hw_cta_id < m_max_cta_per_core);
+      return !m_cta_status[hw_cta_id].m_valid;
+    }
+
+    void decrease_num_live_threads(unsigned hw_cta_id) {
+      assert(hw_cta_id < m_max_cta_per_core);
+      assert(m_cta_status[hw_cta_id].m_num_live_threads > 0);
+      m_cta_status[hw_cta_id].m_num_live_threads--;
+      if(m_cta_status[hw_cta_id].m_num_live_threads == 0) {
+        deactive_cta(hw_cta_id);
+      }
+    }
+
+    unsigned get_cta_size(unsigned hw_cta_id) const {
+      assert(hw_cta_id < m_max_cta_per_core);
+      return m_cta_status[hw_cta_id].m_cta_size;
+    }
+  
+
+    void set_fetch_stalled_by_simt_stack(unsigned hw_cta_id, unsigned fetch_waiting_block_id, address_type prefetch_pc){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack = true;
+      m_cta_status[hw_cta_id].m_prefetch_pc = prefetch_pc;
+      m_cta_status[hw_cta_id].m_fetch_waiting_block_id = fetch_waiting_block_id;
+    }
+
+    bool fetch_stalled_by_simt_stack(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack;
+    }
+
+    void clear_fetch_stalled_by_simt_stack(unsigned hw_cta_id, unsigned fetch_waiting_block_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      assert(fetch_waiting_block_id == m_cta_status[hw_cta_id].m_fetch_waiting_block_id);
+      m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack = false;
+    }
+
+    unsigned get_start_thread(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_start_thread;
+    }
+
+    unsigned get_end_thread(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_end_thread;
+    }
+
+    unsigned get_prefetch_pc(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_prefetch_pc;
+    }
+
+    unsigned get_fetch_waiting_block_id(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_fetch_waiting_block_id;
+    }
+
+  private:
+    class gpgpu_sim *m_gpu;
+    class cgra_core_ctx *m_cgra_core;
+    unsigned m_max_cta_per_core;
+    struct cta_status_entry {
+      cta_status_entry() {
+        m_valid = false;
+        m_fetch_stalled_by_simt_stack = false;
+
+        m_fetch_waiting_block_id = 0;
+        m_num_live_threads = 0;
+        m_cta_size = 256;
+        m_start_thread = 0;
+        m_end_thread = 0;
+      }
+      bool m_valid;
+      bool m_fetch_stalled_by_simt_stack;
+      unsigned m_prefetch_pc;
+      unsigned m_fetch_waiting_block_id;
+      unsigned m_num_live_threads;
+      unsigned m_cta_size;
+      unsigned m_start_thread;
+      unsigned m_end_thread;
+    };
+    std::vector<cta_status_entry> m_cta_status;
+};
+
+class fetch_scheduler{
+  public:
+    fetch_scheduler(class gpgpu_sim *gpu, class cgra_core_ctx *cgra_core, cta_status_table *cta_status_table) {
+      m_gpu = gpu;
+      m_cgra_core = cgra_core;
+      m_cta_status_table = cta_status_table;
+      m_previous_fetch_pc = unsigned(-1);
+      cta_status_table_size = cta_status_table->get_size();
+      m_last_fetch_cta_id = cta_status_table_size-1;
+    }
+    ~fetch_scheduler() {
+    }
+    unsigned next_fetch_block();
+  private:
+    class gpgpu_sim *m_gpu;
+    class cgra_core_ctx *m_cgra_core;
+    class cta_status_table *m_cta_status_table;
+    address_type m_previous_fetch_pc;
+    unsigned cta_status_table_size;
+    unsigned m_last_fetch_cta_id;
+};
+
 //hardware runtime status
  class cgra_block_state_t{
     public:
@@ -375,6 +534,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        is_prefetch = false;
        m_metadata_buffer.m_valid = false;
        m_metadata_buffer.m_bitstream_valid = false;
+       m_valid = false;
      }
      void init(address_type start_metadata_pc, unsigned cta_id,
                const simt_mask_t &active) {
@@ -387,6 +547,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
        m_done_exit = false;
        m_metadata_buffer.m_valid = false;
        m_metadata_buffer.m_bitstream_valid = false;
+       m_valid = true;
      }
 
      void set_completed(unsigned lane) {
@@ -396,7 +557,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
     }
 
     bool dummy() const { 
-      if(!m_metadata_buffer.m_valid) return true; //empty block
+      if(!m_valid) return true; //empty block
       //if(hardware_done()) return true;
       return false;
     }
@@ -526,6 +687,7 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
 
     private:
      class cgra_core_ctx *m_cgra_core;
+     bool m_valid;
      unsigned m_cta_id;
      unsigned m_block_size;
    
