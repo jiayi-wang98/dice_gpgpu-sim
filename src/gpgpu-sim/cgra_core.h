@@ -124,7 +124,7 @@ class cgra_core_ctx {
     void dispatch();
     void cgra_execute_block();
     void writeback();
-
+    void complete_cta(unsigned hw_cta_id);
 
     //issue block to core
     unsigned isactive() const {
@@ -185,6 +185,14 @@ class cgra_core_ctx {
     void get_L1D_sub_stats(struct cache_sub_stats &css) const ;
     void get_L1C_sub_stats(struct cache_sub_stats &css) const ;
     void get_L1T_sub_stats(struct cache_sub_stats &css) const ;
+    void incregfile_reads(unsigned active_count) {
+      m_stats->m_read_regfile_acesses[m_cgra_core_id] =
+          m_stats->m_read_regfile_acesses[m_cgra_core_id] + active_count;
+    }
+    void incregfile_writes(unsigned active_count) {
+      m_stats->m_write_regfile_acesses[m_cgra_core_id] =
+          m_stats->m_write_regfile_acesses[m_cgra_core_id] + active_count;
+    }
   protected:
     unsigned m_cgra_core_id;
     unsigned m_tpc;  // texture processor cluster id (aka, node id when using
@@ -264,6 +272,7 @@ class block_commit_table{
       assert(m_commit_table[index] != NULL);
       delete m_commit_table[index];
       m_commit_table[index] = NULL;
+      m_ret[index] = false;
     }
 
     bool available() {
@@ -313,6 +322,14 @@ class block_commit_table{
 
     void check_and_release();
 
+    void mark_return_block(unsigned hw_cta_id) {
+      assert(check_block_exist(hw_cta_id));
+      unsigned index = find_block_index(hw_cta_id);
+      m_ret[index] = true;
+    }
+
+    unsigned find_block_index(unsigned hw_cta_id);
+
     bool check_block_exist(unsigned hw_cta_id);
 
   private:
@@ -320,6 +337,7 @@ class block_commit_table{
     class cgra_core_ctx *m_cgra_core;
     unsigned m_max_block_size;
     std::vector<cgra_block_state_t *> m_commit_table;
+    std::vector<bool> m_ret;
 };
 
 class exec_cgra_core_ctx : public cgra_core_ctx {
@@ -356,6 +374,8 @@ class cta_status_table{
     void reset() {
       for (unsigned i = 0; i < m_max_cta_per_core; i++) {
         m_cta_status[i].m_valid = false;
+        m_cta_status[i].m_fetch_stalled_by_simt_stack = false;
+        m_cta_status[i].m_ret = false;
       }
     }
 
@@ -395,6 +415,8 @@ class cta_status_table{
     void deactive_cta(unsigned hw_cta_id) {
       assert(hw_cta_id < m_max_cta_per_core);
       m_cta_status[hw_cta_id].m_valid = false;
+      m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack = false;
+      m_cta_status[hw_cta_id].m_ret = false;
     }
 
     bool is_free(unsigned hw_cta_id) const {
@@ -455,6 +477,16 @@ class cta_status_table{
       return m_cta_status[hw_cta_id].m_fetch_waiting_block_id;
     }
 
+    bool is_ret(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      return m_cta_status[hw_cta_id].m_ret;
+    }
+
+    void set_ret(unsigned hw_cta_id){
+      assert(m_cta_status[hw_cta_id].m_valid);
+      m_cta_status[hw_cta_id].m_ret = true;
+    }
+
   private:
     class gpgpu_sim *m_gpu;
     class cgra_core_ctx *m_cgra_core;
@@ -469,6 +501,7 @@ class cta_status_table{
         m_cta_size = 256;
         m_start_thread = 0;
         m_end_thread = 0;
+        m_ret = false;
       }
       bool m_valid;
       bool m_fetch_stalled_by_simt_stack;
@@ -478,6 +511,7 @@ class cta_status_table{
       unsigned m_cta_size;
       unsigned m_start_thread;
       unsigned m_end_thread;
+      bool m_ret;
     };
     std::vector<cta_status_entry> m_cta_status;
 };
@@ -882,8 +916,8 @@ class cgra_unit {
     void push_ld_request(mem_access_t access, unsigned port) {
       m_ld_req_queue[port].push_back(access);
       m_ld_port_credit[port]--;
-      printf("DICE-Sim uArch:  push_ld_request, port = %d, credit = %d\n",  port, m_ld_port_credit[port]);
-      fflush(stdout);
+      //printf("DICE-Sim uArch:  push_ld_request, port = %d, credit = %d\n",  port, m_ld_port_credit[port]);
+      //fflush(stdout);
       assert(access.get_cgra_block_state() != NULL);
     }
 

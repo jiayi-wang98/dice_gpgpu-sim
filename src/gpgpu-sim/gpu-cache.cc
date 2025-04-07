@@ -1198,7 +1198,6 @@ cache_request_status data_cache::wr_hit_wt(new_addr_type addr,
 
   // generate a write-through
   send_write_request(mf, cache_event(WRITE_REQUEST_SENT), time, events);
-
   return HIT;
 }
 
@@ -1220,7 +1219,6 @@ cache_request_status data_cache::wr_hit_we(new_addr_type addr,
 
   // Invalidate block
   block->set_status(INVALID, mf->get_access_sector_mask());
-
   return HIT;
 }
 
