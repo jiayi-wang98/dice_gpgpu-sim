@@ -500,25 +500,28 @@ void function_info::metadata_assemble() {
 
   printf("DICE Metadata: Metadata assembly for function \'%s\'... ",
          m_name.c_str());
-  fflush(stdout);
+  //fflush(stdout);
 
   addr_t PC = gpgpu_ctx->func_sim->g_assemble_code_next_pc;  // globally unique address
                                                      // (across functions)
+                                                       //set metadata_start_pc for saving in s_g_pc_to_meta
   // start function on an aligned address
   //for (unsigned i = 0; i < (PC % MAX_METADATA_SIZE); i++)
   //  gpgpu_ctx->s_g_pc_to_meta.push_back((dice_metadata *)NULL);
-  unsigned cache_lize_size = gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->m_L1I_config.get_line_sz();
-  //need to align with cache line size
-  unsigned align_pc_offset = (cache_lize_size - (PC % cache_lize_size)) % cache_lize_size;
-  PC += align_pc_offset;
-  m_metadata_start_pc = PC;
-
-  //set metadata_start_pc for saving in s_g_pc_to_meta
-  if (gpgpu_ctx->metadata_start_pc == 0) //not set yet
+  unsigned align_pc_offset = 0;
+  if (gpgpu_ctx->metadata_start_pc == 0){
+    unsigned cache_lize_size = gpgpu_ctx->the_gpgpusim->g_the_gpu->getShaderCoreConfig()->m_L1I_config.get_line_sz();
+    //need to align with cache line size
+    align_pc_offset = (cache_lize_size - (PC % cache_lize_size)) % cache_lize_size;
+    PC += align_pc_offset;
     gpgpu_ctx->metadata_start_pc = PC;
-
+  }
+  m_metadata_start_pc = PC;
+  //printf("[Jiayi Meta Test] PC = %p, align_pc_offset = %u, gpgpu_ctx->s_g_pc_to_meta.size()=%d\n", PC, align_pc_offset,gpgpu_ctx->s_g_pc_to_meta.size());
+  //fflush(stdout);
+  
   addr_t n = 0;  // offset in m_metadata_mem
-  gpgpu_ctx->s_g_pc_to_meta.reserve(MAX_METADATA_SIZE * m_dice_metadata.size());
+  gpgpu_ctx->s_g_pc_to_meta.reserve(gpgpu_ctx->s_g_pc_to_meta.size()+MAX_METADATA_SIZE * m_dice_metadata.size());
 
   std::vector<dice_metadata *>::iterator i;
   for (i = m_dice_metadata.begin(); i != m_dice_metadata.end(); i++) {
@@ -542,6 +545,9 @@ void function_info::metadata_assemble() {
     PC += mI->metadata_size(); //if we have varible size metadata in the future
   }
   gpgpu_ctx->func_sim->g_assemble_code_next_pc = PC;
+
+  //printf("[Jiayi Meta Test] finish PC = %p, gpgpu_ctx->s_g_pc_to_meta.size() = %d\n", PC,gpgpu_ctx->s_g_pc_to_meta.size());
+  //fflush(stdout);
 
   //handle reconvergence pc and branch target pc
   for (unsigned ii = 0; ii < n; ii += m_metadata_mem[ii]->metadata_size()) {  // handle branch instructions

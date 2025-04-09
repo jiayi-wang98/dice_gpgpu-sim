@@ -19,7 +19,7 @@ class dice_metadata {
       gpgpu_ctx = ctx;
       m_source_file = "";
       meta_id = 0;
-      unrolling_factor = 0;
+      unrolling_factor = 1;
       unrolling_strategy = 0;
       latency = 0;
       bitstream_label = "";

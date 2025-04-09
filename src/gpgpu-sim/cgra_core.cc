@@ -788,8 +788,14 @@ void cgra_core_ctx::fetch_metadata(){
           m_cgra_block_state[MF_DE]->clear_decode_done();
         }
       } else {
+        if(g_debug_execution >= 3 && m_cgra_core_id==0){
+          printf("DICE Sim uArch [PREDICT_BRANCH_MISS]: Cycle %d, hw_cta=%d, predict pc=0x%04x, pc=0x%04x\n", m_gpu->gpu_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), m_cgra_block_state[MF_DE]->get_metadata_pc(), next_pc);
+          fflush(stdout);
+        }
         //branch miss, reset the block
         m_cgra_block_state[MF_DE]->reset();
+        m_metadata_fetch_buffer = ifetch_buffer_t();
+        m_bitstream_fetch_buffer = ifetch_buffer_t();
       }
     }
   }
@@ -1482,6 +1488,11 @@ bool dispatcher_rfu_t::writeback_buffer_full(dice_metadata* metadata) const {
   //get reg_num from metadata
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
+    if(reg_num >= m_rf_bank_controller.size()){
+      printf("DICE Sim uArch [ERROR]: cycle %d, hw_cta=%d, reg_num %d larger than max_number of RF banks = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle, (*m_dispatching_block)->get_cta_id(), reg_num,m_rf_bank_controller.size());
+      fflush(stdout);
+      assert(reg_num < m_rf_bank_controller.size());
+    }
     if(m_rf_bank_controller[reg_num]->wb_buffer_full()){
       return true;
     }
@@ -2073,10 +2084,6 @@ mem_stage_stall_type ldst_unit::process_cache_access_cgra(
       }
       assert(!read_sent);
       if (mf->is_write()) {
-        //m_pending_writes[mf->get_tid()][mf->get_reg_num()]--;
-        for(std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it){
-          m_pending_writes[mf->get_tid()][*it]--;
-        }
         //inc write ack
         cgra_block->inc_number_of_stores_done();
         if(g_debug_execution >= 3 && m_cgra_core_id==0){
@@ -2194,17 +2201,6 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
         l1_latency_queue[j][0] = NULL;
         if (mf_next->is_write()) {
           std::set<unsigned> writeback_regs = mf_next->get_regs_num();
-          for(std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it){
-            unsigned reg_num = *it;
-            if (reg_num> 0) {
-              assert(m_pending_writes[mf_next->get_tid()][reg_num] > 0);
-              unsigned still_pending =
-                  --m_pending_writes[mf_next->get_tid()][reg_num];
-              if (!still_pending) {
-                m_pending_writes[mf_next->get_tid()].erase(reg_num);
-              }
-            }
-          }
           //inc write ack
           mf_next->get_cgra_block_state()->inc_number_of_stores_done();
           if(g_debug_execution >= 3 && m_cgra_core_id==0){
