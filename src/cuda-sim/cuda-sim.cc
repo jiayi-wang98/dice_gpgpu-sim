@@ -2185,6 +2185,27 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
         //printf("DICE Sim: Skip instruction %s for tid = %d\n", pI->get_source(),tid);
         //fflush(stdout);
         CFGBlock->set_not_active(tid);
+      } else {
+        
+        if(pI->dst().reg_num_valid()  && pI->dst().reg_num() > 0){ //normal instruction (not load, not branch)
+          //TODO: CFGBlock set invalid writeback for output register pI->dst().reg_num()
+          //set mapping from tid to regnum in the map
+          //check if the map already has the tid
+          std::map<unsigned, std::set<unsigned>>::iterator it = CFGBlock->map_tid_invalid_writeback_regs.find(tid);
+          if(it != CFGBlock->map_tid_invalid_writeback_regs.end()){
+            //add to the reg_num to set
+            std::set<unsigned>::iterator it2 = it->second.find(pI->dst().reg_num());
+            if(it2 == it->second.end()){
+              //not found, add to the set
+              it->second.insert(pI->dst().reg_num());
+            }
+          } else {
+            //if not, then insert the tid and regnum
+            std::set<unsigned> reg_set;
+            reg_set.insert(pI->dst().reg_num());
+            CFGBlock->map_tid_invalid_writeback_regs.insert(std::pair<unsigned, std::set<unsigned>>(tid, reg_set));
+          }
+        }
       }
     } else {
       //const ptx_instruction *pI_saved = pI;

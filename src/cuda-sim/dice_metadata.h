@@ -208,6 +208,8 @@ class dice_cfg_block_t{
     memory_space_t space;
     gpgpu_context* gpgpu_ctx;
 
+    std::map<unsigned, std::set<unsigned>> map_tid_invalid_writeback_regs; //map from tid to invalid reg_num set
+
     bool active(unsigned tid) const { return m_block_active_mask->test(tid); }
     unsigned active_count() const { return m_block_active_mask->count(); }
     unsigned get_num_stores();

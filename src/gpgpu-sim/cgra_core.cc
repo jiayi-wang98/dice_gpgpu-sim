@@ -1621,13 +1621,42 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
   //check each output register in the metadata
   dice_metadata* metadata = block->get_current_metadata();
   unsigned num_writeback = 0;
+  bool all_valid = true;
+  std::map<unsigned, std::set<unsigned>> invalid_regs_map = block->get_current_cfg_block()->map_tid_invalid_writeback_regs;
+  //check if tid is in invalid_regs_map
+  std::map<unsigned, std::set<unsigned>>::iterator it_map = invalid_regs_map.find(tid);
+  std::set<unsigned> invalid_regs;
+  if(it_map != invalid_regs_map.end()){
+    invalid_regs = invalid_regs_map[tid];
+    all_valid = false;
+  }
+
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
-    assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
-    //push to writeback buffer
-    m_rf_bank_controller[reg_num]->push_to_buffer(tid,block);
-    num_writeback++;
-    m_cgra_core->incregfile_writes(1);
+    //check if the writeback register is valid
+    if(all_valid) {
+      assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
+      //push to writeback buffer
+      m_rf_bank_controller[reg_num]->push_to_buffer(tid,block);
+      num_writeback++;
+      m_cgra_core->incregfile_writes(1);
+    } else {
+      //check if the register is in the invalid register set
+      std::set<unsigned>::iterator it_invalid = invalid_regs.find(reg_num);
+      if(it_invalid == invalid_regs.end()){
+        assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
+        //push to writeback buffer
+        m_rf_bank_controller[reg_num]->push_to_buffer(tid,block);
+        num_writeback++;
+        m_cgra_core->incregfile_writes(1);
+      } else {
+        //do not push to writeback buffer
+        if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
+          printf("DICE Sim uArch [WRITEBACK_INVALID]: cycle %d, core %d, RF bank %d is invalid for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num ,tid);
+          fflush(stdout);
+        }
+      }
+    }
     //clear scoreboard
     m_scoreboard->releaseRegister(tid, reg_num);
   }

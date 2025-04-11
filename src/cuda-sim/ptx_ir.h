@@ -295,6 +295,9 @@ class symbol {
     assert(m_reg_num_valid);
     return m_reg_num;
   }
+
+  bool is_reg_num_valid() const { return m_reg_num_valid; }
+
   unsigned arch_reg_num() const {
     assert(m_reg_num_valid);
     return m_arch_reg_num;
@@ -769,6 +772,8 @@ class operand_info {
     return false;
   }
   int reg_num() const { return m_value.m_symbolic->reg_num(); }
+  int reg_num_valid() const { return m_value.m_symbolic->is_reg_num_valid(); }
+  
   int reg1_num() const { return m_value.m_vector_symbolic[0]->reg_num(); }
   int reg2_num() const { return m_value.m_vector_symbolic[1]->reg_num(); }
   int reg3_num() const {
