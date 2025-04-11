@@ -145,7 +145,12 @@ void dice_metadata::dump(){
   if (branch) {
     printf("Uni Branch: %d\n", uni_bra);
     printf("Branch Prediction:"); 
-    if (branch_pred!=NULL) std::cout<<(branch_pred->name());
+    if (branch_pred!=NULL) {
+      if(!branch_pred_pole) {
+        printf("!");
+      }
+      std::cout<<(branch_pred->name());
+    }
     printf("\n");
     printf("Branch Target Metadata ID: %d, PC = %p\n", branch_target_meta_id, branch_target_meta_pc);
     printf("Reconvergence Metadata ID: %d, PC = %p\n", reconvergence_meta_id, reconvergence_meta_pc);
@@ -173,6 +178,12 @@ void dice_metadata_parser::add_operand(const char *identifier) {
   }
   if(g_debug_dicemeta_generation) s->print_info(stdout);
   g_operands.push_back(operand_info(s, gpgpu_ctx));
+}
+
+void dice_metadata_parser::add_operand_pole(bool positive){
+  assert(gpgpu_ctx != NULL);
+  fflush(stdout);
+  g_operand_poles.push_back(positive);
 }
 
 void dice_metadata_parser::read_parser_environment_variables() {
@@ -237,7 +248,9 @@ void dice_metadata_parser::set_branch_pred(){
     assert(0);abort();
   }
   g_current_dbb->branch_pred = new operand_info(std::move(g_operands.front()));
+  g_current_dbb->branch_pred_pole = g_operand_poles.front();
   g_operands.clear();
+  g_operand_poles.clear();
 }
 
 void dice_metadata_parser::add_builtin_operand(int builtin, int dim_modifier) {

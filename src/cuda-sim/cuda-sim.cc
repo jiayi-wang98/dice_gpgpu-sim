@@ -554,6 +554,7 @@ void function_info::metadata_assemble() {
     dice_metadata *mI = m_metadata_mem[ii];
     if (mI->branch) {
       int target_id = mI->branch_target_meta_id;
+      assert(m_id_to_metadata.find(target_id) != m_id_to_metadata.end() && "BRANCH TARGET METADATA NOT FOUND");
       unsigned PC = m_id_to_metadata[target_id]->get_PC();
       mI->branch_target_meta_pc = PC;
       int reconvergence_id = mI->reconvergence_meta_id;
@@ -2172,6 +2173,7 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
       if (pI->get_pred_mod() == -1) {
         skip = (pred_value.pred & 0x0001) ^
                pI->get_pred_neg();  // ptxplus inverts the zero flag
+        printf("[PRED_TEST] tid= %d, pred_value.pred = %x, preg_neg = %d, skip = %d, pi=%s\n", tid, pred_value.pred, pI->get_pred_neg(), skip, pI->get_source());
       } else {
         skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
       }
@@ -3403,7 +3405,6 @@ void DICEfunctionalCoreSim::dice_checkExecutionStatusAndUpdate(unsigned tid) {
 void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) {
   //printf("DICE: tid %d executing block %d\n", tid, CFGBlock->get_metadata()->meta_id);
   //fflush(stdout);
-  bool skip = false;
   int op_classification = 0;
   addr_t metadata_pc = next_metadata();
   //if(m_cgra_core->get_id()==0)

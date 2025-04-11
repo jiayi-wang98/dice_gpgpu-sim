@@ -226,7 +226,11 @@ reg_operands:
     ;
 
 operands:
-      REGOPERAND {$$=$1; dicemeta_parser->add_operand($1);}
+      REGOPERAND {$$=$1; dicemeta_parser->add_operand($1); dicemeta_parser->add_operand_pole(true);}
+    | EXCLAMATION REGOPERAND {
+        dicemeta_parser->add_operand($2);
+        dicemeta_parser->add_operand_pole(false);
+    }
     | SPECIAL_REGISTER DIMENSION_MODIFIER {
         dicemeta_parser->add_builtin_operand($1, $2);
         $$=special_reg_names[$1]; 

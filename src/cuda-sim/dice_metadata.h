@@ -28,6 +28,7 @@ class dice_metadata {
       branch = false;
       uni_bra = false;
       branch_pred = NULL;
+      branch_pred_pole = true;
       branch_target_meta_id = 0;
       reconvergence_meta_id = 0;
       is_exit = false;
@@ -68,6 +69,7 @@ class dice_metadata {
     bool branch;
     bool uni_bra;
     operand_info* branch_pred;
+    bool branch_pred_pole;
     int branch_target_meta_id;
     int reconvergence_meta_id;
     unsigned branch_target_meta_pc;
@@ -92,6 +94,7 @@ class dice_metadata_parser {
   bool g_debug_dicemeta_generation;
   dice_metadata* g_current_dbb;
   std::list<operand_info> g_operands;
+  std::list<bool> g_operand_poles;
   gpgpu_context* gpgpu_ctx;
   std::string g_current_function_name;
   function_info* g_current_function_info;
@@ -113,6 +116,7 @@ class dice_metadata_parser {
   int g_error_detected;
 
   void add_operand(const char *identifier);
+  void add_operand_pole(bool positive);
   void add_builtin_operand(int builtin, int dim_modifier);
   void read_parser_environment_variables();
   void create_new_dbb(int meta_id);
