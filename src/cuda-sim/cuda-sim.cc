@@ -1188,6 +1188,8 @@ static unsigned datatype2size(unsigned data_type) {
 }
 
 void ptx_instruction::pre_decode() {
+  printf("[PTX_TEST] current pre_decode_inst = %s\n", get_source());
+  fflush(stdout);
   pc = m_PC;
   isize = m_inst_size;
   for (unsigned i = 0; i < MAX_OUTPUT_VALUES; i++) {

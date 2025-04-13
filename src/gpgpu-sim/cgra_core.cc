@@ -644,7 +644,7 @@ void cgra_core_ctx::fetch_metadata(){
   if (!m_metadata_fetch_buffer.m_valid) { //if there is no metadata in the buffer
     if (m_L1I->access_ready()) { //if the instruction cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1I->next_access(); //get response from the instruction cache
-      if(m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
+      if(m_cgra_block_state[MF_DE]->dummy() || m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
         printf("DICE Sim uArch [PREFETCH_META_DISCARD]: Cycle %d, hw_cta=%d ,Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_metadata_pc(),mf->get_addr());
         fflush(stdout);
@@ -917,9 +917,10 @@ void cgra_core_ctx::fetch_bitstream(){
   if (!m_bitstream_fetch_buffer.m_valid) { //if there is no bitstream in the buffer
     if (m_L1B->access_ready()) { //if the bitstream cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
-      if(m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
+      //when previous kernel mis predict and still have outstanding bitstream fetch request
+      if(m_cgra_block_state[MF_DE]->decode_done()==false || m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
-        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), m_cgra_block_state[MF_DE]->get_bitstream_pc(),mf->get_addr());
+        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, hw_cta=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
         fflush(stdout);
       } else {
         m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
@@ -1159,7 +1160,7 @@ bool cgra_block_state_t::stores_out(){
 void cgra_block_state_t::clear_prefetch() { 
   is_prefetch = false; 
   if(g_debug_execution >= 3 && m_cgra_core->get_id()==0){
-    printf("DICE Sim uArch: Cycle %d, clear_prefetch() for block id = %d\n", m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , get_current_metadata()->meta_id);
+    printf("DICE Sim uArch: Cycle %d, clear_prefetch() for cta_id = %d\n", m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cta_id);
     fflush(stdout);
   }
 }
