@@ -2268,9 +2268,6 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
         assert(!read_sent);
         assert(!write_sent);
         if(g_debug_execution==3 &m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-          printf("DICE Sim uArch: [LDST_UNIT_L1D_ACCESS_STALL]: Cycle %d, RESERVATION_FAIL for access(tid=%d,addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , mf_next->get_tid(), mf_next->get_addr());
-          mf_next->print(stdout);
-          fflush(stdout);
           printf("DICE Sim uArch: [LDST_UNIT_L1D_ACCESS_STALL]: Cycle %d, RESERVATION_FAIL for access(tid=%d,block=%d,addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , mf_next->get_tid(), mf_next->get_cgra_block_state()->get_current_metadata()->meta_id, mf_next->get_addr());
           fflush(stdout);
         }
