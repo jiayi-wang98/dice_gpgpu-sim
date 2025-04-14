@@ -59,6 +59,8 @@ class cgra_core_ctx {
     class gpgpu_sim *get_gpu() {
       return m_gpu;
     }
+
+    unsigned get_dice_trace_sampling_core();
     kernel_info_t *get_kernel_info() { return m_kernel; }
     class ptx_thread_info **get_thread_info() {
       return m_thread;
@@ -322,11 +324,7 @@ class block_commit_table{
 
     void check_and_release();
 
-    void mark_return_block(unsigned hw_cta_id) {
-      assert(check_block_exist(hw_cta_id));
-      unsigned index = find_block_index(hw_cta_id);
-      m_ret[index] = true;
-    }
+    void mark_return_block(unsigned hw_cta_id);
 
     unsigned find_block_index(unsigned hw_cta_id);
 

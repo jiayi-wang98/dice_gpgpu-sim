@@ -599,6 +599,7 @@ class gpgpu_sim : public gpgpu_t {
 
   //DICE-support
   bool dice_enabled();
+  unsigned get_dice_trace_sampling_core();
 
  private:
   // clocks

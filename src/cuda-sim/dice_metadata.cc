@@ -434,6 +434,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
   if(m_per_scalar_thread_valid){
     unsigned num_stores=0;
     new_addr_type cache_block_size = 0;  // in bytes
+    bool is_shared_space = false;
     for(unsigned i=0; i<m_per_scalar_thread[tid].count; i++){
       if(m_per_scalar_thread[tid].enable == 0) {
         //enable is 0 means this access is masked out
@@ -466,8 +467,8 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           access_type = is_write ? LOCAL_ACC_W : LOCAL_ACC_R;
           break;
         case shared_space:
-          break;
         case sstarr_space:
+          is_shared_space = true;
           break;
         default:
           assert(0);
@@ -507,7 +508,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
-      } else { //L1D cache
+      } else if (is_shared_space) {
+        //keep original request
+        
+      } else { //L1D cache or shared space
         unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
         dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];
         unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte

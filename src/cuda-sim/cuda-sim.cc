@@ -2175,7 +2175,7 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
       if (pI->get_pred_mod() == -1) {
         skip = (pred_value.pred & 0x0001) ^
                pI->get_pred_neg();  // ptxplus inverts the zero flag
-        printf("[PRED_TEST] tid= %d, pred_value.pred = %x, preg_neg = %d, skip = %d, pi=%s\n", tid, pred_value.pred, pI->get_pred_neg(), skip, pI->get_source());
+        //printf("[PRED_TEST] tid= %d, pred_value.pred = %x, preg_neg = %d, skip = %d, pi=%s\n", tid, pred_value.pred, pI->get_pred_neg(), skip, pI->get_source());
       } else {
         skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
       }

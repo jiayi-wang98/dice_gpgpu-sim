@@ -268,6 +268,12 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     &dice_cgra_core_num_st_ports,
     "DICE cgra core LDST unit number of store ports, i.e.,","1,2,4,8,16");
 
+  option_parser_register(
+      opp, "-dice_trace_sampling_core", OPT_INT32,
+      &dice_trace_sampling_core,
+      "DICE trace sampling core, i.e., 0 = core 0, 1 = core 1",
+      "0");
+
       
   option_parser_register(opp, "-gpgpu_tex_cache:l1", OPT_CSTR,
                          &m_L1T_config.m_config_string,
@@ -2122,4 +2128,8 @@ simt_core_cluster *gpgpu_sim::getSIMTCluster() { return *m_cluster; }
 
 bool gpgpu_sim::dice_enabled() {
   return gpgpu_ctx->g_dice_enabled;
+}
+
+unsigned gpgpu_sim::get_dice_trace_sampling_core(){
+  return m_shader_config->dice_trace_sampling_core;
 }

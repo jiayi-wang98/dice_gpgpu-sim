@@ -1667,6 +1667,7 @@ class shader_core_config : public core_config {
   unsigned dice_cgra_core_num_st_ports;
   unsigned dice_cgra_core_num_ld_ports_queue_size;
   unsigned dice_cgra_core_num_st_ports_queue_size;
+  unsigned dice_trace_sampling_core;
 };
 
 struct shader_core_stats_pod {
