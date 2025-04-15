@@ -2416,6 +2416,7 @@ void ldst_unit::init_cgra(mem_fetch_interface *icnt,
   m_stats = stats;
   m_sid = cgra_core_id;
   m_cgra_core_id = cgra_core_id;
+  m_shared_cycle_count = 0;
   m_tpc = tpc;
   #define STRSIZE 1024
   char L1T_name[STRSIZE];

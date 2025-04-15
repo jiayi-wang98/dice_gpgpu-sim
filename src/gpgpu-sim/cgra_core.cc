@@ -2019,17 +2019,119 @@ void ldst_unit::cycle_cgra(){
       m_dice_mem_request_queue->set_last_processed_port_memory(memory_port);
     }
   }
+  //shared memory cycle is modeled as latency for each thread directly
+  //
+  std::map<unsigned, std::map<new_addr_type, unsigned>> bank_accs;  // bank -> word address -> access count
+  bool accept_new_access = true;
+  bool clear_current_access = false;
+  if(shared_cycle_count_set()){
+    accept_new_access = false;
+    clear_current_access = decrease_shared_cycle_count();
+  }
+  if(accept_new_access){
+    unsigned total_accesses = 0;
+    for (int k = 0; k < m_config->num_shmem_bank; k++) {  
+      unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
+      if(shared_port != unsigned(-1)){
+        mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
+        cgra_block_state_t* cgra_block = access.get_cgra_block_state();
+        new_addr_type addr = access.get_addr();
+        unsigned bank = m_config->shmem_bank_func(addr);
+        new_addr_type word = line_size_based_tag_func_cgra(addr, m_config->WORD_SIZE);
+        bank_accs[bank][word]++;
+      }
+    }
+    if (m_config->shmem_limited_broadcast) {
+      // step 2: look for and select a broadcast bank/word if one occurs
+      bool broadcast_detected = false;
+      new_addr_type broadcast_word = (new_addr_type)-1;
+      unsigned broadcast_bank = (unsigned)-1;
+      std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
+      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
+        unsigned bank = b->first;
+        std::map<new_addr_type, unsigned> &access_set = b->second;
+        std::map<new_addr_type, unsigned>::iterator w;
+        for (w = access_set.begin(); w != access_set.end(); ++w) {
+          if (w->second > 1) {
+            // found a broadcast
+            broadcast_detected = true;
+            broadcast_bank = bank;
+            broadcast_word = w->first;
+            break;
+          }
+        }
+        if (broadcast_detected) break;
+      }
+    
+      // step 3: figure out max bank accesses performed, taking account of
+      // broadcast case
+      unsigned max_bank_accesses = 0;
+      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
+        unsigned bank_accesses = 0;
+        std::map<new_addr_type, unsigned> &access_set = b->second;
+        std::map<new_addr_type, unsigned>::iterator w;
+        for (w = access_set.begin(); w != access_set.end(); ++w)
+          bank_accesses += w->second;
+        if (broadcast_detected && broadcast_bank == b->first) {
+          for (w = access_set.begin(); w != access_set.end(); ++w) {
+            if (w->first == broadcast_word) {
+              unsigned n = w->second;
+              assert(n > 1);  // or this wasn't a broadcast
+              assert(bank_accesses >= (n - 1));
+              bank_accesses -= (n - 1);
+              break;
+            }
+          }
+        }
+        if (bank_accesses > max_bank_accesses)
+          max_bank_accesses = bank_accesses;
+      }
+    
+      // step 4: accumulate
+      total_accesses += max_bank_accesses;
+    } else {
+      // step 2: look for the bank with the maximum number of access to
+      // different words
+      unsigned max_bank_accesses = 0;
+      std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
+      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
+        max_bank_accesses =
+            std::max(max_bank_accesses, (unsigned)b->second.size());
+      }
+    
+      // step 3: accumulate
+      total_accesses += max_bank_accesses;
+    }
+    //execute shared memory access for all ports
+    if (total_accesses == 1) { // no bank conflict
+      for (int k = 0; k < m_config->num_shmem_bank; k++) {  
+        unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
+        if(shared_port != unsigned(-1)){
+          mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
+          cgra_block_state_t* cgra_block = access.get_cgra_block_state();
+          shared_cycle_cgra(cgra_block, access, rc_fail, type);
+          m_dice_mem_request_queue->set_last_processed_port_shared(shared_port);
+        }
+      }
+    } else {
+      set_shared_cycle_count(total_accesses);
+    }
+  }
+
+  if(clear_current_access){
+    //clear current access
+    for (int k = 0; k < m_config->num_shmem_bank; k++) {  
+      unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
+      if(shared_port != unsigned(-1)){
+        mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
+        cgra_block_state_t* cgra_block = access.get_cgra_block_state();
+        shared_cycle_cgra(cgra_block, access, rc_fail, type);
+        m_dice_mem_request_queue->set_last_processed_port_shared(shared_port);
+      }
+    }
+  }
 
   rc_fail = NO_RC_FAIL;
-  //shared memory cycle, round robin arbiter from all load and store ports to check all load request to contant cache
-  //for (int k = 0; k < m_config->num_shmem_bank; k++) {  
-  unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
-  if(shared_port != unsigned(-1)){
-    mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
-    cgra_block_state_t* cgra_block = access.get_cgra_block_state();
-    memory_cycle_cgra(cgra_block, access, rc_fail, type);
-    m_dice_mem_request_queue->set_last_processed_port_shared(shared_port);
-  }
 
   //process interconnect data
   if (!m_response_fifo.empty()) {
@@ -2344,10 +2446,8 @@ bool ldst_unit::texture_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t 
 bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t access, mem_stage_stall_type &rc_fail,
                              mem_stage_access_type &fail_type) {
   if (access.get_space() != shared_space) return true;
-  
-  //DICE-TODO: need to check bank conflict here, currently assume perfect memory , no bank conflict
+
   //cgra_block->get_current_cfg_block()->pop_mem_access(access->get_ldst_port_num());
-  m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
   std::set<unsigned> writeback_regs = access.get_ldst_regs();
   if(m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs)){
     for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
@@ -2356,6 +2456,7 @@ bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
         assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
       }
     }
+    m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
   } 
   //increment writeback or store num
   if(access.is_write()){

@@ -408,7 +408,7 @@ void dice_cfg_block_t::set_not_active(unsigned tid) {
 address_type line_size_based_tag_func_cgra(new_addr_type address,
   new_addr_type line_size) {
 // gives the tag for an address based on a given line size
-return address & ~(line_size - 1);
+  return address & ~(line_size - 1);
 }
 
 void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg) {
@@ -510,7 +510,35 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
         }
       } else if (is_shared_space) {
         //keep original request
-        
+        if(!is_write){
+          //use iterator to find the ld_dest_reg
+          unsigned i=0;
+          for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
+            if(it->reg_num() == ld_dest_reg){
+              unsigned port_index = i;
+              assert(port_index < (MAX_LDST_UNIT_PORTS/2));
+              //if(port_index >= (MAX_LDST_UNIT_PORTS/2)){
+              //  assert(get_metadata()->is_parameter_load);
+              //  port_index = port_index % (MAX_LDST_UNIT_PORTS/2);
+              //}
+              std::set<unsigned> ld_dest_regs;
+              ld_dest_regs.insert(ld_dest_reg);
+              mem_access_t access(access_type, addr,space, size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(), gpgpu_ctx);
+              m_accessq[port_index].push_back(access);
+              break;
+            }
+            i++;
+          }
+        } else {
+          //put them in different ports(4-7)
+          unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          assert(port_index < MAX_LDST_UNIT_PORTS);
+          std::set<unsigned> ld_dest_regs;
+          ld_dest_regs.insert(ld_dest_reg);
+          mem_access_t access(access_type, addr, space, size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(),gpgpu_ctx);
+          m_accessq[port_index].push_back(access);
+          num_stores++;
+        }
       } else { //L1D cache or shared space
         unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
         dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];

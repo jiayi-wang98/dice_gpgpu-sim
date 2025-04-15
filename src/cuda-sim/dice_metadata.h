@@ -360,4 +360,5 @@ class dice_cfg_block_t{
     std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port
 };
 
+address_type line_size_based_tag_func_cgra(new_addr_type address,new_addr_type line_size);
 #endif

@@ -1318,6 +1318,26 @@ class ldst_unit : public pipelined_simd_unit {
   void dice_push_accesses(class dice_cfg_block_t *cfg_block, class cgra_block_state_t *cgra_block);
   bool one_mem_access_queue_full(unsigned port_id);
   bool mem_access_queue_full();
+  void set_shared_cycle_count(unsigned count) {
+    m_shared_cycle_count = count;
+  }
+
+  void reset_shared_cycle_count() {
+    m_shared_cycle_count = 0;
+  }
+
+  bool shared_cycle_count_set() const {
+    return m_shared_cycle_count > 1;
+  }
+
+  bool decrease_shared_cycle_count() {
+    if (m_shared_cycle_count > 0) m_shared_cycle_count--; 
+    if (m_shared_cycle_count == 1) {
+      return true; //finish
+    } else {
+      return false; //still need more cycles
+    }
+  }
 
  protected:
   ldst_unit(mem_fetch_interface *icnt,
@@ -1403,6 +1423,7 @@ class ldst_unit : public pipelined_simd_unit {
   class dispatcher_rfu_t *m_dispatcher_rfu;
   mem_fetch *m_next_cgra_writeback;
   mem_fetch *m_next_global_cgra;
+  unsigned m_shared_cycle_count;
   //request queue and MSHR and coallescing buffer
   class dice_mem_request_queue *m_dice_mem_request_queue;
 
