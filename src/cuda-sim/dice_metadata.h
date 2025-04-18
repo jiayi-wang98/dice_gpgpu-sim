@@ -320,6 +320,7 @@ class dice_cfg_block_t{
       mem_access_type access_type;
       memory_space_t space;
       std::set<unsigned> active_threads;
+      unsigned original_block_address;
     };
     void memory_coalescing_arch_reduce_and_send(bool is_write, const dice_transaction_info &info, new_addr_type addr, unsigned segment_size);
   protected:

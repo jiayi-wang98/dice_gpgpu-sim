@@ -743,7 +743,7 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
       //if(0){
         ma = new mem_access_t(mf->get_access_type(), mf->get_addr() + SECTOR_SIZE * i, mf->get_space(), SECTOR_SIZE,
                            mf->is_write(),  // Now performing a read
-                           mf->get_tid(), mf->get_regs_num(), mf->get_ldst_port_num(), mf->get_access_warp_mask(),
+                           mf->get_tids(), mf->get_regs_num(), mf->get_ldst_port_num(), mf->get_access_warp_mask(),
                            mf->get_access_byte_mask() & byte_sector_mask,
                            std::bitset<SECTOR_CHUNCK_SIZE>().set(j), m_gpu->gpgpu_ctx);
         n_mf = new mem_fetch(*ma, mf->get_cgra_block_state(), mf->get_ctrl_size(), 

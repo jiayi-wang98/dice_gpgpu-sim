@@ -247,6 +247,22 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     "DICE cgra core RF LDST unit writeback buffer size, i.e.,","16, 32, 64, 128");
 
   option_parser_register(
+    opp, "-dice_ldst_unit_enable_temporal_coalescing", OPT_UINT32,
+    &dice_ldst_unit_enable_temporal_coalescing,
+    "DICE enable temporal_coalsescing","1");
+
+
+  option_parser_register(
+    opp, "-dice_ldst_unit_enable_port_coalescing", OPT_UINT32,
+    &dice_ldst_unit_enable_port_coalescing,
+    "DICE enable memory access from different ldst ports to be coalsesced","0");
+
+  option_parser_register(
+    opp, "-dice_ldst_unit_temporal_coalescing_interval", OPT_UINT32,
+    &dice_ldst_unit_temporal_coalescing_interval,
+    "DICE temporal_coalsescing interval","4,8,16,32");
+
+  option_parser_register(
     opp, "-dice_cgra_core_num_ld_ports", OPT_UINT32,
     &dice_cgra_core_num_ld_ports,
     "DICE cgra core LDST unit number of load ports, i.e.,","1,2,4,8,16");

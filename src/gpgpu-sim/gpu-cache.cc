@@ -1279,7 +1279,7 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
   //if(0){
     ma = new mem_access_t(m_wr_alloc_type, mf->get_addr(), mf->get_space(), m_config.get_atom_sz(),
                        false,  // Now performing a read
-                       mf->get_tid(), mf->get_regs_num(), mf->get_ldst_port_num(), mf->get_access_warp_mask(), mf->get_access_byte_mask(),
+                       mf->get_tids(), mf->get_regs_num(), mf->get_ldst_port_num(), mf->get_access_warp_mask(), mf->get_access_byte_mask(),
                        mf->get_access_sector_mask(), m_gpu->gpgpu_ctx);
     n_mf = new mem_fetch(*ma, mf->get_cgra_block_state(), mf->get_ctrl_size(), 
                        mf->get_sid(), mf->get_tpc(), mf->get_mem_config(),
@@ -1294,13 +1294,6 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
                   m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
   }
   
-
-  
-
-  //Jiayi Test
-  printf("mem_fetch *n_mf = new mem_fetch(*ma, NULL, mf->get_ctrl_size(), mf->get_wid(),\n");
-  printf("mf_addr: %x, mf_tid=%d\n", n_mf->get_addr(), n_mf->get_tid());
-  fflush(stdout);
 
   bool do_miss = false;
   bool wb = false;
@@ -1325,10 +1318,6 @@ enum cache_request_status data_cache::wr_miss_wa_naive(
           m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
 
 
-      //Jiayi Test
-      printf("mem_fetch *wb = m_memfetch_creator->alloc(\n");
-      printf("mf_addr: %x, mf_tid=%d\n", wb->get_addr(), wb->get_tid());
-      fflush(stdout);
       // the evicted block may have wrong chip id when advanced L2 hashing  is
       // used, so set the right chip address from the original mf
       wb->set_chip(mf->get_tlx_addr().chip);

@@ -127,7 +127,7 @@ class mem_fetch {
   //DICE-support
   class cgra_block_state_t* get_cgra_block_state() { return m_cgra_block; }
   std::set<unsigned> get_regs_num() { return m_access.get_ldst_regs(); }
-  unsigned get_tid() const { return m_access.get_tid(); }
+  std::set<unsigned> get_tids() const { return m_access.get_tids(); }
   unsigned get_ldst_port_num() const { return m_access.get_ldst_port_num(); }
   memory_space_t get_space() const { return m_access.get_space(); }
 

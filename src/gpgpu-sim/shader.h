@@ -1339,6 +1339,14 @@ class ldst_unit : public pipelined_simd_unit {
     }
   }
 
+  unsigned get_cgra_core_id() const {
+    return m_cgra_core_id;
+  }
+
+  class cgra_core_ctx *get_cgra_core() const {
+    return m_cgra_core;
+  }
+
  protected:
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
@@ -1689,6 +1697,9 @@ class shader_core_config : public core_config {
   unsigned dice_cgra_core_num_ld_ports_queue_size;
   unsigned dice_cgra_core_num_st_ports_queue_size;
   unsigned dice_trace_sampling_core;
+  unsigned dice_ldst_unit_enable_port_coalescing;
+  unsigned dice_ldst_unit_enable_temporal_coalescing;
+  unsigned dice_ldst_unit_temporal_coalescing_interval;
 };
 
 struct shader_core_stats_pod {

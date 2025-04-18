@@ -833,19 +833,34 @@ class cgra_unit {
   public:
     rf_bank_controller(unsigned bank_id, class dispatcher_rfu_t *rfu);
     bool wb_buffer_full();
-    void push_to_buffer(unsigned tid, cgra_block_state_t *block) {
+    void push_to_cgra_wb_buffer(unsigned tid, cgra_block_state_t *block) {
       m_cgra_writeback_buffer.push_back(std::make_pair(tid, block));
+    }
+
+    void push_to_ldst_wb_buffer(unsigned tid, cgra_block_state_t *block) {
+      m_ldst_writeback_buffer.push_back(std::make_pair(tid, block));
     }
 
     void cycle();
     
-    bool occupied_by_ldst_unit;
+    //bool occupied_by_ldst_unit;
+    bool occupied_by_ldst_unit() const {
+      return m_ldst_writeback_buffer.size() > 0;
+    }
+
+    bool ldst_buffer_full() const {
+      return m_ldst_writeback_buffer.size() >= m_ldst_buffer_size;
+    }
+
+    unsigned ldst_buffer_credit() const {
+      return m_ldst_buffer_size - m_ldst_writeback_buffer.size();
+    }
   private:
     unsigned m_cgra_buffer_size;
     unsigned m_ldst_buffer_size;
     unsigned m_bank_id;
-    std::list<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer;
-    std::list<std::pair<unsigned,cgra_block_state_t*>> m_ldst_writeback_buffer; //tbd, not really necessary
+    std::list<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer; //(tid,block)
+    std::list<std::pair<unsigned,cgra_block_state_t*>> m_ldst_writeback_buffer; //(tid,block)
     
     //backward pointer
     dispatcher_rfu_t *m_rfu;
@@ -877,7 +892,7 @@ class cgra_unit {
     void rf_cycle();
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
-    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, unsigned tid);
+    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, std::set<unsigned> tids);
     unsigned next_active_thread();
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
@@ -886,8 +901,8 @@ class cgra_unit {
     const shader_core_config *get_config() { return m_config; }
     bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
-    bool can_writeback_ldst_reg(unsigned reg_num);
-    bool can_writeback_ldst_regs(std::set<unsigned> regs);
+    bool can_writeback_ldst_reg(unsigned reg_num, unsigned count);
+    bool can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids);
 
   private:
     const shader_core_config *m_config;
@@ -919,6 +934,16 @@ class cgra_unit {
       assert(access.get_cgra_block_state() != NULL);
     }
 
+    void push_ld_request_pre_coalesce(mem_access_t access, unsigned port) {
+      m_ld_req_queue_pre_coalesce[port].push_back(access);
+      m_ld_port_credit[port]--;
+    }
+
+    void push_st_request_pre_coalesce(mem_access_t access, unsigned port) {
+      m_st_req_queue_pre_coalesce[port].push_back(access);
+      m_st_port_credit[port]--;
+    }
+
     void push_st_request(mem_access_t access, unsigned port) {
       m_st_req_queue[port].push_back(access);
       m_st_port_credit[port]--;
@@ -934,6 +959,16 @@ class cgra_unit {
       m_st_port_credit[port]++;
     }
 
+    void pop_ld_request_pre_coalesce(unsigned port) {
+      m_ld_req_queue_pre_coalesce[port].pop_front();
+      m_ld_port_credit[port]++;
+    }
+
+    void pop_st_request_pre_coalesce(unsigned port) {
+      m_st_req_queue_pre_coalesce[port].pop_front();
+      m_st_port_credit[port]++;
+    }
+    
     void pop_request(unsigned port) {
       if(port<m_ld_req_queue.size()) pop_ld_request(port);
       else {
@@ -999,15 +1034,84 @@ class cgra_unit {
     void set_last_processed_port_memory(unsigned port) { m_last_processed_port_memory = port; }
     void set_last_processed_port_shared(unsigned port) { m_last_processed_port_shared = port; }
 
+    void update_coaleasing_counter();
+    bool coalesce_interval_done(unsigned port){
+      printf("coalesce_interval_done start, port = %d\n", port);
+      if(port>= m_ld_req_queue.size()) {
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        //check store
+        if(m_st_coalescing_counter[port-m_ld_req_queue.size()] = temporal_coalescing_interval) {
+          m_st_coalescing_counter[port-m_ld_req_queue.size()] = 0;
+          printf("coalesce_interval_done end, t\n"); 
+          return true;
+        } else {
+          printf("coalesce_interval_done end, f\n"); 
+          return false;
+        }
+      } else {
+        //check load
+        if(m_ld_coalescing_counter[port] == temporal_coalescing_interval) {
+          m_ld_coalescing_counter[port] = 0;
+          printf("coalesce_interval_done end, t\n"); 
+          return true;
+        } else {
+          printf("coalesce_interval_done end,f \n"); 
+          return false;
+        }
+      }
+    }
+
+    void do_coalescing(unsigned port) {
+      if(port>= m_ld_req_queue.size()) {
+        assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
+        //check store
+        do_st_coalescing(port-m_ld_req_queue.size());
+      } else {
+        //check load
+        do_ld_coalescing(port);
+      }
+    }
+
+    void coalesce_cycle();
+
+    void do_ld_coalescing(unsigned port);
+    void do_st_coalescing(unsigned port);
+
     const shader_core_config *m_config;
     ldst_unit *m_ldst_unit;
     std::vector<unsigned> m_ld_port_credit;
     std::vector<unsigned> m_st_port_credit;
+    std::vector<std::list<mem_access_t>> m_ld_req_queue_pre_coalesce;
+    std::vector<std::list<mem_access_t>> m_st_req_queue_pre_coalesce;
     std::vector<std::list<mem_access_t>> m_ld_req_queue;
     std::vector<std::list<mem_access_t>> m_st_req_queue;
+    struct dice_transaction_info {
+      std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
+      mem_access_byte_mask_t bytes;
+      active_mask_t active;  // threads in this transaction
+  
+      bool test_bytes(unsigned start_bit, unsigned end_bit) {
+        for (unsigned i = start_bit; i <= end_bit; i++)
+          if (bytes.test(i)) return true;
+        return false;
+      }
+      std::set<unsigned> ld_dest_regs;
+      std::set<unsigned> port_idx;
+      mem_access_type access_type;
+      memory_space_t space;
+      std::set<unsigned> active_threads;
+    };
+
+    void memory_coalescing_arch_reduce(bool is_write, const dice_transaction_info &info,new_addr_type addr, unsigned segment_size, unsigned port, cgra_block_state_t *block);
+
+  private:
     unsigned m_last_processed_port_contant;
     unsigned m_last_processed_port_texture;
     unsigned m_last_processed_port_memory;
     unsigned m_last_processed_port_shared;
+    std::vector<unsigned> m_ld_coalescing_counter;
+    std::vector<unsigned> m_st_coalescing_counter;
+    unsigned enable_temporal_coaleascing;
+    unsigned temporal_coalescing_interval;
  };
 #endif

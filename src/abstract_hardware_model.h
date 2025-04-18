@@ -1053,7 +1053,7 @@ class mem_access_t {
     m_addr = address;
     m_req_size = size;
     m_write = wr;
-    m_tid = tid;
+    m_tid.insert(tid);
     m_ldst_regs.insert(ld_dest_reg);
     m_ldst_port_num = port_num;
     m_space = space;
@@ -1061,7 +1061,7 @@ class mem_access_t {
 
 
   mem_access_t( mem_access_type type, new_addr_type address, memory_space_t space, unsigned size,
-               bool wr,  unsigned tid, std::set<unsigned>ldst_regs, unsigned port_num, const active_mask_t &active_mask,
+               bool wr,  std::set<unsigned> tid, std::set<unsigned>ldst_regs, unsigned port_num, const active_mask_t &active_mask,
                const mem_access_byte_mask_t &byte_mask,
                const mem_access_sector_mask_t &sector_mask, gpgpu_context *ctx) 
               :m_warp_mask(active_mask),
@@ -1103,7 +1103,7 @@ class mem_access_t {
   class cgra_block_state_t *get_cgra_block_state(){
     return m_cgra_block_state;
   }
-  unsigned get_tid() const { return m_tid; }
+  std::set<unsigned> get_tids() const { return m_tid; }
   std::set<unsigned> get_ldst_regs() const { return m_ldst_regs; }
   unsigned get_ldst_port_num() const { return m_ldst_port_num; }
   memory_space_t get_space() const { return m_space.get_type(); }
@@ -1152,7 +1152,12 @@ class mem_access_t {
         fprintf(fp, "unknown ");
         break;
     }
-    fprintf(fp, " tid = %d\n", m_tid);
+    fprintf(fp, " tid = ");
+    for (std::set<unsigned>::iterator it = m_tid.begin(); it != m_tid.end();
+         ++it) {
+      fprintf(fp, "%d ", *it);
+    }
+    fprintf(fp, "\n");
     fprintf(fp, " m_ldst_regs = ");
     for(std::set<unsigned>::iterator it = m_ldst_regs.begin(); it != m_ldst_regs.end(); ++it){
       fprintf(fp, "%d ", *it);
@@ -1176,7 +1181,8 @@ class mem_access_t {
   mem_access_byte_mask_t m_byte_mask;
   mem_access_sector_mask_t m_sector_mask;
   //DICE-support
-  unsigned m_tid;
+  //unsigned m_tid;
+  std::set<unsigned> m_tid;
   std::set<unsigned> m_ldst_regs;
   unsigned m_ldst_port_num;
   memory_space_t m_space;

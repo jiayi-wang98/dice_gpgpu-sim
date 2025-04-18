@@ -414,6 +414,8 @@ address_type line_size_based_tag_func_cgra(new_addr_type address,
 void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg) {
   std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
   std::map<new_addr_type, dice_transaction_info> wr_transactions;  // each block addr maps to a list of transactions
+  unsigned request_count = 0;
+  unsigned original_block_address = 0;
   //convert memory ops to mem_access_t
   bool sector_segment_size = false; //TODO understand this
   unsigned segment_size = 128;
@@ -492,7 +494,9 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
               }
               std::set<unsigned> ld_dest_regs;
               ld_dest_regs.insert(ld_dest_reg);
-              mem_access_t access(access_type, addr,space, cache_block_size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
+              std::set<unsigned> tids;
+              tids.insert(tid);
+              mem_access_t access(access_type, addr,space, cache_block_size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
               m_accessq[port_index].push_back(access);
               break;
             }
@@ -504,7 +508,9 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           assert(port_index < MAX_LDST_UNIT_PORTS);
           std::set<unsigned> ld_dest_regs;
           ld_dest_regs.insert(ld_dest_reg);
-          mem_access_t access(access_type, addr, space, cache_block_size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
+          std::set<unsigned> tids;
+          tids.insert(tid);
+          mem_access_t access(access_type, addr, space, cache_block_size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
@@ -523,7 +529,9 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
               //}
               std::set<unsigned> ld_dest_regs;
               ld_dest_regs.insert(ld_dest_reg);
-              mem_access_t access(access_type, addr,space, size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(), gpgpu_ctx);
+              std::set<unsigned> tids;
+              tids.insert(tid);
+              mem_access_t access(access_type, addr,space, size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(), gpgpu_ctx);
               m_accessq[port_index].push_back(access);
               break;
             }
@@ -535,15 +543,25 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           assert(port_index < MAX_LDST_UNIT_PORTS);
           std::set<unsigned> ld_dest_regs;
           ld_dest_regs.insert(ld_dest_reg);
-          mem_access_t access(access_type, addr, space, size, is_write, tid, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(),gpgpu_ctx);
+          std::set<unsigned> tids;
+          tids.insert(tid);
+          mem_access_t access(access_type, addr, space, size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(),gpgpu_ctx);
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
-      } else { //L1D cache or shared space
+      } //else if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config()->dice_ldst_unit_enable_port_coalescing){ //L1D cache without port coalescing
+      else { //L1D cache with port coalescing
         unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+        original_block_address = block_address;
+        //if no coalescing, get a unique space in rd_transactions
+        if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+          block_address = request_count;
+          request_count++;
+        }
         dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];
         unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
                                             // chunk does this thread access?
+        info.original_block_address = original_block_address;
         info.chunks.set(chunk);
         //info.active.set(tid);
         info.access_type = access_type;
@@ -590,9 +608,14 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
 
 
         //check if second access needed
-        if (block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
+        if (original_block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
             addr = addr + size - 1;
             unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+            original_block_address = block_address;
+            if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+              block_address = request_count;
+              request_count++;
+            }
             dice_transaction_info &info = !is_write ? rd_transactions[block_address] : wr_transactions[block_address];
 
             unsigned chunk = (addr & 127) / 32;
@@ -601,6 +624,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
             info.active_threads.insert(tid);
             info.access_type = access_type;
             info.space = space;
+            info.original_block_address = original_block_address;
             //sector_mask.set(chunk);
             unsigned idx = (addr & 127);
             for (unsigned i = 0; i < size; i++){
@@ -642,11 +666,17 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
     //step 2, reduce size of each transaction
     for (std::map<new_addr_type, dice_transaction_info>::iterator t = rd_transactions.begin(); t != rd_transactions.end(); t++) {
       new_addr_type addr = t->first;
+      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+        addr = original_block_address;
+      }
       const dice_transaction_info &info = t->second;
       memory_coalescing_arch_reduce_and_send(false, info, addr, segment_size);
     }
     for (std::map<new_addr_type, dice_transaction_info>::iterator t = wr_transactions.begin(); t != wr_transactions.end(); t++) {
       new_addr_type addr = t->first;
+      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+        addr = original_block_address;
+      }
       const dice_transaction_info &info = t->second;
       memory_coalescing_arch_reduce_and_send(true, info, addr, segment_size);
     }
@@ -703,8 +733,6 @@ void dice_cfg_block_t::memory_coalescing_arch_reduce_and_send(bool is_write, con
       assert(lower_half_used && upper_half_used);
     }
   }
-  //assume no cross thread coalescing right now
-  //get the first 
-  m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, *(info.active_threads.begin()), info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
+  m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
   //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
 }
