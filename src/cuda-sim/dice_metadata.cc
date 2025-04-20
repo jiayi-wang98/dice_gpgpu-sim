@@ -489,7 +489,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
               if(port_index >= (MAX_LDST_UNIT_PORTS/2)){
-                assert(get_metadata()->is_parameter_load);
+                assert(get_metadata()->is_parameter_load && "ld or st in a block larger than cgra ld/st ports!");
                 port_index = port_index % (MAX_LDST_UNIT_PORTS/2);
               }
               std::set<unsigned> ld_dest_regs;
