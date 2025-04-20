@@ -2183,11 +2183,17 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     int inst_opcode = pI->get_opcode();
     
     if (skip) {
-      if(pI->has_memory_read() || pI->has_memory_write()){ //if last instruction branch, then not set not active
+      if(pI->has_memory_write()){
+      //if(pI->has_memory_write() || pI->has_memory_read()){ //if last instruction branch, then not set not active
         //printf("DICE Sim: Skip instruction %s for tid = %d\n", pI->get_source(),tid);
         //fflush(stdout);
-        CFGBlock->set_not_active(tid);
-      } else {
+        //CFGBlock->set_not_active(tid);
+        CFGBlock->dec_stores();
+      } 
+      else if(pI->has_memory_read()){
+        CFGBlock->dec_loads();
+      }
+      else {
         
         if(pI->dst().reg_num_valid()  && pI->dst().reg_num() > 0){ //normal instruction (not load, not branch)
           //TODO: CFGBlock set invalid writeback for output register pI->dst().reg_num()

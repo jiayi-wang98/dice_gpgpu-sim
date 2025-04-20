@@ -1154,6 +1154,10 @@ bool cgra_block_state_t::loads_done(){
   return false;
 }
 bool cgra_block_state_t::stores_out(){
+  if(m_num_stores_done > get_current_cfg_block()->get_num_stores()){
+    printf("DICE Sim uArch: stores_out() stores_outstanding=%d, num_stores_done=%d\n", m_num_stores_done, get_current_cfg_block()->get_num_stores());
+    fflush(stdout);
+  }
   assert(m_num_stores_done <= get_current_cfg_block()->get_num_stores());
   if(m_num_stores_done == get_current_cfg_block()->get_num_stores()){
     return true;

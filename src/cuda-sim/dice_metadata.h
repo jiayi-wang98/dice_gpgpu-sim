@@ -323,6 +323,13 @@ class dice_cfg_block_t{
       unsigned original_block_address;
     };
     void memory_coalescing_arch_reduce_and_send(bool is_write, const dice_transaction_info &info, new_addr_type addr, unsigned segment_size);
+
+    void dec_stores(){
+      dec_stores_num++;
+    }
+    void dec_loads(){
+      dec_loads_num++;
+    }
   protected:
     unsigned m_uid;
     unsigned m_block_size;
@@ -359,6 +366,9 @@ class dice_cfg_block_t{
     };
     std::vector<per_thread_info> m_per_scalar_thread;
     std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port
+
+    unsigned dec_stores_num;
+    unsigned dec_loads_num;
 };
 
 address_type line_size_based_tag_func_cgra(new_addr_type address,new_addr_type line_size);
