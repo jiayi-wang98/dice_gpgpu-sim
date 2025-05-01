@@ -195,6 +195,9 @@ class cgra_core_ctx {
       m_stats->m_write_regfile_acesses[m_cgra_core_id] =
           m_stats->m_write_regfile_acesses[m_cgra_core_id] + active_count;
     }
+    class block_commit_table *get_block_commit_table() {
+      return m_block_commit_table;
+    }
   protected:
     unsigned m_cgra_core_id;
     unsigned m_tpc;  // texture processor cluster id (aka, node id when using
@@ -609,10 +612,14 @@ class fetch_scheduler{
 
      bool is_parameter_load();
 
-     bool ready_to_dispatch() const {
+     bool barrier_reached();
+
+     bool ready_to_dispatch(){
        if (m_metadata_buffer.m_valid && m_metadata_buffer.m_bitstream_valid) {
          if(is_prefetch) return false;
-         if(m_decoded) return true;
+         if(m_decoded) {
+          return true;
+         }
        }
        return false;
      }

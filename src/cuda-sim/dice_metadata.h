@@ -35,6 +35,7 @@ class dice_metadata {
       is_ret = false;
       is_entry = false;
       is_parameter_load = false;
+      barrier = false;
       m_dicemeta_mem_index = 0;
       m_PC = 0;
       m_size = 32; //bytes
@@ -84,7 +85,7 @@ class dice_metadata {
     unsigned m_dicemeta_mem_index;
     addr_t m_PC;
     unsigned m_size;  // bytes
-  
+    unsigned barrier;
     
     void dump();
 };
@@ -161,6 +162,10 @@ class dice_metadata_parser {
   }
 
   void set_function_name(const char* name);
+
+  void set_barrier(){
+    g_current_dbb->barrier = true;
+  }
 
   void set_in_regs();
   void set_out_regs();

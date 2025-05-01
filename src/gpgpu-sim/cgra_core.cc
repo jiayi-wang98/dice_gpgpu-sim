@@ -914,7 +914,18 @@ void cgra_block_state_t::metadata_buffer_fill(dice_cfg_block_t *cfg_block) {
   m_metadata_buffer.m_cfg_block = cfg_block;
   m_active_threads = cfg_block->get_active_mask();
   m_metadata_buffer.m_valid = true;
- }
+}
+
+bool cgra_block_state_t::barrier_reached(){
+  if (get_current_metadata()->barrier) {
+    //check block commit table
+    unsigned cta_id = get_cta_id();
+    if(m_cgra_core->get_block_commit_table()->check_block_exist(cta_id)) return false;
+    else return true;
+  } else { //no barrier
+    return true;
+  }
+}
 
 void cgra_core_ctx::fetch_bitstream(){
   if(m_cgra_block_state[MF_DE]->dummy()) return;
@@ -1201,7 +1212,7 @@ void cgra_core_ctx::dispatch(){
   //check if current block is finished
   if(m_cgra_block_state[DP_CGRA]==NULL || m_cgra_block_state[DP_CGRA]->dummy()){ //in write-back stage already
     //check if there is a block in MF_DE stage and ready to dispatch
-    if(m_cgra_block_state[MF_DE]->ready_to_dispatch()){
+    if(m_cgra_block_state[MF_DE]->ready_to_dispatch() && m_cgra_block_state[MF_DE]->barrier_reached()){
       if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
         printf("DICE Sim uArch [DISPATCH_START]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id,m_cgra_block_state[MF_DE]->get_current_metadata()->get_PC());
         fflush(stdout);

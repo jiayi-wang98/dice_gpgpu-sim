@@ -155,6 +155,7 @@ void dice_metadata::dump(){
     printf("Branch Target Metadata ID: %d, PC = %p\n", branch_target_meta_id, branch_target_meta_pc);
     printf("Reconvergence Metadata ID: %d, PC = %p\n", reconvergence_meta_id, reconvergence_meta_pc);
   }
+  printf("Barrier: %d\n", barrier);
   printf("Is Exit: %d\n", is_exit);
   printf("Is Ret: %d\n", is_ret);
   printf("Is Entry: %d\n", is_entry);

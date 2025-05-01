@@ -57,7 +57,7 @@ void yyerror(dice_metadata_parser *dicemeta_parser, const char *s) {
   Declare tokens.
 ----------------------------------------------------------------------------*/
 %token DBB_ID UNROLLING_FACTOR UNROLLING_STRATEGY LAT IN_REGS OUT_REGS LD_DEST_REGS STORE 
-%token BRANCH BRANCH_UNI BRANCH_PRED BRANCH_TARGET BRANCH_RECVPC RET PARAMETER_LOAD BITSTREAM_ADDR BITSTREAM_LENGTH FUNCTION
+%token BRANCH BRANCH_UNI BRANCH_PRED BRANCH_TARGET BRANCH_RECVPC RET PARAMETER_LOAD BARRIER BITSTREAM_ADDR BITSTREAM_LENGTH FUNCTION
 %token <int_value> NUMBER
 %token <int_value> SPECIAL_REGISTER
 %token <string_value> REGOPERAND LABEL FUNCTION_IDENTIFIER
@@ -198,6 +198,10 @@ field:
     | PARAMETER_LOAD {
             //printf("DICE METADATA PARSER: PARAMETER_LOAD\n"); fflush(stdout);
          dicemeta_parser->set_is_parameter_load();
+      }
+    | BARRIER {
+            //printf("DICE METADATA PARSER: BARRIER \n"); fflush(stdout);
+         dicemeta_parser->set_barrier();
       }
     | BITSTREAM_ADDR EQUALS LABEL {
             //printf("DICE METADATA PARSER: BITSTREAM_LABEL = %s\n",$3); fflush(stdout);
