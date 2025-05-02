@@ -684,6 +684,8 @@ class fetch_scheduler{
       return (m_metadata_buffer.m_valid && m_metadata_buffer.m_bitstream_valid==false);
      }
 
+     unsigned get_unrolling_factor();
+
      dice_cfg_block_t* get_current_cfg_block();
      dice_metadata* get_current_metadata();
      dice_block_t *get_dice_block();
@@ -880,7 +882,7 @@ class cgra_unit {
       m_cgra_core = cgra_core;
       m_dispatching_block = block;
       m_dispatched_thread = 0;
-      m_last_dispatched_tid = unsigned(-1);
+      m_last_dispatched_tid.resize(32);
       m_scoreboard = scoreboard;
       m_num_read_access = 0;
       m_num_write_access = 0;
@@ -900,7 +902,7 @@ class cgra_unit {
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
     bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, std::set<unsigned> tids);
-    unsigned next_active_thread();
+    unsigned next_active_thread(unsigned unrolling_factor, unsigned unrolling_index);
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
     bool current_finished() { return (*m_dispatching_block)->dispatch_done(); }
@@ -916,7 +918,7 @@ class cgra_unit {
     cgra_core_ctx *m_cgra_core;
     cgra_block_state_t **m_dispatching_block;
     unsigned m_dispatched_thread;
-    unsigned m_last_dispatched_tid;
+    std::vector<unsigned> m_last_dispatched_tid;
     std::list<unsigned> m_ready_threads;
     Scoreboard *m_scoreboard;
     std::vector<rf_bank_controller*> m_rf_bank_controller;

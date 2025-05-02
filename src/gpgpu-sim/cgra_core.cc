@@ -872,6 +872,10 @@ bool cgra_block_state_t::is_parameter_load(){
   return get_current_metadata()->is_parameter_load;
 }
 
+unsigned cgra_block_state_t::get_unrolling_factor(){
+  return get_current_metadata()->unrolling_factor;
+}
+
 void cgra_block_state_t::inc_store_req() { 
   m_stores_outstanding++;
   if(g_debug_execution==3 &m_cgra_core->get_id() == m_cgra_core->get_dice_trace_sampling_core()){
@@ -1593,36 +1597,116 @@ void dispatcher_rfu_t::dispatch(){
   if ((*m_dispatching_block)->ready_to_dispatch() && !(*m_dispatching_block)->dispatch_done()) {
     //number of dispatch, if parameter load, just dispatch 1 thread.
     unsigned total_need_dispatch = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->active_count();
-    if((m_dispatched_thread+m_ready_threads.size()) < total_need_dispatch){//or use SIMT-stack active count m_cgra_core->m_simt_stack->get_active_mask()->count();
+    unsigned unrolling_factor = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->get_unrolling_factor();
+    if((m_dispatched_thread+m_ready_threads.size()) < total_need_dispatch){
+      std::vector<unsigned> next_ready_threads;
+      std::vector<unsigned> actual_dispatch_threads;
+      next_ready_threads.resize(unrolling_factor);
+      actual_dispatch_threads.resize(unrolling_factor);
+      for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
+        next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index);
+      }
+      //need to check next step with selective dispatch
+      switch(unrolling_factor){
+        case 1: 
+          actual_dispatch_threads[0] = next_ready_threads[0];
+          break;
+        case 2: {
+          if(next_ready_threads[1]-next_ready_threads[0] == 16){
+            //lock step, can dispatch both.
+            actual_dispatch_threads[0] = next_ready_threads[0];
+            actual_dispatch_threads[1] = next_ready_threads[1];
+          } else if (next_ready_threads[1]-next_ready_threads[0] > 16){
+            //dispatcher_pointer 1 is faster, need to wait for 0
+            actual_dispatch_threads[0] = next_ready_threads[0];
+            actual_dispatch_threads[1] = unsigned(-1);
+          } else {
+            //dispatch_pointer 0 is faster, need to wait for 1
+            actual_dispatch_threads[1] = next_ready_threads[1];
+            actual_dispatch_threads[0] = unsigned(-1);
+          }
+          break;
+        }
+        case 4: {
+          unsigned pi_0 = next_ready_threads[0];
+          unsigned pi_1 = next_ready_threads[1]-8;
+          unsigned pi_2 = next_ready_threads[2]-16;
+          unsigned pi_3 = next_ready_threads[3]-24;
+          //dispatch smallest indexes
+          //get smallest index first
+          unsigned min_index = 0;
+          min_index = pi_0 < pi_1 ? pi_0 : pi_1;
+          min_index = min_index < pi_2 ? min_index : pi_2;
+          min_index = min_index < pi_3 ? min_index : pi_3;
+          //dispatch the smallest index
+          actual_dispatch_threads[0] = unsigned(-1);
+          actual_dispatch_threads[1] = unsigned(-1);
+          actual_dispatch_threads[2] = unsigned(-1);
+          actual_dispatch_threads[3] = unsigned(-1);
+          if(pi_0 == min_index){
+            actual_dispatch_threads[0] = next_ready_threads[0];
+          } 
+          if(pi_1 == min_index){
+            actual_dispatch_threads[1] = next_ready_threads[1];
+          } 
+          if(pi_2 == min_index){
+            actual_dispatch_threads[2] = next_ready_threads[2];
+          } 
+          if(pi_3 == min_index){
+            actual_dispatch_threads[3] = next_ready_threads[3];
+          }
+          break;
+        }
+        default:
+          assert(0 && "unrolling factor not supported");
+          break;
+      }
+      //or use SIMT-stack active count m_cgra_core->m_simt_stack->get_active_mask()->count();
       //find next active thread id
-      unsigned tid = next_active_thread();
+      //unsigned tid = next_active_thread(unrolling_factor, unrolling_index);
       //DICE-TODO: simulate read operands for this tid
       //if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
       //  printf("DICE Sim uArch [DISPATCHER]: cycle %d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
       //  fflush(stdout);
       //}
-      if(!exec_stalled()){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
+      //check scoreboard collision
+      bool collision = false;
+      for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
+        unsigned tid = actual_dispatch_threads[unrolling_index];
+        if(tid == unsigned(-1)){
+          continue;
+        }
         unsigned core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
-        if(!m_scoreboard->checkCollision(core_tid, (*m_dispatching_block)->get_current_metadata())){
-          read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
-          if((*m_dispatching_block)->is_parameter_load()){
-            //check active mask
-            unsigned cta_id = (*m_dispatching_block)->get_cta_id();
-            for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
-              if((*m_dispatching_block)->active(t) == true){
-                m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), t+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id()));
+        if(m_scoreboard->checkCollision(core_tid, (*m_dispatching_block)->get_current_metadata())) {
+          collision = true;
+          break;
+        }
+      }
+      if(!exec_stalled() && !collision){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
+        for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
+          unsigned tid = actual_dispatch_threads[unrolling_index];
+          unsigned core_tid = unsigned(-1);
+          if(tid != unsigned(-1)){
+            core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
+            read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
+            if((*m_dispatching_block)->is_parameter_load()){
+              //check active mask
+              unsigned cta_id = (*m_dispatching_block)->get_cta_id();
+              for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
+                if((*m_dispatching_block)->active(t) == true){
+                  m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), t+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id()));
+                }
               }
+            } else {
+              m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), core_tid);
             }
-          } else {
-            m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), core_tid);
-          }
-
-          if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
-            printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
-            fflush(stdout);
+            if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
+              printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+              fflush(stdout);
+            }
+            m_last_dispatched_tid[unrolling_index] = tid;
           }
           m_ready_threads.push_back(core_tid);
-          m_last_dispatched_tid = tid;
         }
       }
     }
@@ -1635,7 +1719,9 @@ void dispatcher_rfu_t::dispatch(){
       }
       (*m_dispatching_block)->set_dispatch_done();
       m_dispatched_thread = 0;
-      m_last_dispatched_tid = unsigned(-1);
+      for(unsigned i = 0; i < m_last_dispatched_tid.size(); i++){
+        m_last_dispatched_tid[i] = unsigned(-1);
+      }
     }
   } else {
     //if(m_cgra_core->get_id()==0 && m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle >1785 && m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle <1790){
@@ -1753,8 +1839,37 @@ bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set
   return true;
 }
 
-unsigned dispatcher_rfu_t::next_active_thread(){
-  unsigned next_tid=m_last_dispatched_tid+1;
+unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigned unrolling_index){
+  unsigned next_tid=m_last_dispatched_tid[unrolling_index]+1;
+  switch(unrolling_factor){
+    case 1:
+      break;
+    case 2:
+      if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
+      else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+      break;
+    case 4:
+      if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8,16,24}
+      else if (next_tid % 8 == 0) next_tid += 24;  // {0,8,16,24}, {1,9,17,25}, {2,10,18,26}, {3,11,19,27},....{7,15,23,31}, {32,40,48,56}, ...
+      break;
+    //case 8:
+    //  if(next_tid == 0) next_tid += 4*unrolling_index; // {0,4,8,12,16,20,24,28}
+    //  else if (next_tid % 4 == 0) next_tid += 28;  // {0,4,8,12,16,20,24,28}, {1,5,9,13,17,21,25,29}, {2,6,10,14,18,22,26,30}, {3,7,11,15,19,23,27,31}, {32,...}
+    //  break;
+    //case 16:
+    //  if(next_tid == 0) next_tid += 2*unrolling_index; // {0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
+    //  else if (next_tid % 2 == 0) next_tid += 30;  // {0,2,...}, {1,3,...}, {4,6,...}, {5,7,...}, {8,10,...}, {9,11,...}, {12,14,...}, {13,15,...}
+    //  break;
+    //case 32:
+    //  if(next_tid == 0) next_tid += unrolling_index; 
+    //  else if (next_tid % 1 == 0) next_tid += 31;  
+    //  break;
+    default:
+      printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
+      fflush(stdout);
+      assert(0 && "unrolling factor not supported, pls use 1,2,4,8,16,32");
+      break;
+  }
   unsigned hw_cta_id = (*m_dispatching_block)->get_cta_id();
   if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
     printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
@@ -1769,6 +1884,35 @@ unsigned dispatcher_rfu_t::next_active_thread(){
       fflush(stdout);
     }
     next_tid++;
+    switch(unrolling_factor){
+      case 1:
+        break;
+      case 2:
+        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
+        else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+        break;
+      case 4:
+        if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8,16,24}
+        else if (next_tid % 8 == 0) next_tid += 24;  // {0,8,16,24}, {1,9,17,25}, {2,10,18,26}, {3,11,19,27},....{7,15,23,31}, {32,40,48,56}, ...
+        break;
+      //case 8:
+      //  if(next_tid == 0) next_tid += 4*unrolling_index; // {0,4,8,12,16,20,24,28}
+      //  else if (next_tid % 4 == 0) next_tid += 28;  // {0,4,8,12,16,20,24,28}, {1,5,9,13,17,21,25,29}, {2,6,10,14,18,22,26,30}, {3,7,11,15,19,23,27,31}, {32,...}
+      //  break;
+      //case 16:
+      //  if(next_tid == 0) next_tid += 2*unrolling_index; // {0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
+      //  else if (next_tid % 2 == 0) next_tid += 30;  // {0,2,...}, {1,3,...}, {4,6,...}, {5,7,...}, {8,10,...}, {9,11,...}, {12,14,...}, {13,15,...}
+      //  break;
+      //case 32:
+      //  if(next_tid == 0) next_tid += unrolling_index; 
+      //  else if (next_tid % 1 == 0) next_tid += 31;  
+      //  break;
+      default:
+        printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
+        fflush(stdout);
+        assert(0 && "unrolling factor not supported, pls use 1,2,4,8,16,32");
+        break;
+    }
     assert(next_tid < m_cgra_core->get_cta_size(hw_cta_id));
   }
   return next_tid;
@@ -2534,15 +2678,19 @@ bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
   //cgra_block->get_current_cfg_block()->pop_mem_access(access->get_ldst_port_num());
   std::set<unsigned> writeback_regs = access.get_ldst_regs();
   std::set<unsigned> tids = access.get_tids();
-  if(m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs,tids)){
-    for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
-      if(m_dispatcher_rfu->writeback_ldst(cgra_block, *it, tids)){
-      } else {
-        assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
+  if(!access.is_write()){
+    if(m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs,tids)){
+      for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+        if(m_dispatcher_rfu->writeback_ldst(cgra_block, *it, tids)){
+        } else {
+          assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
+        }
       }
-    }
+      m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
+    } 
+  } else {
     m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
-  } 
+  }
   //increment writeback or store num
   if(access.is_write()){
     unsigned stores_done_inc = tids.size();
@@ -2559,9 +2707,6 @@ bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
       }
       fflush(stdout);
     }
-  } else {
-    cgra_block->inc_number_of_loads_done();
-    //Writeback
   }
   m_stats->gpgpu_n_shmem_bank_access[m_cgra_core_id]++;
 
