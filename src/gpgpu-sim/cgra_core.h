@@ -94,7 +94,7 @@ class cgra_core_ctx {
     //thread operation
     bool ptx_thread_done(unsigned hw_thread_id) const;
     void execute_CFGBlock(cgra_block_state_t* cfg_block);
-    void execute_1thread_CFGBlock(cgra_block_state_t* cgra_block,unsigned tid);
+    void execute_1thread_CFGBlock(cgra_block_state_t* cgra_block,unsigned tid, unsigned lane_id);
     void checkExecutionStatusAndUpdate(cgra_block_state_t* cfg_block, unsigned tid);
 
     //hardware simulation
@@ -121,7 +121,7 @@ class cgra_core_ctx {
     void fetch_bitstream();
     void decode();
     void execute();
-    void exec(unsigned tid);
+    void exec(unsigned tid, unsigned lane_id);
     //inner pipeline in execute();
     void dispatch();
     void cgra_execute_block();
@@ -785,28 +785,32 @@ class cgra_unit {
       is_busy = false;
       stalled_by_ldst_unit_queue_full = false;
       stalled_by_wb_buffer_full = false;
-      for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
-        shift_registers[i] = unsigned(-1);
+      for(unsigned lane_id=0;lane_id<4;lane_id++){
+        for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
+          shift_registers[lane_id][i] = unsigned(-1);
+        }
       }
       m_num_executed_thread = 0;
    }
    void flush_pipeline() {
-      for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
-        shift_registers[i] = unsigned(-1);
+      for(unsigned lane_id=0;lane_id<4;lane_id++){
+        for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
+          shift_registers[lane_id][i] = unsigned(-1);
+        }
       }
       m_num_executed_thread = 0;
    }
-   void exec(unsigned tid) {
-    shift_registers[0]=tid;
+   void exec(unsigned tid, unsigned lane_id) {
+    shift_registers[lane_id][0]=tid;
    }
    void cycle();
    void set_latency(unsigned l) { assert(l<MAX_CGRA_FABRIC_LATENCY); m_latency = l; }
-   unsigned out_tid() {
-      return shift_registers[m_latency];
+   unsigned out_tid(unsigned lane_id) {
+      return shift_registers[lane_id][m_latency];
    }
-   unsigned out_valid() {
+   unsigned out_valid(unsigned lane_id) {
       if(stalled()) return false;
-      return out_tid() != unsigned(-1);
+      return out_tid(lane_id) != unsigned(-1);
    }
  
    // accessors
@@ -830,7 +834,7 @@ class cgra_unit {
    std::string m_name;
    cgra_core_ctx *m_cgra_core;
    const shader_core_config *m_config; //DICE-TODO: need to change to cgra_core_config or dice_config;
-   unsigned shift_registers[MAX_CGRA_FABRIC_LATENCY]; //storing thread id
+   unsigned shift_registers[4][MAX_CGRA_FABRIC_LATENCY]; //storing thread id
    bool is_busy;
    cgra_block_state_t **m_executing_block;
    bool stalled_by_wb_buffer_full;
@@ -882,10 +886,12 @@ class cgra_unit {
       m_cgra_core = cgra_core;
       m_dispatching_block = block;
       m_dispatched_thread = 0;
-      m_last_dispatched_tid.resize(32);
+      m_dispatched_bubble_count = 0;
+      m_last_dispatched_tid.resize(4);
       m_scoreboard = scoreboard;
       m_num_read_access = 0;
       m_num_write_access = 0;
+      m_ready_threads.resize(4);
       init_rf_bank_controller();
     }
     void init_rf_bank_controller(){
@@ -910,16 +916,25 @@ class cgra_unit {
     const shader_core_config *get_config() { return m_config; }
     bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
-    bool can_writeback_ldst_reg(unsigned reg_num, unsigned count);
+    bool can_writeback_ldst_reg(unsigned reg_num, unsigned count, unsigned tid);
     bool can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids);
+    unsigned get_actual_dispatched_count(){
+      unsigned real_dispatched_count = m_dispatched_thread;
+      for(unsigned i = 0; i < m_ready_threads.size(); i++) {
+        real_dispatched_count+=m_ready_threads[i].size();
+      }
+      real_dispatched_count -= m_dispatched_bubble_count;
+      return real_dispatched_count;
+    }
 
   private:
     const shader_core_config *m_config;
     cgra_core_ctx *m_cgra_core;
     cgra_block_state_t **m_dispatching_block;
     unsigned m_dispatched_thread;
+    unsigned m_dispatched_bubble_count;
     std::vector<unsigned> m_last_dispatched_tid;
-    std::list<unsigned> m_ready_threads;
+    std::vector<std::list<unsigned>> m_ready_threads;
     Scoreboard *m_scoreboard;
     std::vector<rf_bank_controller*> m_rf_bank_controller;
 
@@ -1123,4 +1138,7 @@ class cgra_unit {
     unsigned enable_temporal_coaleascing;
     unsigned temporal_coalescing_interval;
  };
+
+
+unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid);
 #endif

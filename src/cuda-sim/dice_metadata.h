@@ -260,7 +260,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
-    void generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg);
+    void generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
 
     bool accessq_empty() const {
       for(unsigned i=0; i<MAX_LDST_UNIT_PORTS; i++){

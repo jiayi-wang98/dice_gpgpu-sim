@@ -416,7 +416,11 @@ address_type line_size_based_tag_func_cgra(new_addr_type address,
   return address & ~(line_size - 1);
 }
 
-void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg) {
+void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id) {
+  assert(lane_id<unrolling_factor);
+  unsigned ldst_port_shift = 0;
+  ldst_port_shift = MAX_LDST_UNIT_PORTS/2/unrolling_factor*lane_id;
+
   std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
   std::map<new_addr_type, dice_transaction_info> wr_transactions;  // each block addr maps to a list of transactions
   unsigned request_count = 0;
@@ -499,6 +503,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
                 assert(get_metadata()->is_parameter_load && "number of ld or st in a block larger than number of cgra ld/st ports!");
                 port_index = port_index % (MAX_LDST_UNIT_PORTS/2);
               }
+              port_index += ldst_port_shift;
               std::set<unsigned> ld_dest_regs;
               ld_dest_regs.insert(ld_dest_reg);
               std::set<unsigned> tids;
@@ -512,6 +517,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
         } else {
           //put them in different ports(4-7)
           unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          port_index += ldst_port_shift;
           assert(port_index < MAX_LDST_UNIT_PORTS);
           std::set<unsigned> ld_dest_regs;
           ld_dest_regs.insert(ld_dest_reg);
@@ -529,6 +535,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
+              port_index += ldst_port_shift;
               assert(port_index < (MAX_LDST_UNIT_PORTS/2));
               //if(port_index >= (MAX_LDST_UNIT_PORTS/2)){
               //  assert(get_metadata()->is_parameter_load);
@@ -547,6 +554,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
         } else {
           //put them in different ports(4-7)
           unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          port_index += ldst_port_shift;
           assert(port_index < MAX_LDST_UNIT_PORTS);
           std::set<unsigned> ld_dest_regs;
           ld_dest_regs.insert(ld_dest_reg);
@@ -593,6 +601,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
           for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
+              port_index += ldst_port_shift;
               assert(port_index < (MAX_LDST_UNIT_PORTS/2));
               info.ld_dest_regs.insert(ld_dest_reg);
               info.port_idx.insert(port_index);
@@ -605,6 +614,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
         } else {
           //put them in different ports(4-7)
           unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+          port_index += ldst_port_shift;
           assert(port_index < MAX_LDST_UNIT_PORTS);
           info.ld_dest_regs.insert(ld_dest_reg);
           info.port_idx.insert(port_index);
@@ -647,6 +657,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
               for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
                 if(it->reg_num() == ld_dest_reg){
                   unsigned port_index = i;
+                  port_index += ldst_port_shift;
                   assert(port_index < (MAX_LDST_UNIT_PORTS/2));
                   info.ld_dest_regs.insert(ld_dest_reg);
                   info.port_idx.insert(port_index);
@@ -659,6 +670,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
             } else {
               //put them in different ports(4-7)
               unsigned port_index = num_stores  + (MAX_LDST_UNIT_PORTS/2);
+              port_index += ldst_port_shift;
               assert(port_index < MAX_LDST_UNIT_PORTS);
               info.ld_dest_regs.insert(ld_dest_reg);
               info.port_idx.insert(port_index);

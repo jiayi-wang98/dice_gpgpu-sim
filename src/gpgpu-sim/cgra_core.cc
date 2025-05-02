@@ -144,8 +144,9 @@ bool cgra_core_ctx::ldst_unit_response_buffer_full() const{
   return m_ldst_unit->response_buffer_full();
 }
 
-void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, unsigned tid) {
+void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, unsigned tid, unsigned lane_id) {
   dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
+  unsigned unrolling_factor = cgra_block->get_unrolling_factor();
   if(cgra_block->is_parameter_load()){
     for (unsigned t = 0; t < m_kernel_block_size; t++) {
       unsigned core_tid=t+get_cta_start_tid(cgra_block->get_cta_id());
@@ -157,7 +158,7 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
         //only generate one memory accesses 
         if(core_tid==tid) {
           std::list<unsigned> masked_ops_reg;
-          cfg_block->generate_mem_accesses(t,masked_ops_reg);
+          cfg_block->generate_mem_accesses(t,masked_ops_reg, unrolling_factor, lane_id);
           //push mem_access to ldst_unit's queue
           m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
         }
@@ -169,7 +170,11 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
       }
     }
   } else {
-    unsigned local_tid = tid - get_cta_start_tid(cgra_block->get_cta_id());
+    unsigned cta_tid_offset = get_cta_start_tid(cgra_block->get_cta_id());
+    unsigned local_tid = tid - cta_tid_offset;
+    if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
+      printf("DICE-Sim DEBUG: cycle %d, cgra_core %u executing thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_core_id, local_tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
+    }
     if (cfg_block->active(local_tid)) {
       if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
         printf("DICE-Sim Functional: cycle %d, cgra_core %u executed thread %u run dice-block %d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_core_id, local_tid,m_cgra_block_state[DP_CGRA]->get_current_cfg_block()->get_metadata()->meta_id);
@@ -177,7 +182,7 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
       m_thread[tid]->dice_exec_block(cfg_block,local_tid);
       //generate memory accesses to ldst unit
       std::list<unsigned> masked_ops_reg;
-      cfg_block->generate_mem_accesses(local_tid,masked_ops_reg);
+      cfg_block->generate_mem_accesses(local_tid,masked_ops_reg, unrolling_factor, lane_id);
       //push mem_access to ldst_unit's queue
       m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
       //release masked scoreboard record
@@ -1322,16 +1327,18 @@ void cgra_core_ctx::writeback(){
   }
 
   //register writeback
-  if(m_cgra_unit->out_valid()){//not stalled
-    m_cgra_unit->inc_num_executed_thread();
-    unsigned tid=m_cgra_unit->out_tid();
-    execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA], tid);
-    //check if bank conflict with writeback request from ldst unit, if yes, then writeback to writeback_buffer
-    m_dispatcher_rfu->writeback_cgra(m_cgra_block_state[DP_CGRA],tid);//TODO
-    //move to dispatcher to check if bankconflict
-    //m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
-    //move to m_dispatcher_rfu->writeback_ldst
-    //m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+  for(unsigned lane_id=0; lane_id < 4; lane_id++){
+    if(m_cgra_unit->out_valid(lane_id)){//not stalled
+      m_cgra_unit->inc_num_executed_thread();
+      unsigned tid=m_cgra_unit->out_tid(lane_id);
+      execute_1thread_CFGBlock(m_cgra_block_state[DP_CGRA], tid, lane_id);
+      //check if bank conflict with writeback request from ldst unit, if yes, then writeback to writeback_buffer
+      m_dispatcher_rfu->writeback_cgra(m_cgra_block_state[DP_CGRA],tid);//TODO
+      //move to dispatcher to check if bankconflict
+      //m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+      //move to m_dispatcher_rfu->writeback_ldst
+      //m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+    }
   }
   //cycle every RF bank
   m_dispatcher_rfu->rf_cycle();
@@ -1410,8 +1417,10 @@ void perfect_memory_interface::push_cgra(mem_fetch *mf) {
 
 void cgra_unit::print() const {
   printf("%s CGRA pipeline (current latency = %d, is_busy = %d):  ", m_name.c_str(),m_latency,is_busy);
-  for(unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++){
-    printf("%d ", shift_registers[i]);
+  for(unsigned lane_id = 0; lane_id < 4; lane_id++){
+    for(unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++){
+      printf("%d ", shift_registers[lane_id][i]);
+    }
   }
   printf("\n");
   fflush(stdout);
@@ -1423,15 +1432,20 @@ void cgra_unit::cycle(){
     is_busy = true;
     return;
   }
-  for (unsigned i = MAX_CGRA_FABRIC_LATENCY-1; i > 0; i--) {
-    shift_registers[i] = shift_registers[i - 1];
+  for(unsigned lane_id = 0; lane_id < 4; lane_id++){
+    for (unsigned i = MAX_CGRA_FABRIC_LATENCY-1; i > 0; i--) {
+      shift_registers[lane_id][i] = shift_registers[lane_id][i - 1];
+    }
   }
   //shift_registers[0] = unsigned(-1); //will be modified later
   is_busy = false;
-  for(unsigned i = 0; i < m_latency+1; i++){
-    if(shift_registers[i] != unsigned(-1)){
-      is_busy = true;
-      break;
+  for(unsigned lane_id = 0; lane_id < 4; lane_id++){
+    for(unsigned i = 0; i < m_latency+1; i++){
+      if(shift_registers[lane_id][i] != unsigned(-1)){
+        is_busy = true;
+        break;
+      }
+      if(is_busy) break;
     }
   }
   if(g_debug_execution==3 &m_cgra_core->get_id() == m_cgra_core->get_dice_trace_sampling_core()){
@@ -1445,8 +1459,10 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
   m_name = "CGRA_default";
   m_executing_block = block;
   m_cgra_core = cgra_core;
-  for (unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++) {
-    shift_registers[i] = unsigned(-1); //unsigned(-1) means empty/invalid
+  for (unsigned lane_id = 0; lane_id <4; lane_id++){
+    for (unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++) {
+      shift_registers[lane_id][i] = unsigned(-1); //unsigned(-1) means empty/invalid
+    }
   }
   m_latency = MAX_CGRA_FABRIC_LATENCY-1;
   stalled_by_ldst_unit_queue_full = false;
@@ -1456,8 +1472,8 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
   reinit();
 }
 
-void cgra_core_ctx::exec(unsigned tid){
-  m_cgra_unit->exec(tid);
+void cgra_core_ctx::exec(unsigned tid, unsigned lane_id){
+  m_cgra_unit->exec(tid, lane_id);
   //run function simulation here
   //move to when cgra out valid.
   if(tid != unsigned(-1)){
@@ -1522,14 +1538,19 @@ void rf_bank_controller::cycle(){
 bool dispatcher_rfu_t::writeback_buffer_full(dice_metadata* metadata) const {
   //check if the writeback buffer is full for each direct register writeback
   //get reg_num from metadata
-  for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
-    unsigned reg_num = (*it).reg_num();
-    if(reg_num >= m_rf_bank_controller.size()){
-      printf("DICE Sim uArch [ERROR]: cycle %d, hw_cta=%d, reg_num %d larger than max_number of RF banks = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id(), reg_num,m_rf_bank_controller.size());
-      fflush(stdout);
-      assert(reg_num < m_rf_bank_controller.size());
-    }
-    if(m_rf_bank_controller[reg_num]->wb_buffer_full()){
+  //for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+  //  unsigned reg_num = (*it).reg_num();
+  //  if(reg_num >= m_rf_bank_controller.size()){
+  //    printf("DICE Sim uArch [ERROR]: cycle %d, hw_cta=%d, reg_num %d larger than max_number of RF banks = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id(), reg_num,m_rf_bank_controller.size());
+  //    fflush(stdout);
+  //    assert(reg_num < m_rf_bank_controller.size());
+  //  }
+  //  if(m_rf_bank_controller[reg_num]->wb_buffer_full()){
+  //    return true;
+  //  }
+  //}
+  for(unsigned bank_id = 0; bank_id < m_rf_bank_controller.size(); bank_id++){
+    if(m_rf_bank_controller[bank_id]->wb_buffer_full()){
       return true;
     }
   }
@@ -1538,20 +1559,22 @@ bool dispatcher_rfu_t::writeback_buffer_full(dice_metadata* metadata) const {
 
 void dispatcher_rfu_t::dispatch(){
   //send to execute in ready buffer
-  if(m_ready_threads.size() > 0){
-    if(!exec_stalled()){
-      unsigned tid = m_ready_threads.front();
-      if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
-        printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id(), tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
-        fflush(stdout);
+  for(unsigned lane_id = 0; lane_id < 4; lane_id++){
+    if(m_ready_threads[lane_id].size() > 0){
+      if(!exec_stalled()){
+        unsigned tid = m_ready_threads[lane_id].front();
+        if(tid!=unsigned(-1) && g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
+          printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, lane_id= %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id(), lane_id, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+          fflush(stdout);
+        }
+        m_ready_threads[lane_id].pop_front();
+        m_cgra_core->exec(tid,lane_id);//issue thread to cgra unit
+        m_dispatched_thread++;
+      } 
+    } else {
+      if(!exec_stalled()) {
+        m_cgra_core->exec(unsigned(-1),lane_id);//issue nop to cgra unit
       }
-      m_ready_threads.pop_front();
-      m_cgra_core->exec(tid);//issue thread to cgra unit
-      m_dispatched_thread++;
-    } 
-  } else {
-    if(!exec_stalled()) {
-      m_cgra_core->exec(unsigned(-1));//issue nop to cgra unit
     }
   }
 
@@ -1598,32 +1621,55 @@ void dispatcher_rfu_t::dispatch(){
     //number of dispatch, if parameter load, just dispatch 1 thread.
     unsigned total_need_dispatch = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->active_count();
     unsigned unrolling_factor = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->get_unrolling_factor();
-    if((m_dispatched_thread+m_ready_threads.size()) < total_need_dispatch){
+    //calculating current dispatched thread count
+    unsigned real_dispatched_count = get_actual_dispatched_count();
+    if(real_dispatched_count < total_need_dispatch){
       std::vector<unsigned> next_ready_threads;
       std::vector<unsigned> actual_dispatch_threads;
       next_ready_threads.resize(unrolling_factor);
-      actual_dispatch_threads.resize(unrolling_factor);
+      actual_dispatch_threads.resize(4);
+      actual_dispatch_threads[0] = unsigned(-1);
+      actual_dispatch_threads[1] = unsigned(-1);
+      actual_dispatch_threads[2] = unsigned(-1);
+      actual_dispatch_threads[3] = unsigned(-1);
       for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
         next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index);
       }
+      //check no active threads error
+      bool no_active_thread = false;
+      for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
+        if(next_ready_threads[unrolling_index] == unsigned(-1)){
+          no_active_thread = true;
+          break;
+        }
+      }
+      if(no_active_thread && real_dispatched_count < total_need_dispatch){
+        printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
+        printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
+        fflush(stdout);
+      }
+      
       //need to check next step with selective dispatch
       switch(unrolling_factor){
         case 1: 
           actual_dispatch_threads[0] = next_ready_threads[0];
           break;
         case 2: {
-          if(next_ready_threads[1]-next_ready_threads[0] == 16){
+          if(next_ready_threads[0]==unsigned(-1) || next_ready_threads[1]==unsigned(-1)){
+            //if not all has valid threads id, then whoever has valid id, dispatch
+            actual_dispatch_threads[0] = next_ready_threads[0];
+            actual_dispatch_threads[1] = next_ready_threads[1];
+          }
+          else if(next_ready_threads[1]-next_ready_threads[0] == 16){
             //lock step, can dispatch both.
             actual_dispatch_threads[0] = next_ready_threads[0];
             actual_dispatch_threads[1] = next_ready_threads[1];
           } else if (next_ready_threads[1]-next_ready_threads[0] > 16){
             //dispatcher_pointer 1 is faster, need to wait for 0
             actual_dispatch_threads[0] = next_ready_threads[0];
-            actual_dispatch_threads[1] = unsigned(-1);
           } else {
             //dispatch_pointer 0 is faster, need to wait for 1
             actual_dispatch_threads[1] = next_ready_threads[1];
-            actual_dispatch_threads[0] = unsigned(-1);
           }
           break;
         }
@@ -1639,10 +1685,6 @@ void dispatcher_rfu_t::dispatch(){
           min_index = min_index < pi_2 ? min_index : pi_2;
           min_index = min_index < pi_3 ? min_index : pi_3;
           //dispatch the smallest index
-          actual_dispatch_threads[0] = unsigned(-1);
-          actual_dispatch_threads[1] = unsigned(-1);
-          actual_dispatch_threads[2] = unsigned(-1);
-          actual_dispatch_threads[3] = unsigned(-1);
           if(pi_0 == min_index){
             actual_dispatch_threads[0] = next_ready_threads[0];
           } 
@@ -1683,8 +1725,8 @@ void dispatcher_rfu_t::dispatch(){
         }
       }
       if(!exec_stalled() && !collision){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
-        for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
-          unsigned tid = actual_dispatch_threads[unrolling_index];
+        for(unsigned lane_id=0;lane_id<4;lane_id++){
+          unsigned tid = actual_dispatch_threads[lane_id];
           unsigned core_tid = unsigned(-1);
           if(tid != unsigned(-1)){
             core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
@@ -1704,9 +1746,11 @@ void dispatcher_rfu_t::dispatch(){
               printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
               fflush(stdout);
             }
-            m_last_dispatched_tid[unrolling_index] = tid;
+            m_last_dispatched_tid[lane_id] = tid;
+          } else {
+            m_dispatched_bubble_count++;
           }
-          m_ready_threads.push_back(core_tid);
+          m_ready_threads[lane_id].push_back(core_tid);
         }
       }
     }
@@ -1719,6 +1763,7 @@ void dispatcher_rfu_t::dispatch(){
       }
       (*m_dispatching_block)->set_dispatch_done();
       m_dispatched_thread = 0;
+      m_dispatched_bubble_count = 0;
       for(unsigned i = 0; i < m_last_dispatched_tid.size(); i++){
         m_last_dispatched_tid[i] = unsigned(-1);
       }
@@ -1751,26 +1796,31 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid);
     //check if the writeback register is valid
     if(all_valid) {
-      assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
-      //push to writeback buffer
-      m_rf_bank_controller[reg_num]->push_to_cgra_wb_buffer(tid,block);
+      if(bank_id<32){
+        assert(m_rf_bank_controller[bank_id]->wb_buffer_full() == false);
+        //push to writeback buffer
+        m_rf_bank_controller[bank_id]->push_to_cgra_wb_buffer(tid,block);
+      }
       num_writeback++;
       m_cgra_core->incregfile_writes(1);
     } else {
       //check if the register is in the invalid register set
       std::set<unsigned>::iterator it_invalid = invalid_regs.find(reg_num);
       if(it_invalid == invalid_regs.end()){
-        assert(m_rf_bank_controller[reg_num]->wb_buffer_full() == false);
-        //push to writeback buffer
-        m_rf_bank_controller[reg_num]->push_to_cgra_wb_buffer(tid,block);
+        if(bank_id<32){
+          assert(m_rf_bank_controller[bank_id]->wb_buffer_full() == false);
+          //push to writeback buffer
+          m_rf_bank_controller[bank_id]->push_to_cgra_wb_buffer(tid,block);
+        }
         num_writeback++;
         m_cgra_core->incregfile_writes(1);
       } else {
         //do not push to writeback buffer
         if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
-          printf("DICE Sim uArch [WRITEBACK_INVALID]: cycle %d, core %d, RF bank %d is invalid for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num ,tid);
+          printf("DICE Sim uArch [WRITEBACK_INVALID]: cycle %d, core %d, reg %d, RF bank %d is invalid for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num, bank_id ,tid);
           fflush(stdout);
         }
       }
@@ -1788,10 +1838,10 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, std::set<unsigned> tids){
   for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
     unsigned tid = *it;
-    if(m_rf_bank_controller[reg_num]->ldst_buffer_full() == false){
-      //push to writeback buffer
-      m_rf_bank_controller[reg_num]->push_to_ldst_wb_buffer(tid,block);
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid);
+    if(m_rf_bank_controller[bank_id]->ldst_buffer_full() == false){
       if(block->is_parameter_load()){
+        assert(bank_id >=32);//constant memory, not gpr memory
         unsigned cta_id = block->get_cta_id();
         for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
           if(block->active(t) == true) 
@@ -1805,6 +1855,10 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
         unsigned hw_tid_offset = m_cgra_core->get_cta_start_tid(block->get_cta_id());
         m_scoreboard->releaseRegisterFromLoad(hw_tid_offset+tid, reg_num);
         m_cgra_core->incregfile_writes(1);
+      }
+      if(bank_id < 32){
+        //push to writeback buffer
+        m_rf_bank_controller[bank_id]->push_to_ldst_wb_buffer(tid,block);
       }
       //increase load writeback counter
       block->inc_number_of_loads_done();
@@ -1822,8 +1876,9 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
   return true;
 }
 
-bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned reg_num, unsigned count){
-  if(m_rf_bank_controller[reg_num]->ldst_buffer_credit() >= count){
+bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned reg_num, unsigned count, unsigned tid){
+  unsigned bank_id = reg_number_to_bank_mapping(reg_num, tid);
+  if(m_rf_bank_controller[bank_id]->ldst_buffer_credit() >= count){
     return true;
   }
   return false;
@@ -1832,7 +1887,7 @@ bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned reg_num, unsigned count){
 bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids){
   unsigned count = tids.size();
   for(std::set<unsigned>::iterator it = regs.begin(); it != regs.end(); ++it){
-    if(can_writeback_ldst_reg(*it,count) == false){
+    if(can_writeback_ldst_reg(*it,count,*it) == false){
       return false;
     }
   }
@@ -1873,14 +1928,14 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
   unsigned hw_cta_id = (*m_dispatching_block)->get_cta_id();
   if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
     printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
-    printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",m_dispatched_thread+m_ready_threads.size(), (*m_dispatching_block)->active_count());
+    printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
     fflush(stdout);
     assert(0);
   }
   while((*m_dispatching_block)->active(next_tid) == false){
     if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)-1){
-      printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
-      printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",m_dispatched_thread+m_ready_threads.size(), (*m_dispatching_block)->active_count());
+      printf("DICE-Sim uArch: [Warning] cycle %d, core %d, no more active thread found in the block in lane = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_index);
+      printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
       fflush(stdout);
     }
     next_tid++;
@@ -1913,7 +1968,12 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
         assert(0 && "unrolling factor not supported, pls use 1,2,4,8,16,32");
         break;
     }
-    assert(next_tid < m_cgra_core->get_cta_size(hw_cta_id));
+    if(unrolling_factor == 1){
+      assert(next_tid < m_cgra_core->get_cta_size(hw_cta_id));
+    }
+    if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
+      return unsigned(-1);
+    }
   }
   return next_tid;
 }
@@ -3423,4 +3483,19 @@ unsigned fetch_scheduler::next_fetch_block(){
   }
   
   return unsigned(-1);
+}
+
+unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
+  bool gpr;
+  if(reg_number<=32) { //constant registers
+    gpr = false;
+  }
+  else if (reg_number>64) { //predicate registers
+    gpr = false;
+  }
+  else { //general purpose registers
+    gpr = true;
+  }
+  if(gpr) return ((reg_number-1)+tid)%32; //swizzling arrangement
+  else return 32;
 }
