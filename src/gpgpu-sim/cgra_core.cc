@@ -1636,10 +1636,10 @@ void dispatcher_rfu_t::dispatch(){
         next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index);
       }
       //check no active threads error
-      bool no_active_thread = false;
+      bool no_active_thread = true;
       for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
-        if(next_ready_threads[unrolling_index] == unsigned(-1)){
-          no_active_thread = true;
+        if(next_ready_threads[unrolling_index] != unsigned(-1)){
+          no_active_thread = false;
           break;
         }
       }
@@ -1647,6 +1647,7 @@ void dispatcher_rfu_t::dispatch(){
         printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
         printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
         fflush(stdout);
+        assert(0 && "no more active thread found in the block");
       }
       
       //need to check next step with selective dispatch
@@ -1655,22 +1656,35 @@ void dispatcher_rfu_t::dispatch(){
           actual_dispatch_threads[0] = next_ready_threads[0];
           break;
         case 2: {
-          if(next_ready_threads[0]==unsigned(-1) || next_ready_threads[1]==unsigned(-1)){
-            //if not all has valid threads id, then whoever has valid id, dispatch
+          //if(next_ready_threads[0]==unsigned(-1) || next_ready_threads[1]==unsigned(-1)){
+          //  //if not all has valid threads id, then whoever has valid id, dispatch
+          //  actual_dispatch_threads[0] = next_ready_threads[0];
+          //  actual_dispatch_threads[1] = next_ready_threads[1];
+          //}
+          //else if(next_ready_threads[1]-next_ready_threads[0] == 16){
+          //  //lock step, can dispatch both.
+          //  actual_dispatch_threads[0] = next_ready_threads[0];
+          //  actual_dispatch_threads[1] = next_ready_threads[1];
+          //} else if (next_ready_threads[1]-next_ready_threads[0] > 16){
+          //  //dispatcher_pointer 1 is faster, need to wait for 0
+          //  actual_dispatch_threads[0] = next_ready_threads[0];
+          //} else {
+          //  //dispatch_pointer 0 is faster, need to wait for 1
+          //  actual_dispatch_threads[1] = next_ready_threads[1];
+          //}
+          unsigned pi_0 = next_ready_threads[0];
+          unsigned pi_1 = next_ready_threads[1]-16;
+          //dispatch smallest indexes
+          //get smallest index first
+          unsigned min_index = 0;
+          min_index = pi_0 < pi_1 ? pi_0 : pi_1;
+          //dispatch the smallest index
+          if(pi_0 == min_index){
             actual_dispatch_threads[0] = next_ready_threads[0];
+          } 
+          if(pi_1 == min_index){
             actual_dispatch_threads[1] = next_ready_threads[1];
-          }
-          else if(next_ready_threads[1]-next_ready_threads[0] == 16){
-            //lock step, can dispatch both.
-            actual_dispatch_threads[0] = next_ready_threads[0];
-            actual_dispatch_threads[1] = next_ready_threads[1];
-          } else if (next_ready_threads[1]-next_ready_threads[0] > 16){
-            //dispatcher_pointer 1 is faster, need to wait for 0
-            actual_dispatch_threads[0] = next_ready_threads[0];
-          } else {
-            //dispatch_pointer 0 is faster, need to wait for 1
-            actual_dispatch_threads[1] = next_ready_threads[1];
-          }
+          } 
           break;
         }
         case 4: {
@@ -1743,7 +1757,7 @@ void dispatcher_rfu_t::dispatch(){
               m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), core_tid);
             }
             if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
-              printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
+              printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d, lane_id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id,lane_id);
               fflush(stdout);
             }
             m_last_dispatched_tid[lane_id] = tid;
@@ -1927,13 +1941,14 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
   }
   unsigned hw_cta_id = (*m_dispatching_block)->get_cta_id();
   if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
-    printf("DICE-Sim uArch: [Error] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
+    printf("DICE-Sim uArch: [Warning] cycle %d, core %d, no more active thread found in the block\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id());
     printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
     fflush(stdout);
+    //return unsigned(-1);
     assert(0);
   }
   while((*m_dispatching_block)->active(next_tid) == false){
-    if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)-1){
+    if(next_tid >= m_cgra_core->get_cta_size(hw_cta_id)){
       printf("DICE-Sim uArch: [Warning] cycle %d, core %d, no more active thread found in the block in lane = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_index);
       printf("DICE-Sim uArch: current dispatched number = %d, need total = %d \n",get_actual_dispatched_count(), (*m_dispatching_block)->active_count());
       fflush(stdout);
