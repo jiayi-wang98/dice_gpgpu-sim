@@ -654,7 +654,8 @@ void cgra_core_ctx::fetch_metadata(){
     if (m_L1I->access_ready()) { //if the instruction cache is ready to be accessed (i.e. there are data responses)
       mem_fetch *mf = m_L1I->next_access(); //get response from the instruction cache
       if(m_cgra_block_state[MF_DE]->dummy() || m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
-        assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
+        //Note: it's possible that when addresses dont match but the current one is still a prefetch block from other CTAs.
+        //assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
         //printf("DICE Sim uArch [PREFETCH_META_DISCARD]: Cycle %d, hw_cta=%d ,Block=%d, pc=0x%04x, fetched_pc=0x%04x\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_metadata_pc(),mf->get_addr());
         //fflush(stdout);
       } else {
@@ -943,9 +944,11 @@ void cgra_core_ctx::fetch_bitstream(){
       mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
       //when previous kernel mis predict and still have outstanding bitstream fetch request
       if(m_cgra_block_state[MF_DE]->decode_done()==false || m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
-        assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
-        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Cycle %d, hw_cta=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
+        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Core %d, Cycle %d, hw_cta=%d\n",m_cgra_core_id, m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
+        printf("m_cgra_block_state[MF_DE]->decode_done()=%d, (mf->get_addr()-PROGRAM_MEM_START)=%d",m_cgra_block_state[MF_DE]->decode_done(),(mf->get_addr()-PROGRAM_MEM_START));
         fflush(stdout);
+        //note: it's possible that after misprediction, the next block is still a prefetch block from another CTA. This assert no longer needed
+        //assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
       } else {
         m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
         m_bitstream_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_bitstream_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
