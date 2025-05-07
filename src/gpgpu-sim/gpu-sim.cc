@@ -1390,6 +1390,7 @@ void gpgpu_sim::gpu_print_stat() {
 
   m_shader_stats->print(stdout);
   m_shader_stats->print_regfile_stats(stdout);
+  printf("Core_time = %f\n", core_time);
   
 #ifdef GPGPUSIM_POWER_MODEL
   if (m_config.g_power_simulation_enabled) {

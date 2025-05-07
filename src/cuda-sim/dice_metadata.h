@@ -196,7 +196,6 @@ struct dice_block_t {
 void dice_metadata_assemble(std::string kname, void *kinfo);
 
 
-#define MAX_LDST_UNIT_PORTS 8
 //for performance simulation
 class dice_cfg_block_t{
   public:
@@ -231,6 +230,9 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].memreqaddr[0] = addr;
       m_per_scalar_thread[n].count++;
     }
+
+    unsigned get_ldst_port_num();
+
     void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0, unsigned enable = 1) {
       if (!m_per_scalar_thread_valid) {
         m_per_scalar_thread.resize(m_block_size);
@@ -262,8 +264,8 @@ class dice_cfg_block_t{
     dice_metadata *get_metadata() { return m_metadata; }
     void generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
 
-    bool accessq_empty() const {
-      for(unsigned i=0; i<MAX_LDST_UNIT_PORTS; i++){
+    bool accessq_empty(){
+      for(unsigned i=0; i<get_ldst_port_num(); i++){
         if(!m_accessq[i].empty()) return false;
       }
       return true;
@@ -281,7 +283,7 @@ class dice_cfg_block_t{
         return;
       else {
         printf("Printing mem access generated\n");
-        for(int i=0;i<MAX_LDST_UNIT_PORTS;i++){
+        for(int i=0;i<get_ldst_port_num();i++){
           if(m_accessq[i].empty()) continue;
           printf("LDST Unit: Port %d\n",i);
           std::list<mem_access_t>::iterator it;
