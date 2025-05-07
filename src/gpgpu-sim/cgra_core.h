@@ -916,7 +916,7 @@ class cgra_unit {
     const shader_core_config *get_config() { return m_config; }
     bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
-    bool can_writeback_ldst_reg(unsigned reg_num, unsigned count, unsigned tid);
+    bool can_writeback_ldst_reg(unsigned bank_id, unsigned count);
     bool can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids);
     unsigned get_actual_dispatched_count(){
       unsigned real_dispatched_count = m_dispatched_thread;

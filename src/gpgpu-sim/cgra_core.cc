@@ -1692,9 +1692,9 @@ void dispatcher_rfu_t::dispatch(){
         }
         case 4: {
           unsigned pi_0 = next_ready_threads[0];
-          unsigned pi_1 = next_ready_threads[1]-8;
-          unsigned pi_2 = next_ready_threads[2]-16;
-          unsigned pi_3 = next_ready_threads[3]-24;
+          unsigned pi_1 = next_ready_threads[1]-16;
+          unsigned pi_2 = next_ready_threads[2]-32;
+          unsigned pi_3 = next_ready_threads[3]-48;
           //dispatch smallest indexes
           //get smallest index first
           unsigned min_index = 0;
@@ -1885,7 +1885,7 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
       }
     }
     else if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
-      printf("DICE-Sim: [WRITEBACK]: cycle %d, core %d, RF bank %d conflict from ldst_unit for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num ,tid);
+      printf("DICE-Sim: [WRITEBACK]: cycle %d, core %d, reg_num %d, RF bank %d conflict from ldst_unit for tid=%d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num, bank_id ,tid);
       fflush(stdout);
       return false;
     }
@@ -1893,8 +1893,7 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
   return true;
 }
 
-bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned reg_num, unsigned count, unsigned tid){
-  unsigned bank_id = reg_number_to_bank_mapping(reg_num, tid);
+bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned bank_id, unsigned count){
   if(m_rf_bank_controller[bank_id]->ldst_buffer_credit() >= count){
     return true;
   }
@@ -1902,9 +1901,25 @@ bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned reg_num, unsigned count, 
 }
 
 bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids){
-  unsigned count = tids.size();
+  std::map<unsigned, unsigned> bank_id_count_map;
+  //initialize bank_id_count_map
+  for(unsigned i = 0; i < m_rf_bank_controller.size(); i++){
+    bank_id_count_map[i] = 0;
+  }
+  //count the number of registers writes in each bank
   for(std::set<unsigned>::iterator it = regs.begin(); it != regs.end(); ++it){
-    if(can_writeback_ldst_reg(*it,count,*it) == false){
+    unsigned reg_num = *it;
+    for (std::set<unsigned>::iterator tid = tids.begin(); tid != tids.end(); ++tid){
+      unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid);
+      if(bank_id < m_rf_bank_controller.size()){
+        bank_id_count_map[bank_id]++;
+      }
+    }
+  }
+  for(std::map<unsigned, unsigned>::iterator it = bank_id_count_map.begin(); it != bank_id_count_map.end(); ++it){
+    unsigned bank_id = it->first;
+    unsigned count = it->second;
+    if(count > 0 && can_writeback_ldst_reg(bank_id,count) == false){
       return false;
     }
   }
@@ -1921,25 +1936,13 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
       else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
       break;
     case 4:
-      if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8,16,24}
-      else if (next_tid % 8 == 0) next_tid += 24;  // {0,8,16,24}, {1,9,17,25}, {2,10,18,26}, {3,11,19,27},....{7,15,23,31}, {32,40,48,56}, ...
+      if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
+      else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
       break;
-    //case 8:
-    //  if(next_tid == 0) next_tid += 4*unrolling_index; // {0,4,8,12,16,20,24,28}
-    //  else if (next_tid % 4 == 0) next_tid += 28;  // {0,4,8,12,16,20,24,28}, {1,5,9,13,17,21,25,29}, {2,6,10,14,18,22,26,30}, {3,7,11,15,19,23,27,31}, {32,...}
-    //  break;
-    //case 16:
-    //  if(next_tid == 0) next_tid += 2*unrolling_index; // {0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
-    //  else if (next_tid % 2 == 0) next_tid += 30;  // {0,2,...}, {1,3,...}, {4,6,...}, {5,7,...}, {8,10,...}, {9,11,...}, {12,14,...}, {13,15,...}
-    //  break;
-    //case 32:
-    //  if(next_tid == 0) next_tid += unrolling_index; 
-    //  else if (next_tid % 1 == 0) next_tid += 31;  
-    //  break;
     default:
       printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
       fflush(stdout);
-      assert(0 && "unrolling factor not supported, pls use 1,2,4,8,16,32");
+      assert(0 && "unrolling factor not supported, pls use 1,2,4");
       break;
   }
   unsigned hw_cta_id = (*m_dispatching_block)->get_cta_id();
@@ -1965,25 +1968,13 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
         else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
         break;
       case 4:
-        if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8,16,24}
-        else if (next_tid % 8 == 0) next_tid += 24;  // {0,8,16,24}, {1,9,17,25}, {2,10,18,26}, {3,11,19,27},....{7,15,23,31}, {32,40,48,56}, ...
+        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
+        else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
         break;
-      //case 8:
-      //  if(next_tid == 0) next_tid += 4*unrolling_index; // {0,4,8,12,16,20,24,28}
-      //  else if (next_tid % 4 == 0) next_tid += 28;  // {0,4,8,12,16,20,24,28}, {1,5,9,13,17,21,25,29}, {2,6,10,14,18,22,26,30}, {3,7,11,15,19,23,27,31}, {32,...}
-      //  break;
-      //case 16:
-      //  if(next_tid == 0) next_tid += 2*unrolling_index; // {0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30}
-      //  else if (next_tid % 2 == 0) next_tid += 30;  // {0,2,...}, {1,3,...}, {4,6,...}, {5,7,...}, {8,10,...}, {9,11,...}, {12,14,...}, {13,15,...}
-      //  break;
-      //case 32:
-      //  if(next_tid == 0) next_tid += unrolling_index; 
-      //  else if (next_tid % 1 == 0) next_tid += 31;  
-      //  break;
       default:
         printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
         fflush(stdout);
-        assert(0 && "unrolling factor not supported, pls use 1,2,4,8,16,32");
+        assert(0 && "unrolling factor not supported, pls use 1,2,4");
         break;
     }
     if(unrolling_factor == 1){
@@ -3503,6 +3494,21 @@ unsigned fetch_scheduler::next_fetch_block(){
   return unsigned(-1);
 }
 
+//unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
+//  bool gpr;
+//  if(reg_number<=32) { //constant registers
+//    gpr = false;
+//  }
+//  else if (reg_number>64) { //predicate registers
+//    gpr = false;
+//  }
+//  else { //general purpose registers
+//    gpr = true;
+//  }
+//  if(gpr) return ((reg_number-1)+tid)%32; //swizzling arrangement
+//  else return 32;
+//}
+
 unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
   bool gpr;
   if(reg_number<=32) { //constant registers
@@ -3514,6 +3520,16 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
   else { //general purpose registers
     gpr = true;
   }
-  if(gpr) return ((reg_number-1)+tid)%32; //swizzling arrangement
+  if(gpr) {
+    if(tid%64<16){
+      return (reg_number-1)%32;
+    } else if (tid%64<32){
+      return (reg_number-1+16)%32;
+    } else if (tid%64<48){
+      return (reg_number-1+8)%32;
+    } else {
+      return (reg_number-1+24)%32;
+    }
+  }
   else return 32;
 }
