@@ -247,7 +247,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].size[index] = size;
       m_per_scalar_thread[n].ld_dest_reg[index] = ld_dest_reg;
       m_per_scalar_thread[n].count++;
-      m_per_scalar_thread[n].enable = enable;
+      m_per_scalar_thread[n].enable[index] = enable;
       //printf("DICE Sim uArch [MEM_ACCESS]: thread %u, addr 0x%04x, space %d, mem_op %d, size %d ,num_of_mem_access = %d\n", n, addr, space, insn_memory_op , size,index);
       //fflush(stdout);
     }
@@ -307,10 +307,12 @@ class dice_cfg_block_t{
     void print_mem_ops_tid(unsigned tid, unsigned core_id = 0){
       assert(tid < m_per_scalar_thread.size());
       for (unsigned j = 0; j < m_per_scalar_thread[tid].count; j++){
+        if (m_per_scalar_thread[tid].enable == 0){
+          continue; 
+        }
         printf("DICE Sim: [MEM_ACCESS]: core %d, thread %u, addr 0x%04x, space %d, mem_op %d, size %d, ld_dest_reg %d\n",core_id, tid, m_per_scalar_thread[tid].memreqaddr[j], m_per_scalar_thread[tid].space[j], m_per_scalar_thread[tid].mem_op[j], m_per_scalar_thread[tid].size[j], m_per_scalar_thread[tid].ld_dest_reg[j]);
         fflush(stdout);
       }
-      
     }
     struct dice_transaction_info {
       std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
@@ -353,9 +355,9 @@ class dice_cfg_block_t{
           space[i] = undefined_space;
           mem_op[i] = no_memory_op;
           size[i] = 0;
+          enable[i] = 0;
         }
         count = 0;
-        enable = 0;
       }
       dram_callback_t callback;
       new_addr_type
@@ -369,7 +371,7 @@ class dice_cfg_block_t{
       unsigned size[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned ld_dest_reg[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned count;
-      unsigned enable;
+      unsigned enable[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
     };
     std::vector<per_thread_info> m_per_scalar_thread;
     std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port

@@ -452,7 +452,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
     new_addr_type cache_block_size = 0;  // in bytes
     bool is_shared_space = false;
     for(unsigned i=0; i<m_per_scalar_thread[tid].count; i++){
-      if(m_per_scalar_thread[tid].enable == 0){
+      if(m_per_scalar_thread[tid].enable[i] == 0){
         //enable is 0 means this access is masked out
         //need to tell scoreboard to release this.
         if(m_per_scalar_thread[tid].mem_op[i] == memory_load){

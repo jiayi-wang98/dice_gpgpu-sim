@@ -190,7 +190,7 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
         m_scoreboard->releaseRegisterFromLoad(tid,(*it));
       }
       if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
-        //cfg_block->print_mem_ops_tid(tid);
+        //cfg_block->print_mem_ops_tid(local_tid);
       }
       //check status and update
       checkExecutionStatusAndUpdate(cgra_block,tid);
