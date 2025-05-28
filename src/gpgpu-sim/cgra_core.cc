@@ -1621,6 +1621,7 @@ void dispatcher_rfu_t::dispatch(){
   }
   //check if all thread in current block is dispatched. if not, keep dispatching
   if ((*m_dispatching_block)->ready_to_dispatch() && !(*m_dispatching_block)->dispatch_done()) {
+    unsigned max_coalesce = m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval;
     //number of dispatch, if parameter load, just dispatch 1 thread.
     unsigned total_need_dispatch = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->active_count();
     unsigned unrolling_factor = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->get_unrolling_factor();
@@ -1636,7 +1637,7 @@ void dispatcher_rfu_t::dispatch(){
       actual_dispatch_threads[2] = unsigned(-1);
       actual_dispatch_threads[3] = unsigned(-1);
       for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
-        next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index);
+        next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index,max_coalesce);
       }
       //check no active threads error
       bool no_active_thread = true;
@@ -1659,24 +1660,10 @@ void dispatcher_rfu_t::dispatch(){
           actual_dispatch_threads[0] = next_ready_threads[0];
           break;
         case 2: {
-          //if(next_ready_threads[0]==unsigned(-1) || next_ready_threads[1]==unsigned(-1)){
-          //  //if not all has valid threads id, then whoever has valid id, dispatch
-          //  actual_dispatch_threads[0] = next_ready_threads[0];
-          //  actual_dispatch_threads[1] = next_ready_threads[1];
-          //}
-          //else if(next_ready_threads[1]-next_ready_threads[0] == 16){
-          //  //lock step, can dispatch both.
-          //  actual_dispatch_threads[0] = next_ready_threads[0];
-          //  actual_dispatch_threads[1] = next_ready_threads[1];
-          //} else if (next_ready_threads[1]-next_ready_threads[0] > 16){
-          //  //dispatcher_pointer 1 is faster, need to wait for 0
-          //  actual_dispatch_threads[0] = next_ready_threads[0];
-          //} else {
-          //  //dispatch_pointer 0 is faster, need to wait for 1
-          //  actual_dispatch_threads[1] = next_ready_threads[1];
-          //}
           unsigned pi_0 = next_ready_threads[0];
           unsigned pi_1 = next_ready_threads[1]-16;
+          if(max_coalesce == 32)
+            pi_1 = next_ready_threads[1]-32; //for 32 coalescing, the second thread is 32 away
           //dispatch smallest indexes
           //get smallest index first
           unsigned min_index = 0;
@@ -1695,6 +1682,11 @@ void dispatcher_rfu_t::dispatch(){
           unsigned pi_1 = next_ready_threads[1]-16;
           unsigned pi_2 = next_ready_threads[2]-32;
           unsigned pi_3 = next_ready_threads[3]-48;
+          if(max_coalesce == 32){
+            pi_1 = next_ready_threads[1]-32;
+            pi_2 = next_ready_threads[2]-64;
+            pi_3 = next_ready_threads[3]-96;
+          }
           //dispatch smallest indexes
           //get smallest index first
           unsigned min_index = 0;
@@ -1813,7 +1805,7 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
-    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid);
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
     //check if the writeback register is valid
     if(all_valid) {
       if(bank_id<32){
@@ -1855,7 +1847,7 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, std::set<unsigned> tids){
   for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
     unsigned tid = *it;
-    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid);
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
     if(m_rf_bank_controller[bank_id]->ldst_buffer_full() == false){
       if(block->is_parameter_load()){
         assert(bank_id >=32);//constant memory, not gpr memory
@@ -1910,7 +1902,7 @@ bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set
   for(std::set<unsigned>::iterator it = regs.begin(); it != regs.end(); ++it){
     unsigned reg_num = *it;
     for (std::set<unsigned>::iterator tid = tids.begin(); tid != tids.end(); ++tid){
-      unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid);
+      unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
       if(bank_id < m_rf_bank_controller.size()){
         bank_id_count_map[bank_id]++;
       }
@@ -1926,18 +1918,32 @@ bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set
   return true;
 }
 
-unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigned unrolling_index){
+unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigned unrolling_index, unsigned max_coalesce){
   unsigned next_tid=m_last_dispatched_tid[unrolling_index]+1;
   switch(unrolling_factor){
     case 1:
       break;
     case 2:
-      if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
-      else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+      if(max_coalesce == 16){
+        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
+        else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+      } else if(max_coalesce == 32){
+        if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32}
+        else if (next_tid % 32 == 0) next_tid += 32;  //{0,32}, {1,33}, {2,34}, {3,35},....{15,47}, {48,64}, ...
+      } else {
+        assert(0 && "max_coalesce not supported, pls use 16 or 32");
+      }
       break;
     case 4:
-      if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
-      else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
+      if(max_coalesce == 16){
+        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
+        else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
+      } else if(max_coalesce == 32){
+        if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32,64,96}
+        else if (next_tid % 32 == 0) next_tid += 96;  // {0,32,64,96}, {1,33,65,97}, {2,34,66,98}, {3,35,67,99},....{31,63,95,127}, {128,160,192,224}, ...
+      } else {
+        assert(0 && "max_coalesce not supported, pls use 16 or 32");
+      }
       break;
     default:
       printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
@@ -1964,12 +1970,26 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
       case 1:
         break;
       case 2:
-        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
-        else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+        if(max_coalesce == 16){
+          if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
+          else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
+        } else if(max_coalesce == 32){
+          if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32}
+          else if (next_tid % 32 == 0) next_tid += 32;  //{0,32}, {1,33}, {2,34}, {3,35},....{15,47}, {48,64}, ...
+        } else {
+          assert(0 && "max_coalesce not supported, pls use 16 or 32");
+        }
         break;
       case 4:
-        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
-        else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
+        if(max_coalesce == 16){
+          if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
+          else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
+        } else if(max_coalesce == 32){
+          if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32,64,96}
+          else if (next_tid % 32 == 0) next_tid += 96;  // {0,32,64,96}, {1,33,65,97}, {2,34,66,98}, {3,35,67,99},....{15,47,79,111}, {112,144,176,208}, ...
+        } else {
+          assert(0 && "max_coalesce not supported, pls use 16 or 32");
+        }
         break;
       default:
         printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
@@ -3509,7 +3529,7 @@ unsigned fetch_scheduler::next_fetch_block(){
 //  else return 32;
 //}
 
-unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
+unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned max_coalesce){
   bool gpr;
   if(reg_number<=32) { //constant registers
     gpr = false;
@@ -3521,14 +3541,28 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid){
     gpr = true;
   }
   if(gpr) {
-    if(tid%64<16){
-      return (reg_number-1)%32;
-    } else if (tid%64<32){
-      return (reg_number-1+16)%32;
-    } else if (tid%64<48){
-      return (reg_number-1+8)%32;
+    if(max_coalesce == 16){
+      if(tid%64<16){
+        return (reg_number-1)%32;
+      } else if (tid%64<32){
+        return (reg_number-1+16)%32;
+      } else if (tid%64<48){
+        return (reg_number-1+8)%32;
+      } else {
+        return (reg_number-1+24)%32;
+      }
+    } else if(max_coalesce == 32){
+      if(tid%128<32){
+        return (reg_number-1)%32;
+      } else if (tid%128<64){
+        return (reg_number-1+16)%32;
+      } else if (tid%129<96){
+        return (reg_number-1+8)%32;
+      } else {
+        return (reg_number-1+24)%32;
+      }
     } else {
-      return (reg_number-1+24)%32;
+      assert(false && "Invalid max_coalesce value");
     }
   }
   else return 32;

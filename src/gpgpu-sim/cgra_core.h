@@ -908,7 +908,7 @@ class cgra_unit {
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
     bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, std::set<unsigned> tids);
-    unsigned next_active_thread(unsigned unrolling_factor, unsigned unrolling_index);
+    unsigned next_active_thread(unsigned unrolling_factor, unsigned unrolling_index, unsigned max_coalesce);
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
     bool current_finished() { return (*m_dispatching_block)->dispatch_done(); }
@@ -1140,5 +1140,5 @@ class cgra_unit {
  };
 
 
-unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid);
+unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned max_coalesce);
 #endif
