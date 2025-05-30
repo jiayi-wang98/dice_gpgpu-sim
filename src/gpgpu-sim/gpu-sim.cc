@@ -1352,18 +1352,17 @@ void gpgpu_sim::gpu_print_stat() {
          (float)(partiton_reqs_in_parallel_util +
                  partiton_reqs_in_parallel_util_total) /
              (gpu_sim_cycle_parition_util + gpu_tot_sim_cycle_parition_util));
-  // printf("partiton_replys_in_parallel = %lld\n",
-  // partiton_replys_in_parallel); printf("partiton_replys_in_parallel_total =
-  // %lld\n", partiton_replys_in_parallel_total );
+  printf("partiton_replys_in_parallel = %lld\n", partiton_replys_in_parallel); 
+  printf("partiton_replys_in_parallel_total = %lld\n", partiton_replys_in_parallel_total );
   printf("L2_BW  = %12.4f GB/Sec\n",
          ((float)(partiton_replys_in_parallel * 32) /
-          (gpu_sim_cycle * m_config.icnt_period)) /
+          (gpu_sim_cycle * m_config.core_period)) /
              1000000000);
   printf("L2_BW_total  = %12.4f GB/Sec\n",
          ((float)((partiton_replys_in_parallel +
                    partiton_replys_in_parallel_total) *
                   32) /
-          ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.icnt_period)) /
+          ((gpu_tot_sim_cycle + gpu_sim_cycle) * m_config.core_period)) /
              1000000000);
 
   time_t curr_time;

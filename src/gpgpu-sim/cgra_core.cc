@@ -1809,6 +1809,10 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
     //check if the writeback register is valid
     if(all_valid) {
       if(bank_id<32){
+        if(m_rf_bank_controller[bank_id]->wb_buffer_full() == true){
+          printf("**ERROR: cycle %d, core %d, reg %d, RF bank %d is full for tid=%d, please check and make sure no wrieback bank conflict in cgra_block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle ,m_cgra_core->get_id(),reg_num, bank_id ,tid, metadata->meta_id);
+          fflush(stdout);
+        }
         assert(m_rf_bank_controller[bank_id]->wb_buffer_full() == false);
         //push to writeback buffer
         m_rf_bank_controller[bank_id]->push_to_cgra_wb_buffer(tid,block);
@@ -3556,7 +3560,7 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned 
         return (reg_number-1)%32;
       } else if (tid%128<64){
         return (reg_number-1+16)%32;
-      } else if (tid%129<96){
+      } else if (tid%128<96){
         return (reg_number-1+8)%32;
       } else {
         return (reg_number-1+24)%32;
