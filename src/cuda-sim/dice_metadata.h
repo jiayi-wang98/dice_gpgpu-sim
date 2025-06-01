@@ -11,7 +11,7 @@ class operand_info;
 class ptx_instruction;
 struct dice_block_t;
 
-const unsigned MAX_ACCESSES_PER_BLOCK_PER_THREAD = 8;
+const unsigned MAX_ACCESSES_PER_BLOCK_PER_THREAD = 16;
 
 class dice_metadata {
   public:
@@ -240,7 +240,7 @@ class dice_cfg_block_t{
       }
       assert(n < m_per_scalar_thread.size() && "Index n out of bounds");
       unsigned index=m_per_scalar_thread[n].count;
-      assert(index < MAX_ACCESSES_PER_BLOCK_PER_THREAD);
+      if(m_metadata->is_parameter_load==false) assert(index < MAX_ACCESSES_PER_BLOCK_PER_THREAD);
       m_per_scalar_thread[n].memreqaddr[index] = addr;
       m_per_scalar_thread[n].space[index] = space;
       m_per_scalar_thread[n].mem_op[index] = insn_memory_op;
