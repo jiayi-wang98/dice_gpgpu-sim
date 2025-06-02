@@ -3557,13 +3557,13 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned 
       }
     } else if(max_coalesce == 32){
       if(tid%128<32){
-        return (reg_number-1)%32;
+        return (reg_number-1+tid)%32;
       } else if (tid%128<64){
-        return (reg_number-1+16)%32;
+        return (reg_number-1+16+tid)%32;
       } else if (tid%128<96){
-        return (reg_number-1+8)%32;
+        return (reg_number-1+8+tid)%32;
       } else {
-        return (reg_number-1+24)%32;
+        return (reg_number-1+24+tid)%32;
       }
     } else {
       assert(false && "Invalid max_coalesce value");
