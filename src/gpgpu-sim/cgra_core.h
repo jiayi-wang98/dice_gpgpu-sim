@@ -575,7 +575,12 @@ class fetch_scheduler{
                const simt_mask_t &active) {
        m_cta_id = cta_id;
        m_next_metadata_pc = start_metadata_pc;
-       assert(n_completed >= active.count());
+       if(n_completed < active.count()) {
+         printf("CGRA core %d: n_completed %u < active threads %zu\n",
+                m_cgra_core->get_id(), n_completed, active.count());
+         fflush(stdout);
+         assert(0);
+       }
        assert(n_completed <= m_block_size);
        n_completed -= active.count();  // active threads are not yet completed
        m_active_threads = active;
@@ -888,6 +893,9 @@ class cgra_unit {
       m_dispatched_thread = 0;
       m_dispatched_bubble_count = 0;
       m_last_dispatched_tid.resize(4);
+      for(unsigned i = 0; i < m_last_dispatched_tid.size(); i++){
+        m_last_dispatched_tid[i] = unsigned(-1);
+      }
       m_scoreboard = scoreboard;
       m_num_read_access = 0;
       m_num_write_access = 0;

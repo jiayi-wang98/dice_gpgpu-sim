@@ -412,7 +412,7 @@ void cgra_core_ctx::issue_block2core(kernel_info_t &kernel){
   }
 
   // initialize the SIMT stacks and fetch hardware
-  init_CTA(free_cta_hw_id, start_thread, end_thread, ctaid, cta_size, kernel);
+  init_CTA(free_cta_hw_id, start_thread, end_thread, ctaid, padded_cta_size, kernel);
   //DICE-TODO
   //m_active_blocks++;
   printf("DICE Sim uArch: core id: %d, cta:%2u, start_tid:%4u, end_tid:%4u,initialized @(%lld,%lld), m_kernel_block_size=%d\n",
@@ -441,7 +441,7 @@ void cgra_core_ctx::init_CTA(unsigned cta_id, unsigned start_thread,
   unsigned kernel_id = kernel.get_uid();
   if (m_config->model == POST_DOMINATOR) {
     unsigned n_active = 0;
-    simt_mask_t active_threads(end_thread - start_thread);
+    simt_mask_t active_threads(cta_size);
     //set core-level threads state
     for (unsigned tid = start_thread; tid < end_thread; tid++) {
       n_active++;
@@ -1245,6 +1245,8 @@ void cgra_core_ctx::cta_schedule(){
     unsigned next_cta = m_fetch_scheduler->next_fetch_block();
     if(next_cta!=unsigned(-1)){
       const simt_mask_t &temp = m_simt_stack[next_cta]->get_active_mask();
+      delete m_cgra_block_state[MF_DE]; //delete the old state with previous kernal block size
+      m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
       m_cgra_block_state[MF_DE]->init(unsigned(-1), next_cta, temp); //set as valid now
       if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
         printf("DICE Sim uArch [CTA_SCHEDULE]: Cycle %d, hw_cta=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
@@ -2425,7 +2427,11 @@ void ldst_unit::cycle_cgra(){
           for (std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
             printf(" %d",*it);
           }
-          printf(", reg %d, addr 0x%08x\n",writeback_regs, mf->get_addr());
+          printf(", reg ");
+          for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+            printf(" %d ",*it);
+          }
+          printf(", addr 0x%08x\n", mf->get_addr());
           fflush(stdout);
         }
         m_response_fifo.pop_front();
