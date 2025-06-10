@@ -921,6 +921,8 @@ unsigned cgra_block_state_t::get_block_latency(){
 
 void cgra_block_state_t::metadata_buffer_fill(dice_cfg_block_t *cfg_block) {
   assert(cfg_block!=NULL);
+  if(m_metadata_buffer.m_cfg_block)
+    delete m_metadata_buffer.m_cfg_block; //delete previous cfg block
   m_metadata_buffer.m_cfg_block = cfg_block;
   m_active_threads = cfg_block->get_active_mask();
   m_metadata_buffer.m_valid = true;
@@ -1049,8 +1051,15 @@ void cgra_core_ctx::decode(){
   if (m_metadata_fetch_buffer.m_valid && m_cgra_block_state[MF_DE]->decode_done() == false) {
     // decode and place them into ibuffer
     address_type pc = m_metadata_fetch_buffer.m_pc;
-    dice_cfg_block_t *cfg_block = get_dice_cfg_block(pc,m_cgra_block_state[MF_DE]->get_cta_id());
-    m_cgra_block_state[MF_DE]->metadata_buffer_fill(cfg_block);
+    dice_cfg_block_t *cfg_block;
+    if(m_cgra_block_state[MF_DE]->metadata_buffer_empty()){
+      cfg_block = get_dice_cfg_block(pc,m_cgra_block_state[MF_DE]->get_cta_id());
+      m_cgra_block_state[MF_DE]->metadata_buffer_fill(cfg_block);
+    } else {
+      cfg_block = m_cgra_block_state[MF_DE]->get_current_cfg_block();
+      cfg_block->set_active(m_simt_stack[cta_id]->get_active_mask());
+      m_cgra_block_state[MF_DE]->set_active_threads(m_simt_stack[cta_id]->get_active_mask());
+    }
     if (cfg_block) {
       m_stats->m_num_decoded_insn[m_cgra_core_id]++;
     }
@@ -1077,6 +1086,7 @@ void cgra_core_ctx::decode(){
         m_block_commit_table->mark_return_block(cta_id);
         m_cta_status_table->set_ret(cta_id);
         //initialize fetch hardware
+        delete m_cgra_block_state[MF_DE];
         m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
         //m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
         //m_cgra_block_state[MF_DE] = m_fetch_scheduler->next_fetch_block();
@@ -1099,6 +1109,7 @@ void cgra_core_ctx::decode(){
       }
 
       //initialize fetch hardware
+      delete m_cgra_block_state[MF_DE];
       m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
       //m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
       //m_cgra_block_state[MF_DE] = m_fetch_scheduler->next_fetch_block();
@@ -1229,6 +1240,9 @@ void cgra_core_ctx::dispatch(){
         printf("DICE Sim uArch [DISPATCH_START]: Cycle %d, hw_cta=%d, Block=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id() ,m_cgra_block_state[MF_DE]->get_current_metadata()->meta_id,m_cgra_block_state[MF_DE]->get_current_metadata()->get_PC());
         fflush(stdout);
       }
+      if(m_cgra_block_state[DP_CGRA] != NULL){
+        delete m_cgra_block_state[DP_CGRA]; //delete previous DP_CGRA block
+      }
       m_cgra_block_state[DP_CGRA] = m_cgra_block_state[MF_DE];
       m_cgra_unit->set_latency(m_cgra_block_state[DP_CGRA]->get_block_latency());
       m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
@@ -1245,7 +1259,7 @@ void cgra_core_ctx::cta_schedule(){
     unsigned next_cta = m_fetch_scheduler->next_fetch_block();
     if(next_cta!=unsigned(-1)){
       const simt_mask_t &temp = m_simt_stack[next_cta]->get_active_mask();
-      delete m_cgra_block_state[MF_DE]; //delete the old state with previous kernal block size
+      delete m_cgra_block_state[MF_DE]; //delete previous MF_DE block
       m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
       m_cgra_block_state[MF_DE]->init(unsigned(-1), next_cta, temp); //set as valid now
       if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
@@ -3576,4 +3590,13 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned 
     }
   }
   else return 32;
+}
+
+
+cgra_block_state_t::~cgra_block_state_t() {
+  if (m_metadata_buffer.m_cfg_block) {
+      dice_cfg_block_t *cfg_block = m_metadata_buffer.m_cfg_block;
+      //printf("CGRA core %d: Deleting metadata buffer cfg_block at %p\n", m_cgra_core->get_id(), cfg_block);
+      delete cfg_block;
+  }
 }

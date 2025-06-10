@@ -760,3 +760,10 @@ void dice_cfg_block_t::memory_coalescing_arch_reduce_and_send(bool is_write, con
   m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
   //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
 }
+
+
+dice_cfg_block_t::~dice_cfg_block_t(){
+  if(m_block_active_mask) delete m_block_active_mask;
+  m_per_scalar_thread.clear(); 
+  //printf("DICE Sim: dice_cfg_block_t destructor called\n");
+}

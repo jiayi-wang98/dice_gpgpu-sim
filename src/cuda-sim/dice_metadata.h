@@ -201,9 +201,7 @@ class dice_cfg_block_t{
   public:
     dice_cfg_block_t(dice_metadata *metadata);
     dice_cfg_block_t(unsigned uid, unsigned block_size, dice_metadata *metadata, gpgpu_context* ctx);
-    ~dice_cfg_block_t(){
-      if(m_block_active_mask) delete m_block_active_mask;
-    }
+    virtual ~dice_cfg_block_t();
     address_type metadata_pc;  // program counter address of metadata
     unsigned metadata_size;   // size of metadata in bytes
     address_type reconvergence_pc;  // program counter address of reconvergence

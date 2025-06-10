@@ -54,7 +54,22 @@ class cgra_core_ctx {
       unsigned cgra_core_id, unsigned tpc_id,const shader_core_config *config,
       const memory_config *mem_config,shader_core_stats *stats);
     
-    virtual ~cgra_core_ctx() { free(m_thread); }
+    virtual ~cgra_core_ctx() { 
+      free(m_thread);  
+      deleteSIMTStack();
+      delete m_dispatcher_rfu;
+      delete m_block_commit_table;
+      delete m_cgra_unit;
+      delete m_cta_status_table;
+      delete m_fetch_scheduler;
+      delete m_icnt;
+      delete m_mem_fetch_allocator;
+      delete m_L1I;
+      delete m_L1B;
+      delete m_ldst_unit;
+      delete m_scoreboard;
+      delete m_threadState;
+    }
     //get meta info
     class gpgpu_sim *get_gpu() {
       return m_gpu;
@@ -548,6 +563,9 @@ class fetch_scheduler{
        m_thread_in_pipeline = 0;
        reset();
      }
+
+     virtual ~cgra_block_state_t();
+
      void reset() {
        assert(m_stores_outstanding == 0);
        assert(m_thread_in_pipeline == 0);
@@ -570,6 +588,10 @@ class fetch_scheduler{
        m_metadata_buffer.m_valid = false;
        m_metadata_buffer.m_bitstream_valid = false;
        m_valid = false;
+       if (m_metadata_buffer.m_cfg_block) {
+        delete m_metadata_buffer.m_cfg_block;
+        m_metadata_buffer.m_cfg_block = nullptr;  // Optional safety
+       }
      }
      void init(address_type start_metadata_pc, unsigned cta_id,
                const simt_mask_t &active) {
@@ -588,6 +610,10 @@ class fetch_scheduler{
        m_metadata_buffer.m_valid = false;
        m_metadata_buffer.m_bitstream_valid = false;
        m_valid = true;
+     }
+
+     void set_active_threads(const simt_mask_t &active) {
+        m_active_threads = active;
      }
 
      void set_completed(unsigned lane) {
