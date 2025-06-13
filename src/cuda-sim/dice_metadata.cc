@@ -431,21 +431,17 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
   unsigned request_count = 0;
   unsigned original_block_address = 0;
   //convert memory ops to mem_access_t
-  bool sector_segment_size = false; //TODO understand this
-  unsigned segment_size = 128;
-  //switch (size) {
-  //  case 1:
-  //    segment_size = 32;
-  //    break;
-  //  case 2:
-  //    segment_size = sector_segment_size ? 32 : 64;
-  //    break;
-  //  case 4:
-  //  case 8:
-  //  case 16:
-  //    segment_size = sector_segment_size ? 32 : 128;
-  //    break;
-  //}
+  bool sector_segment_size = false; 
+  if (m_config->gpgpu_coalesce_arch >= 20 &&
+    m_config->gpgpu_coalesce_arch < 39) {
+    // Fermi and Kepler, L1 is normal and L2 is sector
+    sector_segment_size = false;
+  } else if (m_config->gpgpu_coalesce_arch >= 40) {
+    // Maxwell, Pascal and Volta, L1 and L2 are sectors
+    // all requests should be 32 bytes
+    sector_segment_size = true;
+  }
+  unsigned segment_size = sector_segment_size? 32: 128;
   //step 1, get all transactions
   if(m_per_scalar_thread_valid){
     unsigned num_stores=0;

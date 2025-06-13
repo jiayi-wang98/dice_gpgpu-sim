@@ -1637,7 +1637,8 @@ void dispatcher_rfu_t::dispatch(){
   }
   //check if all thread in current block is dispatched. if not, keep dispatching
   if ((*m_dispatching_block)->ready_to_dispatch() && !(*m_dispatching_block)->dispatch_done()) {
-    unsigned max_coalesce = m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval;
+    //unsigned max_coalesce = m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval;
+    unsigned max_coalesce = 32;
     //number of dispatch, if parameter load, just dispatch 1 thread.
     unsigned total_need_dispatch = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->active_count();
     unsigned unrolling_factor = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->get_unrolling_factor();
@@ -1821,7 +1822,7 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
-    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,32);
     //check if the writeback register is valid
     if(all_valid) {
       if(bank_id<32){
@@ -1867,7 +1868,7 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
 bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, std::set<unsigned> tids){
   for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
     unsigned tid = *it;
-    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
+    unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,32);
     if(m_rf_bank_controller[bank_id]->ldst_buffer_full() == false){
       if(block->is_parameter_load()){
         assert(bank_id >=32);//constant memory, not gpr memory
@@ -1922,7 +1923,7 @@ bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set
   for(std::set<unsigned>::iterator it = regs.begin(); it != regs.end(); ++it){
     unsigned reg_num = *it;
     for (std::set<unsigned>::iterator tid = tids.begin(); tid != tids.end(); ++tid){
-      unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid,m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval);
+      unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid,32);
       if(bank_id < m_rf_bank_controller.size()){
         bank_id_count_map[bank_id]++;
       }
@@ -3163,7 +3164,17 @@ void dice_mem_request_queue::do_ld_coalescing(unsigned port){
   }
   assert(m_ld_req_queue_pre_coalesce[port].size() > 0);
   unsigned coalescing_counter = 0;
-  unsigned segment_size = 128;
+  bool sector_segment_size = false; 
+  if (m_config->gpgpu_coalesce_arch >= 20 &&
+    m_config->gpgpu_coalesce_arch < 39) {
+    // Fermi and Kepler, L1 is normal and L2 is sector
+    sector_segment_size = false;
+  } else if (m_config->gpgpu_coalesce_arch >= 40) {
+    // Maxwell, Pascal and Volta, L1 and L2 are sectors
+    // all requests should be 32 bytes
+    sector_segment_size = true;
+  }
+  unsigned segment_size = sector_segment_size? 32: 128;
   std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
   cgra_block_state_t* cgra_block = m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state();
   //step 1, gather all transactions
@@ -3250,7 +3261,17 @@ void dice_mem_request_queue::do_st_coalescing(unsigned port){
   }
   assert(m_st_req_queue_pre_coalesce[port].size() > 0);
   unsigned coalescing_counter = 0;
-  unsigned segment_size = 128;
+  bool sector_segment_size = false;
+  if (m_config->gpgpu_coalesce_arch >= 20 &&
+    m_config->gpgpu_coalesce_arch < 39) {
+    // Fermi and Kepler, L1 is normal and L2 is sector
+    sector_segment_size = false;
+  } else if (m_config->gpgpu_coalesce_arch >= 40) {
+    // Maxwell, Pascal and Volta, L1 and L2 are sectors
+    // all requests should be 32 bytes
+    sector_segment_size = true;
+  }
+  unsigned segment_size = sector_segment_size? 32: 128;
   std::map<new_addr_type, dice_transaction_info> st_transactions;  // each block addr maps to a list of transactions
   cgra_block_state_t* cgra_block = m_st_req_queue_pre_coalesce[port].front().get_cgra_block_state();
   //step 1, gather all transactions
