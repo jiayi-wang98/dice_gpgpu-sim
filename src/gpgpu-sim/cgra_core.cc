@@ -879,7 +879,12 @@ bool cgra_block_state_t::is_parameter_load(){
 }
 
 unsigned cgra_block_state_t::get_unrolling_factor(){
-  return get_current_metadata()->unrolling_factor;
+  unsigned unrolling_factor = get_current_metadata()->unrolling_factor;
+  if(m_cgra_core->get_config()->dice_enable_unrolling!=1) {
+    //if unrolling disabled, return 1
+    unrolling_factor = 1;
+  }
+  return unrolling_factor;
 }
 
 void cgra_block_state_t::inc_store_req() { 
@@ -1678,9 +1683,7 @@ void dispatcher_rfu_t::dispatch(){
           break;
         case 2: {
           unsigned pi_0 = next_ready_threads[0];
-          unsigned pi_1 = next_ready_threads[1]-16;
-          if(max_coalesce == 32)
-            pi_1 = next_ready_threads[1]-32; //for 32 coalescing, the second thread is 32 away
+          unsigned pi_1 = next_ready_threads[1]-8; 
           //dispatch smallest indexes
           //get smallest index first
           unsigned min_index = 0;
@@ -1696,14 +1699,9 @@ void dispatcher_rfu_t::dispatch(){
         }
         case 4: {
           unsigned pi_0 = next_ready_threads[0];
-          unsigned pi_1 = next_ready_threads[1]-16;
-          unsigned pi_2 = next_ready_threads[2]-32;
-          unsigned pi_3 = next_ready_threads[3]-48;
-          if(max_coalesce == 32){
-            pi_1 = next_ready_threads[1]-32;
-            pi_2 = next_ready_threads[2]-64;
-            pi_3 = next_ready_threads[3]-96;
-          }
+          unsigned pi_1 = next_ready_threads[1]-8;
+          unsigned pi_2 = next_ready_threads[2]-16;
+          unsigned pi_3 = next_ready_threads[3]-24;
           //dispatch smallest indexes
           //get smallest index first
           unsigned min_index = 0;
@@ -1945,26 +1943,12 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
     case 1:
       break;
     case 2:
-      if(max_coalesce == 16){
-        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
-        else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
-      } else if(max_coalesce == 32){
-        if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32}
-        else if (next_tid % 32 == 0) next_tid += 32;  //{0,32}, {1,33}, {2,34}, {3,35},....{15,47}, {48,64}, ...
-      } else {
-        assert(0 && "max_coalesce not supported, pls use 16 or 32");
-      }
+      if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8}
+      else if (next_tid % 8 == 0) next_tid += 8;  //{0,8}, {1,9}, {2,10}, {3,11},....{7,15}, {16,24}, ...
       break;
     case 4:
-      if(max_coalesce == 16){
-        if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
-        else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
-      } else if(max_coalesce == 32){
-        if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32,64,96}
-        else if (next_tid % 32 == 0) next_tid += 96;  // {0,32,64,96}, {1,33,65,97}, {2,34,66,98}, {3,35,67,99},....{31,63,95,127}, {128,160,192,224}, ...
-      } else {
-        assert(0 && "max_coalesce not supported, pls use 16 or 32");
-      }
+      if(next_tid == 0) next_tid += 8*unrolling_index; // {0,32,64,96}
+      else if (next_tid % 8 == 0) next_tid += 24;  // {0, 8, 16, 24}, {1, 9, 17, 25}, {2, 10, 18, 26}, {3, 11, 19, 27},....{7,15,23,31}, {32,40,48,56}, ...
       break;
     default:
       printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
@@ -1991,26 +1975,12 @@ unsigned dispatcher_rfu_t::next_active_thread(unsigned unrolling_factor, unsigne
       case 1:
         break;
       case 2:
-        if(max_coalesce == 16){
-          if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16}
-          else if (next_tid % 16 == 0) next_tid += 16;  //{0,16}, {1,17}, {2,18}, {3,19},....{15,31}, {32,48}, ...
-        } else if(max_coalesce == 32){
-          if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32}
-          else if (next_tid % 32 == 0) next_tid += 32;  //{0,32}, {1,33}, {2,34}, {3,35},....{15,47}, {48,64}, ...
-        } else {
-          assert(0 && "max_coalesce not supported, pls use 16 or 32");
-        }
+        if(next_tid == 0) next_tid += 8*unrolling_index; // {0,8}
+        else if (next_tid % 8 == 0) next_tid += 8;  //{0,8}, {1,9}, {2,10}, {3,11},....{7,15}, {16,24}, ...
         break;
       case 4:
-        if(max_coalesce == 16){
-          if(next_tid == 0) next_tid += 16*unrolling_index; // {0,16,32,48}
-          else if (next_tid % 16 == 0) next_tid += 48;  // {0,16,32,48}, {1,17,33,49}, {2,18,34,50}, {3,19,35,51},....{15,31,47,63}, {64,80,96,112}, ...
-        } else if(max_coalesce == 32){
-          if(next_tid == 0) next_tid += 32*unrolling_index; // {0,32,64,96}
-          else if (next_tid % 32 == 0) next_tid += 96;  // {0,32,64,96}, {1,33,65,97}, {2,34,66,98}, {3,35,67,99},....{15,47,79,111}, {112,144,176,208}, ...
-        } else {
-          assert(0 && "max_coalesce not supported, pls use 16 or 32");
-        }
+        if(next_tid == 0) next_tid += 8*unrolling_index; // {0,32,64,96}
+        else if (next_tid % 8 == 0) next_tid += 24;  // {0, 8, 16, 24}, {1, 9, 17, 25}, {2, 10, 18, 26}, {3, 11, 19, 27},....{7,15,23,31}, {32,40,48,56}, ...
         break;
       default:
         printf("DICE-Sim uArch: [Error] cycle %d, core %d, unrolling factor %d not supported\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , m_cgra_core->get_id(), unrolling_factor);
@@ -2293,14 +2263,20 @@ void ldst_unit::cycle_cgra(){
   rc_fail = NO_RC_FAIL;
   //memory cycle, round robin arbiter from all load and store ports to check all load request to contant cache
   //can process L1_bank numbers request per cycle
+  std::list<unsigned> issued_ports; //store ports that have been issued
+  issued_ports.push_back(unsigned(-1)); //initialize with -1 to avoid empty list
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  
     unsigned memory_port = m_dice_mem_request_queue->get_next_process_port_memory();
+    if(std::find(issued_ports.begin(), issued_ports.end(), memory_port) != issued_ports.end()) {
+      break; // port has already been issued
+    }
     if(memory_port != unsigned(-1)){
       //printf("DICE-Sim uArch: [MEMORY]: cycle %d, memory port %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , memory_port);
       mem_access_t access = m_dice_mem_request_queue->get_request(memory_port);
       cgra_block_state_t* cgra_block = access.get_cgra_block_state();
       memory_cycle_cgra(cgra_block, access, rc_fail, type);
       m_dice_mem_request_queue->set_last_processed_port_memory(memory_port);
+      issued_ports.push_back(memory_port); //add to issued ports
     }
   }
   //shared memory cycle is modeled as latency for each thread directly
@@ -3586,28 +3562,14 @@ unsigned reg_number_to_bank_mapping(unsigned reg_number, unsigned tid, unsigned 
     gpr = true;
   }
   if(gpr) {
-    if(max_coalesce == 16){
-      if(tid%64<16){
-        return (reg_number-1)%32;
-      } else if (tid%64<32){
-        return (reg_number-1+16)%32;
-      } else if (tid%64<48){
-        return (reg_number-1+8)%32;
-      } else {
-        return (reg_number-1+24)%32;
-      }
-    } else if(max_coalesce == 32){
-      if(tid%128<32){
-        return (reg_number-1+tid)%32;
-      } else if (tid%128<64){
-        return (reg_number-1+16+tid)%32;
-      } else if (tid%128<96){
-        return (reg_number-1+8+tid)%32;
-      } else {
-        return (reg_number-1+24+tid)%32;
-      }
+    if(tid%32<8){
+      return (reg_number-1+tid)%32;
+    } else if (tid%32<16){
+      return (reg_number-1+16+tid)%32;
+    } else if (tid%128<24){
+      return (reg_number-1+8+tid)%32;
     } else {
-      assert(false && "Invalid max_coalesce value");
+      return (reg_number-1+24+tid)%32;
     }
   }
   else return 32;

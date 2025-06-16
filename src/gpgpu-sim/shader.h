@@ -1700,6 +1700,7 @@ class shader_core_config : public core_config {
   unsigned dice_ldst_unit_enable_port_coalescing;
   unsigned dice_ldst_unit_enable_temporal_coalescing;
   unsigned dice_ldst_unit_temporal_coalescing_interval;
+  unsigned dice_enable_unrolling;
 };
 
 struct shader_core_stats_pod {

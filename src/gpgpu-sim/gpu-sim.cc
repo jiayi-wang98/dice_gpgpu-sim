@@ -263,6 +263,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     "DICE temporal_coalsescing interval","4,8,16,32");
 
   option_parser_register(
+    opp, "-dice_enable_unrolling", OPT_UINT32,
+    &dice_enable_unrolling,
+    "DICE thread unrolling support","1");
+
+  option_parser_register(
     opp, "-dice_cgra_core_num_ld_ports", OPT_UINT32,
     &dice_cgra_core_num_ld_ports,
     "DICE cgra core LDST unit number of load ports, i.e.,","1,2,4,8,16");
