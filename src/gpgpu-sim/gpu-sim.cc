@@ -263,6 +263,11 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     "DICE temporal_coalsescing interval","4,8,16,32");
 
   option_parser_register(
+    opp, "-dice_ldst_unit_temporal_coalescing_max_cmd", OPT_UINT32,
+    &dice_ldst_unit_temporal_coalescing_max_cmd,
+    "DICE temporal_coalsescing max coalesce cmd","4,8,16,32");
+
+  option_parser_register(
     opp, "-dice_enable_unrolling", OPT_UINT32,
     &dice_enable_unrolling,
     "DICE thread unrolling support","1");

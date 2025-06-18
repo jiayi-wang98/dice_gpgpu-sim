@@ -184,13 +184,16 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
       std::list<unsigned> masked_ops_reg;
       cfg_block->generate_mem_accesses(local_tid,masked_ops_reg, unrolling_factor, lane_id);
       //push mem_access to ldst_unit's queue
+      if(g_debug_execution==4 &m_cgra_core_id == get_dice_trace_sampling_core()){
+        cfg_block->print_m_accessq();
+      }
       m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
       //release masked scoreboard record
       for (std::list<unsigned>::iterator it = masked_ops_reg.begin(); it != masked_ops_reg.end(); ++it) {
         m_scoreboard->releaseRegisterFromLoad(tid,(*it));
       }
-      if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
-        //cfg_block->print_mem_ops_tid(local_tid);
+      if(g_debug_execution==4 &m_cgra_core_id == get_dice_trace_sampling_core()){
+        cfg_block->print_mem_ops_tid(local_tid);
       }
       //check status and update
       checkExecutionStatusAndUpdate(cgra_block,tid);
@@ -2967,6 +2970,7 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
   m_last_processed_port_shared = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
   enable_temporal_coaleascing = m_config->dice_ldst_unit_enable_temporal_coalescing;
   temporal_coalescing_interval = m_config->dice_ldst_unit_temporal_coalescing_interval;
+  temporal_coalescing_max_cmd = m_config->dice_ldst_unit_temporal_coalescing_max_cmd;
   m_ld_coalescing_counter.resize(m_config->dice_cgra_core_num_ld_ports);
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
     m_ld_coalescing_counter[i] = 0;
@@ -3118,13 +3122,13 @@ void dice_mem_request_queue::update_coaleasing_counter(){
 void dice_mem_request_queue::coalesce_cycle(){
   //check if the coalescing interval is done
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(m_ld_coalescing_counter[i] >= temporal_coalescing_interval){
+    if((m_ld_coalescing_counter[i] >= temporal_coalescing_interval) || (m_ld_req_queue_pre_coalesce[i].size() >= temporal_coalescing_max_cmd)){
       do_ld_coalescing(i);
       m_ld_coalescing_counter[i] = 0;
     }
   }
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
-    if(m_st_coalescing_counter[i] >= temporal_coalescing_interval){
+    if((m_st_coalescing_counter[i] >= temporal_coalescing_interval) || (m_st_req_queue_pre_coalesce[i].size() >= temporal_coalescing_max_cmd)){
       do_st_coalescing(i);
       m_st_coalescing_counter[i] = 0;
     }
@@ -3134,10 +3138,6 @@ void dice_mem_request_queue::coalesce_cycle(){
 
 void dice_mem_request_queue::do_ld_coalescing(unsigned port){
   //iterate through the first coalescing interval elements in the queue
-  if(g_debug_execution==3 &m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
-    printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port);
-    fflush(stdout);
-  }
   assert(m_ld_req_queue_pre_coalesce[port].size() > 0);
   unsigned coalescing_counter = 0;
   bool sector_segment_size = false; 
@@ -3154,12 +3154,16 @@ void dice_mem_request_queue::do_ld_coalescing(unsigned port){
   std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
   cgra_block_state_t* cgra_block = m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state();
   //step 1, gather all transactions
-  while(!m_ld_req_queue_pre_coalesce[port].empty() && coalescing_counter < temporal_coalescing_interval && cgra_block == m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state()){
+  while((!m_ld_req_queue_pre_coalesce[port].empty()) && (coalescing_counter < temporal_coalescing_max_cmd) && (cgra_block == m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state())){
     mem_access_t access = m_ld_req_queue_pre_coalesce[port].front();
     pop_ld_request_pre_coalesce(port);
     if ((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
       //coalescing
       unsigned addr = access.get_addr();
+      if(g_debug_execution==3 &m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, cmd addr = %p.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, addr);
+        fflush(stdout);
+      }
       unsigned size = access.get_size();
       mem_access_type access_type = access.get_type();
       memory_space_t space = access.get_space();
@@ -3220,6 +3224,10 @@ void dice_mem_request_queue::do_ld_coalescing(unsigned port){
     } else {
       break;
     }
+  }
+  if(g_debug_execution==3 &m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+    printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, Coalesced %d cmd into %d cmd.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, coalescing_counter, rd_transactions.size());
+    fflush(stdout);
   }
   //step 2, reduce size of each transaction
   for (std::map<new_addr_type, dice_transaction_info>::iterator t = rd_transactions.begin(); t != rd_transactions.end(); t++) {

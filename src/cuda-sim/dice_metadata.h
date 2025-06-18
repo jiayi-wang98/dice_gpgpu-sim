@@ -277,10 +277,10 @@ class dice_cfg_block_t{
     }
 
     void print_m_accessq() {
+      printf("Printing mem access generated\n");
       if (accessq_empty())
         return;
       else {
-        printf("Printing mem access generated\n");
         for(int i=0;i<get_ldst_port_num();i++){
           if(m_accessq[i].empty()) continue;
           printf("LDST Unit: Port %d\n",i);

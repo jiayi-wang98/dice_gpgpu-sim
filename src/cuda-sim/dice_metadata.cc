@@ -686,18 +686,18 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &
     //step 2, reduce size of each transaction
     for (std::map<new_addr_type, dice_transaction_info>::iterator t = rd_transactions.begin(); t != rd_transactions.end(); t++) {
       new_addr_type addr = t->first;
-      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
-        addr = original_block_address;
-      }
       const dice_transaction_info &info = t->second;
+      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+        addr = info.original_block_address;
+      }
       memory_coalescing_arch_reduce_and_send(false, info, addr, segment_size);
     }
     for (std::map<new_addr_type, dice_transaction_info>::iterator t = wr_transactions.begin(); t != wr_transactions.end(); t++) {
       new_addr_type addr = t->first;
-      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
-        addr = original_block_address;
-      }
       const dice_transaction_info &info = t->second;
+      if(!gpgpu_ctx->the_gpgpusim->g_the_gpu_config->get_shader_core_config().dice_ldst_unit_enable_port_coalescing){
+        addr = info.original_block_address;
+      }
       memory_coalescing_arch_reduce_and_send(true, info, addr, segment_size);
     }
   }
