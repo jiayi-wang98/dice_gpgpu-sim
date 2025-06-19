@@ -1341,11 +1341,44 @@ void cgra_core_ctx::writeback(){
     //move to writeback stage
     unsigned index=m_block_commit_table->get_available_index();
     m_block_commit_table->reserve(index, m_cgra_block_state[DP_CGRA]);
+    //can update SIMT stack here instead of waiting for all load writeback
+    unsigned cta_id = m_cgra_block_state[DP_CGRA]->get_cta_id();
+    if (fetch_stalled_by_simt_stack(cta_id)){
+      dice_metadata* metadata = m_cgra_block_state[DP_CGRA]->get_current_metadata();
+      if(metadata->meta_id == get_fetch_waiting_block_id(cta_id)){
+        assert(metadata->branch);
+        dice_cfg_block_t *cfg_block = m_cgra_block_state[DP_CGRA]->get_current_cfg_block();
+        assert(cfg_block != NULL);
+        //check if predicate registers are all written back
+        unsigned pred_reg_num = metadata->branch_pred->reg_num();
+        std::list<operand_info> ld_dest_reg = metadata->load_destination_regs;
+        //TODO here!
+        bool preg_reg_from_load = false;
+        for(std::list<operand_info>::iterator it = metadata->load_destination_regs.begin(); it != metadata->load_destination_regs.end(); ++it){
+          unsigned ld_reg_num = (*it).reg_num();
+          if(pred_reg_num==ld_reg_num){
+            preg_reg_from_load = true;
+            break;
+          }
+        }
+        //if is not from load, then update simt stack since the predicate registers are already all written back
+        if(!preg_reg_from_load){
+          //predicate register is written back
+          if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
+            printf("DICE Sim uArch [UPDATE_SIMT_STACK]: Cycle %d, hw_cta=%d, Block=%d, predicate register %d is written back\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, cta_id, metadata->meta_id, pred_reg_num);
+            fflush(stdout);
+          }        
+          updateSIMTStack(cta_id,cfg_block);
+          clear_fetch_stalled_by_simt_stack(cta_id,metadata->meta_id);
+        }
+      }
+    }
+
     if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
       printf("DICE Sim uArch [WRITEBACK_START]: Cycle %d, hw_cta=%d, Block=%d, table_index=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id,index);
       fflush(stdout);
     }
-    unsigned cta_id = m_cgra_block_state[DP_CGRA]->get_cta_id();
+  
     simt_mask_t active_mask = m_cgra_block_state[DP_CGRA]->get_active_threads();
     //m_cgra_block_state[MEM_WRITEBACK] = m_cgra_block_state[DP_CGRA];
     m_cgra_block_state[DP_CGRA] = new cgra_block_state_t(this, m_kernel_block_size);
