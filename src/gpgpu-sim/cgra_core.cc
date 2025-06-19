@@ -2265,21 +2265,22 @@ void ldst_unit::cycle_cgra(){
 
   rc_fail = NO_RC_FAIL;
   //memory cycle, round robin arbiter from all load and store ports to check all load request to contant cache
-  //can process L1_bank numbers request per cycle
-  std::list<unsigned> issued_ports; //store ports that have been issued
-  issued_ports.push_back(unsigned(-1)); //initialize with -1 to avoid empty list
+  //can process L1_bank numbers request per cycle from ports
+  std::vector<unsigned> port_selected;
+  port_selected.resize(m_config->m_L1D_config.l1_banks, unsigned(-1));
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  
-    unsigned memory_port = m_dice_mem_request_queue->get_next_process_port_memory();
-    if(std::find(issued_ports.begin(), issued_ports.end(), memory_port) != issued_ports.end()) {
-      break; // port has already been issued
-    }
+    port_selected[j] = m_dice_mem_request_queue->get_next_process_port_memory(j);
+  }
+  for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  
+    unsigned memory_port = port_selected[j];
     if(memory_port != unsigned(-1)){
-      //printf("DICE-Sim uArch: [MEMORY]: cycle %d, memory port %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , memory_port);
       mem_access_t access = m_dice_mem_request_queue->get_request(memory_port);
+      if(g_debug_execution==3 && (m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core())){
+        printf("DICE-Sim uArch: [MEMORY]: cycle %d, memory port %d, l1d bank %d, processing access(addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , memory_port, j , access.get_addr());
+      }
       cgra_block_state_t* cgra_block = access.get_cgra_block_state();
       memory_cycle_cgra(cgra_block, access, rc_fail, type);
-      m_dice_mem_request_queue->set_last_processed_port_memory(memory_port);
-      issued_ports.push_back(memory_port); //add to issued ports
+      m_dice_mem_request_queue->set_last_processed_port_memory(memory_port,j);
     }
   }
   //shared memory cycle is modeled as latency for each thread directly
@@ -2688,6 +2689,19 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
         }
       } else {
         assert(status == MISS || status == HIT_RESERVED);
+        if(status == MISS && g_debug_execution==3 &m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
+          for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+            printf("DICE Sim uArch: [L1D LATENCY QUEUE]: cycle %d, MISS for thread %d, addr 0x%08x\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_addr());
+          }
+          fflush(stdout);
+        }
+
+        if(status == HIT_RESERVED && g_debug_execution==3 &m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
+          for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+            printf("DICE Sim uArch: [L1D LATENCY QUEUE]: cycle %d, HIT_RESERVED for thread %d, addr 0x%08x\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_addr());
+          }
+          fflush(stdout);
+        }
         l1_latency_queue[j][0] = NULL;
         if(mf_next->is_write()){
           unsigned stores_done_inc = tids.size();
@@ -2966,7 +2980,11 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
   }
   m_last_processed_port_contant = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
   m_last_processed_port_texture = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
-  m_last_processed_port_memory = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
+
+  m_last_processed_port_memory.resize(m_config->m_L1D_config.l1_banks);
+  for (unsigned i = 0; i < m_config->m_L1D_config.l1_banks; i++){
+    m_last_processed_port_memory[i] = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
+  }
   m_last_processed_port_shared = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
   enable_temporal_coaleascing = m_config->dice_ldst_unit_enable_temporal_coalescing;
   temporal_coalescing_interval = m_config->dice_ldst_unit_temporal_coalescing_interval;
@@ -3041,7 +3059,7 @@ unsigned dice_mem_request_queue::get_next_process_port_texture() {
   }
 }
 
-unsigned dice_mem_request_queue::get_next_process_port_memory()
+unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
 {
   //check which port has global/local memory request
   std::vector<unsigned> port_has_memory_request;
@@ -3051,6 +3069,10 @@ unsigned dice_mem_request_queue::get_next_process_port_memory()
       if ((access.get_space() != global_space) && (access.get_space() != local_space) && (access.get_space() != param_space_local)){
         continue;
       } else {
+        unsigned bank_id = m_config->m_L1D_config.set_bank(access.get_addr());
+        if(bank_id != bank){
+          continue;
+        }
         port_has_memory_request.push_back(i);
       }
     }
@@ -3061,6 +3083,10 @@ unsigned dice_mem_request_queue::get_next_process_port_memory()
       if ((access.get_space() != global_space) && (access.get_space() != local_space) && (access.get_space() != param_space_local)){
         continue;
       } else {
+        unsigned bank_id = m_config->m_L1D_config.set_bank(access.get_addr());
+        if(bank_id != bank){
+          continue;
+        }
         port_has_memory_request.push_back(i+m_config->dice_cgra_core_num_ld_ports);
       }
     }
@@ -3072,18 +3098,18 @@ unsigned dice_mem_request_queue::get_next_process_port_memory()
   //only one port has memory request
   if(port_has_memory_request.size() == 1){
     //check if the port is still waiting for coalescing
-    m_last_processed_port_memory = port_has_memory_request[0];
+    m_last_processed_port_memory[bank] = port_has_memory_request[0];
     return port_has_memory_request[0];
   }
   //start from last processed port
-  unsigned next_port = (m_last_processed_port_memory+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
+  unsigned next_port = (m_last_processed_port_memory[bank]+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
   while(true){
     if(std::find(port_has_memory_request.begin(), port_has_memory_request.end(), next_port) != port_has_memory_request.end()){
-      m_last_processed_port_memory = next_port;
+      m_last_processed_port_memory[bank] = next_port;
       return next_port;
     }
     next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-    if(next_port == m_last_processed_port_memory){
+    if(next_port == m_last_processed_port_memory[bank]){
       return unsigned(-1);
     }
   }
