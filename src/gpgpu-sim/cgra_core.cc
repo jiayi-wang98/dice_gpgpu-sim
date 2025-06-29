@@ -2272,7 +2272,7 @@ void ldst_unit::cycle_cgra(){
     if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle_cgra();
   }
 
-  m_dice_mem_request_queue->update_coaleasing_counter();
+  //m_dice_mem_request_queue->update_coaleasing_counter();  //This is maintained by queue itself
 
   //process and writeback new memory access
   enum mem_stage_stall_type rc_fail = NO_RC_FAIL;
@@ -2432,8 +2432,8 @@ void ldst_unit::cycle_cgra(){
 
 
   //coaleascing
-  m_dice_mem_request_queue->coalesce_cycle();
-
+  //m_dice_mem_request_queue->coalesce_cycle();
+  m_dice_mem_request_queue->coalesce_cycle_new();
 
   //process interconnect data
   if (!m_response_fifo.empty()) {
@@ -3030,6 +3030,12 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
     m_st_coalescing_counter[i] = 0;
   }
+
+  m_coalescing_transaction_info_buffer.resize(m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
+  m_coalescing_transaction_info_buffer_valid.resize(m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
+  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports; i++){
+    m_coalescing_transaction_info_buffer_valid[i] = false;  
+  }
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_constant() {
@@ -3195,6 +3201,17 @@ void dice_mem_request_queue::coalesce_cycle(){
 }
 
 
+void dice_mem_request_queue::coalesce_cycle_new(){
+  //check if the coalescing interval is done
+  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
+    do_ld_coalescing_new(i);
+  }
+  for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
+    do_st_coalescing_new(i);
+  }
+}
+
+
 void dice_mem_request_queue::do_ld_coalescing(unsigned port){
   //iterate through the first coalescing interval elements in the queue
   assert(m_ld_req_queue_pre_coalesce[port].size() > 0);
@@ -3220,7 +3237,7 @@ void dice_mem_request_queue::do_ld_coalescing(unsigned port){
       //coalescing
       unsigned addr = access.get_addr();
       if(g_debug_execution==3 &m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
-        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, cmd addr = %p.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, addr);
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, cmd addr = 0x%08x.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, addr);
         fflush(stdout);
       }
       unsigned size = access.get_size();
@@ -3293,6 +3310,291 @@ void dice_mem_request_queue::do_ld_coalescing(unsigned port){
     new_addr_type addr = t->first;
     const dice_transaction_info &info = t->second;
     memory_coalescing_arch_reduce(false, info, addr, segment_size, port, cgra_block);
+  }
+}
+
+
+void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
+  //1. update coalescing counter based on if m_coalescing_transaction_info_buffer_valid[port] is true. 
+  //2. according to the coalescing counter and m_coalescing_transaction_info_buffer_valid[port] is true, decide pop existing transaction info to next stage or not
+  //3. check if m_ld_req_queue_pre_coalesce[port].size() > 0= (has a new request)
+  //4. if no existing coalescing requert, then pop the existing transaction info to next stage, reset the coalescing counter, and ppush the first request in m_ld_req_queue_pre_coalesce[port] to form m_coalescing_transaction_info_buffer[port] and set m_coalescing_transaction_info_buffer_valid[port] to true, and reset the coalescing counter
+  //5. if has existing coalescing requert, then check if they can be coalesced, if can, then coalesce, if not, set the pop=1 to pop the existing transaction info to next stage, reset the coalescing counter,
+  //and pop the first request in m_ld_req_queue_pre_coalesce[port] to form m_coalescing_transaction_info_buffer[port] and set m_coalescing_transaction_info_buffer_valid[port] to true, and reset the coalescing counter
+  bool sector_segment_size = false; 
+  if (m_config->gpgpu_coalesce_arch >= 20 &&
+    m_config->gpgpu_coalesce_arch < 39) {
+    // Fermi and Kepler, L1 is normal and L2 is sector
+    sector_segment_size = false;
+  } else if (m_config->gpgpu_coalesce_arch >= 40) {
+    // Maxwell, Pascal and Volta, L1 and L2 are sectors
+    // all requests should be 32 bytes
+    sector_segment_size = true;
+  }
+
+  unsigned segment_size = sector_segment_size? 32: 128;
+
+  if(m_coalescing_transaction_info_buffer_valid[port]){
+    m_ld_coalescing_counter[port]++;
+    if(m_ld_coalescing_counter[port] >= temporal_coalescing_interval){ 
+      //pop
+      memory_coalescing_arch_reduce(false, m_coalescing_transaction_info_buffer[port], m_coalescing_transaction_info_buffer[port].block_addr, segment_size, port, m_coalescing_transaction_info_buffer[port].block);
+      assert(m_coalescing_transaction_info_buffer_valid[port] == true);
+      m_coalescing_transaction_info_buffer_valid[port] = false;
+      m_ld_coalescing_counter[port]=0; //reset the counter
+      if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, Coalescing counter increased to %d and pop cmd at address 0x%08x for tids = ",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, m_ld_coalescing_counter[port], m_coalescing_transaction_info_buffer[port].block_addr);
+        //print tids
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].active_threads.begin(); it != m_coalescing_transaction_info_buffer[port].active_threads.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf(", ld_dest_regs:");
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].ld_dest_regs.begin(); it != m_coalescing_transaction_info_buffer[port].ld_dest_regs.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf("\n");
+        fflush(stdout);
+      }
+    }
+  }
+
+  if(m_ld_req_queue_pre_coalesce[port].size() == 0){
+    //no new request, just return
+    return;
+  }
+
+  //has request
+  dice_transaction_info new_info;
+  cgra_block_state_t* cgra_block = m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state();
+  mem_access_t access = m_ld_req_queue_pre_coalesce[port].front();
+  pop_ld_request_pre_coalesce(port);
+  assert((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local));
+  
+  //get new access info
+  unsigned addr = access.get_addr();
+  unsigned size = access.get_size();
+  mem_access_type access_type = access.get_type();
+  memory_space_t space = access.get_space();
+  std::set<unsigned> tids = access.get_tids();
+  unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+  new_info.block_addr = block_address;
+  unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
+                                    // chunk does this thread access?
+  new_info.chunks.set(chunk);
+  new_info.access_type = access_type;
+  new_info.space = space;
+  for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
+    unsigned tid = *it;
+    new_info.active_threads.insert(tid);
+  }
+  //mem_access_sector_mask_t sector_mask;
+  //sector_mask.set(chunk);
+  unsigned idx = (addr & 127);
+  //std::bitset<128> byte_mask;
+  //active_mask_t active_mask = *m_block_active_mask;
+  for (unsigned i = 0; i < size; i++){
+    if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+      //byte_mask.set(idx + i);
+      new_info.bytes.set(idx + i);
+    }
+  }
+  //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
+  //use iterator to find the ld_dest_reg
+  std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
+  new_info.ld_dest_regs = ld_dest_regs;
+  new_info.port_idx.insert(port);
+  new_info.block = cgra_block;
+
+  
+  //if no existing coalescing transaction info, then just push the new info to the buffer
+  if(!m_coalescing_transaction_info_buffer_valid[port]){
+    m_coalescing_transaction_info_buffer[port] = new_info;
+    m_coalescing_transaction_info_buffer_valid[port] = true;
+    m_ld_coalescing_counter[port] = 0; //reset the counter
+    if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+      printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, no existing coalescing info, reset count = 0, push new cmd at address 0x%08x for tids = ",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, new_info.block_addr);
+      //print tids
+      for(std::set<unsigned>::iterator it = new_info.active_threads.begin(); it != new_info.active_threads.end(); ++it){
+        printf(" %d",*it);
+      }
+      printf(", ld_dest_regs:");
+      for(std::set<unsigned>::iterator it = new_info.ld_dest_regs.begin(); it != new_info.ld_dest_regs.end(); ++it){
+        printf(" %d",*it);
+      }
+      printf("\n");
+      fflush(stdout);
+    }
+  } else {
+    //has existing coalescing transaction info, check if they can be coalesced
+    if((m_coalescing_transaction_info_buffer[port].block_addr == new_info.block_addr) &&
+       (m_coalescing_transaction_info_buffer[port].access_type == new_info.access_type) &&
+       (m_coalescing_transaction_info_buffer[port].space == new_info.space) &&
+       (m_coalescing_transaction_info_buffer[port].ld_dest_regs == new_info.ld_dest_regs) &&
+        (m_coalescing_transaction_info_buffer[port].block == cgra_block)){
+      //can be coalesced, just merge the info
+      m_coalescing_transaction_info_buffer[port].chunks |= new_info.chunks;
+      m_coalescing_transaction_info_buffer[port].active_threads.insert(new_info.active_threads.begin(), new_info.active_threads.end());
+      m_coalescing_transaction_info_buffer[port].bytes |= new_info.bytes;
+      if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, coalesce to existing cmd when counter = %d, at address 0x%08x for tids = ",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, m_ld_coalescing_counter[port], m_coalescing_transaction_info_buffer[port].block_addr);
+        //print tids
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].active_threads.begin(); it != m_coalescing_transaction_info_buffer[port].active_threads.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf(", ld_dest_regs:");
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].ld_dest_regs.begin(); it != m_coalescing_transaction_info_buffer[port].ld_dest_regs.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf("\n");
+        fflush(stdout);
+      }
+    } else {
+      //cannot be coalesced, pop the existing transaction info to next stage, reset the coalescing counter,
+      //and push the new info to the buffer
+      memory_coalescing_arch_reduce(false, m_coalescing_transaction_info_buffer[port], m_coalescing_transaction_info_buffer[port].block_addr, segment_size, port, m_coalescing_transaction_info_buffer[port].block);
+      assert(m_coalescing_transaction_info_buffer_valid[port] == true);
+      //m_coalescing_transaction_info_buffer_valid[port] = false;
+
+      if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, can not coalesce, pop cmd when counter = %d, at address 0x%08x for tids = ",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, m_ld_coalescing_counter[port], m_coalescing_transaction_info_buffer[port].block_addr);
+        //print tids
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].active_threads.begin(); it != m_coalescing_transaction_info_buffer[port].active_threads.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf(", ld_dest_regs:");
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].ld_dest_regs.begin(); it != m_coalescing_transaction_info_buffer[port].ld_dest_regs.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf("\n");
+        fflush(stdout);
+      }
+      
+      m_ld_coalescing_counter[port] = 0; //reset the counter
+      m_coalescing_transaction_info_buffer[port] = new_info; //push the new info to the buffer
+      //m_coalescing_transaction_info_buffer_valid[port] = true; //set the valid flag to true
+      if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
+        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, reset counter = %d and push new cmd, at address 0x%08x for tids = ",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, m_ld_coalescing_counter[port], m_coalescing_transaction_info_buffer[port].block_addr);
+        //print tids
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].active_threads.begin(); it != m_coalescing_transaction_info_buffer[port].active_threads.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf(", ld_dest_regs:");
+        for(std::set<unsigned>::iterator it = m_coalescing_transaction_info_buffer[port].ld_dest_regs.begin(); it != m_coalescing_transaction_info_buffer[port].ld_dest_regs.end(); ++it){
+          printf(" %d",*it);
+        }
+        printf("\n");
+        fflush(stdout);
+      }
+    }
+  }
+}
+
+void dice_mem_request_queue::do_st_coalescing_new(unsigned port){
+    //1. update coalescing counter based on if m_coalescing_transaction_info_buffer_valid[port] is true. 
+  //2. according to the coalescing counter and m_coalescing_transaction_info_buffer_valid[port] is true, decide pop existing transaction info to next stage or not
+  //3. check if m_st_req_queue_pre_coalesce[port].size() > 0= (has a new request)
+  //4. if no existing coalescing requert, then pop the existing transaction info to next stage, reset the coalescing counter, and ppush the first request in m_st_req_queue_pre_coalesce[port] to form m_coalescing_transaction_info_buffer[port] and set m_coalescing_transaction_info_buffer_valid[port] to true, and reset the coalescing counter
+  //5. if has existing coalescing requert, then check if they can be coalesced, if can, then coalesce, if not, set the pop=1 to pop the existing transaction info to next stage, reset the coalescing counter,
+  //and pop the first request in m_st_req_queue_pre_coalesce[port] to form m_coalescing_transaction_info_buffer[port] and set m_coalescing_transaction_info_buffer_valid[port] to true, and reset the coalescing counter
+  bool sector_segment_size = false; 
+  if (m_config->gpgpu_coalesce_arch >= 20 &&
+    m_config->gpgpu_coalesce_arch < 39) {
+    // Fermi and Kepler, L1 is normal and L2 is sector
+    sector_segment_size = false;
+  } else if (m_config->gpgpu_coalesce_arch >= 40) {
+    // Maxwell, Pascal and Volta, L1 and L2 are sectors
+    // all requests should be 32 bytes
+    sector_segment_size = true;
+  }
+
+  unsigned segment_size = sector_segment_size? 32: 128;
+  unsigned true_store_port = port + m_config->dice_cgra_core_num_ld_ports; // true store port index, 4-7
+
+  if(m_coalescing_transaction_info_buffer_valid[true_store_port]){
+    m_st_coalescing_counter[port]++;
+    if(m_st_coalescing_counter[port] >= temporal_coalescing_interval){ 
+      //pop
+      memory_coalescing_arch_reduce(true, m_coalescing_transaction_info_buffer[true_store_port], m_coalescing_transaction_info_buffer[true_store_port].block_addr, segment_size, true_store_port, m_coalescing_transaction_info_buffer[true_store_port].block);
+      assert(m_coalescing_transaction_info_buffer_valid[true_store_port] == true);
+      m_coalescing_transaction_info_buffer_valid[true_store_port] = false;
+    }
+  }
+
+  if(m_st_req_queue_pre_coalesce[port].size() == 0){
+    //no new request, just return
+    return;
+  }
+
+  //has request
+  dice_transaction_info new_info;
+  cgra_block_state_t* cgra_block = m_st_req_queue_pre_coalesce[port].front().get_cgra_block_state();
+  mem_access_t access = m_st_req_queue_pre_coalesce[port].front();
+  pop_st_request_pre_coalesce(port);
+  assert((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local));
+  
+  //get new access info
+  unsigned addr = access.get_addr();
+  unsigned size = access.get_size();
+  mem_access_type access_type = access.get_type();
+  memory_space_t space = access.get_space();
+  std::set<unsigned> tids = access.get_tids();
+  unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
+  new_info.block_addr = block_address;
+  unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
+                                    // chunk does this thread access?
+  new_info.chunks.set(chunk);
+  new_info.access_type = access_type;
+  new_info.space = space;
+  for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
+    unsigned tid = *it;
+    new_info.active_threads.insert(tid);
+  }
+  //mem_access_sector_mask_t sector_mask;
+  //sector_mask.set(chunk);
+  unsigned idx = (addr & 127);
+  //std::bitset<128> byte_mask;
+  //active_mask_t active_mask = *m_block_active_mask;
+  for (unsigned i = 0; i < size; i++){
+    if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
+      //byte_mask.set(idx + i);
+      new_info.bytes.set(idx + i);
+    }
+  }
+  //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
+  //use iterator to find the ld_dest_reg
+  std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
+  new_info.ld_dest_regs = ld_dest_regs;
+  new_info.port_idx.insert(true_store_port);
+  new_info.block = cgra_block;
+
+  
+  //if no existing coalescing transaction info, then just push the new info to the buffer
+  if(!m_coalescing_transaction_info_buffer_valid[true_store_port]){
+    m_coalescing_transaction_info_buffer[true_store_port] = new_info;
+    m_coalescing_transaction_info_buffer_valid[true_store_port] = true;
+    m_st_coalescing_counter[port] = 0; //reset the counter
+  } else {
+    //has existing coalescing transaction info, check if they can be coalesced
+    if((m_coalescing_transaction_info_buffer[true_store_port].block_addr == new_info.block_addr) &&
+       (m_coalescing_transaction_info_buffer[true_store_port].access_type == new_info.access_type) &&
+       (m_coalescing_transaction_info_buffer[true_store_port].space == new_info.space) &&
+       (m_coalescing_transaction_info_buffer[true_store_port].ld_dest_regs == new_info.ld_dest_regs) &&
+        (m_coalescing_transaction_info_buffer[true_store_port].block == cgra_block)){
+      //can be coalesced, just merge the info
+      m_coalescing_transaction_info_buffer[true_store_port].chunks |= new_info.chunks;
+      m_coalescing_transaction_info_buffer[true_store_port].active_threads.insert(new_info.active_threads.begin(), new_info.active_threads.end());
+      m_coalescing_transaction_info_buffer[true_store_port].bytes |= new_info.bytes;
+      //no need to reset the counter, just increase it
+    } else {
+      //cannot be coalesced, pop the existing transaction info to next stage, reset the coalescing counter,
+      //and push the new info to the buffer
+      memory_coalescing_arch_reduce(true, m_coalescing_transaction_info_buffer[true_store_port], m_coalescing_transaction_info_buffer[true_store_port].block_addr, segment_size, true_store_port, m_coalescing_transaction_info_buffer[true_store_port].block);
+      assert(m_coalescing_transaction_info_buffer_valid[true_store_port] == true);
+      m_coalescing_transaction_info_buffer_valid[true_store_port] = false;
+      m_st_coalescing_counter[port] = 0; //reset the counter
+      m_coalescing_transaction_info_buffer[true_store_port] = new_info; //push the new info to the buffer
+      m_coalescing_transaction_info_buffer_valid[true_store_port] = true; //set the valid flag to true
+    }
   }
 }
 

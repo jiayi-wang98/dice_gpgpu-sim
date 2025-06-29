@@ -1136,6 +1136,11 @@ class cgra_unit {
     void do_ld_coalescing(unsigned port);
     void do_st_coalescing(unsigned port);
 
+    //more close to hardware implementation
+    void coalesce_cycle_new();
+    void do_ld_coalescing_new(unsigned port);
+    void do_st_coalescing_new(unsigned port);
+
     const shader_core_config *m_config;
     ldst_unit *m_ldst_unit;
     std::vector<unsigned> m_ld_port_credit;
@@ -1159,7 +1164,12 @@ class cgra_unit {
       mem_access_type access_type;
       memory_space_t space;
       std::set<unsigned> active_threads;
+      new_addr_type block_addr;  // address of the transaction
+      cgra_block_state_t *block;  // block that this transaction belongs to
     };
+
+    std::vector<dice_transaction_info> m_coalescing_transaction_info_buffer;
+    std::vector<bool> m_coalescing_transaction_info_buffer_valid;
 
     void memory_coalescing_arch_reduce(bool is_write, const dice_transaction_info &info,new_addr_type addr, unsigned segment_size, unsigned port, cgra_block_state_t *block);
 
