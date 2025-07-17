@@ -736,6 +736,46 @@ void shader_core_stats::print_regfile_stats(FILE *fout) const {
           total_regfile_read_accesses);
   fprintf(fout, "gpgpu_n_tot_regfile_write_acesses = %d\n",
           total_regfile_write_accesses);
+
+    //dice status
+  unsigned total_dice_simt_stack_read = 0;
+  unsigned total_dice_simt_stack_write = 0;
+  unsigned total_dice_dispatched_threads = 0;
+  unsigned total_dice_scoreboard_ld_reserve = 0;
+  unsigned total_dice_e_blocks = 0;
+  unsigned total_dice_cta = 0;
+
+  for(int i = 0; i < m_config->num_shader(); i++) {
+    fprintf(fout, "SHADER %d:\n", i);
+    fprintf(fout, "dice_simt_stack_read = %d\n",
+            dice_simt_stack_read[i]);
+    fprintf(fout, "dice_simt_stack_write = %d\n",
+            dice_simt_stack_write[i]);
+    fprintf(fout, "dice_dispatched_threads = %d\n",
+            dice_dispatched_threads[i]);
+    fprintf(fout, "dice_scoreboard_ld_reserve = %d\n",
+            dice_scoreboard_ld_reserve[i]);
+    fprintf(fout, "dice_e_blocks = %d\n", dice_e_blocks[i]);
+    fprintf(fout, "dice_cta = %d\n", dice_cta[i]);
+    total_dice_simt_stack_read += dice_simt_stack_read[i];
+    total_dice_simt_stack_write += dice_simt_stack_write[i];
+    total_dice_dispatched_threads += dice_dispatched_threads[i];
+    total_dice_scoreboard_ld_reserve += dice_scoreboard_ld_reserve[i];
+    total_dice_e_blocks += dice_e_blocks[i];
+    total_dice_cta += dice_cta[i];
+  }
+  fprintf(fout, "gpgpu_n_tot_dice_simt_stack_read = %d\n",
+          total_dice_simt_stack_read);
+  fprintf(fout, "gpgpu_n_tot_dice_simt_stack_write = %d\n",
+          total_dice_simt_stack_write);
+  fprintf(fout, "gpgpu_n_tot_dice_dispatched_threads = %d\n",
+          total_dice_dispatched_threads);
+  fprintf(fout, "gpgpu_n_tot_dice_scoreboard_ld_reserve = %d\n",
+          total_dice_scoreboard_ld_reserve);
+  fprintf(fout, "gpgpu_n_tot_dice_e_blocks = %d\n",
+          total_dice_e_blocks);
+  fprintf(fout, "gpgpu_n_tot_dice_cta = %d\n",
+          total_dice_cta);  
 }
 
 void shader_core_stats::event_warp_issued(unsigned s_id, unsigned warp_id,

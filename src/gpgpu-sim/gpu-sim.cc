@@ -605,6 +605,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
                          "perfect inst and const cache mode, so all inst and "
                          "const hits in the cache(default = disabled)",
                          "0");
+  option_parser_register(opp, "-dice_perfect_bitstream_cache", OPT_BOOL,
+   &perfect_bitstream_cache,
+   "perfect bitstream cache mode",
+   "0");
   option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");

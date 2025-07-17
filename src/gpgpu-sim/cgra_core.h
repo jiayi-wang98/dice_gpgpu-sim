@@ -206,6 +206,31 @@ class cgra_core_ctx {
       m_stats->m_read_regfile_acesses[m_cgra_core_id] =
           m_stats->m_read_regfile_acesses[m_cgra_core_id] + active_count;
     }
+    void inc_stack_reads(unsigned active_count) {
+      m_stats->dice_simt_stack_read[m_cgra_core_id] =
+          m_stats->dice_simt_stack_read[m_cgra_core_id] + active_count;
+    }
+    void inc_stack_writes(unsigned active_count) {
+      m_stats->dice_simt_stack_write[m_cgra_core_id] =
+          m_stats->dice_simt_stack_write[m_cgra_core_id] + active_count;
+    }
+    void inc_dispatched_threads(unsigned active_count) {
+      m_stats->dice_dispatched_threads[m_cgra_core_id] =
+          m_stats->dice_dispatched_threads[m_cgra_core_id] + active_count;
+    }
+    void inc_scoreboard_ld_reserve(unsigned active_count) {
+      m_stats->dice_scoreboard_ld_reserve[m_cgra_core_id] =
+          m_stats->dice_scoreboard_ld_reserve[m_cgra_core_id] + active_count;
+    }
+    void inc_e_blocks(unsigned active_count) {
+      m_stats->dice_e_blocks[m_cgra_core_id] =
+          m_stats->dice_e_blocks[m_cgra_core_id] + active_count;
+    }
+    void inc_cta(unsigned active_count) {
+      m_stats->dice_cta[m_cgra_core_id] =
+          m_stats->dice_cta[m_cgra_core_id] + active_count;
+    }
+
     void incregfile_writes(unsigned active_count) {
       m_stats->m_write_regfile_acesses[m_cgra_core_id] =
           m_stats->m_write_regfile_acesses[m_cgra_core_id] + active_count;

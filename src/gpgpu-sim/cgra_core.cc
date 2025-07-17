@@ -118,9 +118,13 @@ void cgra_core_ctx::updateSIMTStack(unsigned hw_cta_id, dice_cfg_block_t *cfg_bl
   if(m_cgra_core_id == get_dice_trace_sampling_core()){
     m_simt_stack[hw_cta_id]->update_sid(thread_done, next_pc, cfg_block->reconvergence_pc,
     cfg_block->op, cfg_block->get_metadata()->m_size, cfg_block->get_metadata()->m_PC);
+    inc_stack_writes(2);
+    inc_stack_reads(1);
   } else {
     m_simt_stack[hw_cta_id]->update(thread_done, next_pc, cfg_block->reconvergence_pc,
     cfg_block->op, cfg_block->get_metadata()->m_size, cfg_block->get_metadata()->m_PC);
+    inc_stack_writes(2);
+    inc_stack_reads(1);
   }
 }
 
@@ -1003,7 +1007,7 @@ void cgra_core_ctx::fetch_bitstream(){
             m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
         std::list<cache_event> events;
         enum cache_request_status status;
-        if (m_config->perfect_inst_const_cache)
+        if (m_config->perfect_bitstream_cache)
           status = HIT;
         else
           status = m_L1B->access(
@@ -1137,6 +1141,8 @@ void cgra_core_ctx::decode(){
       if(metadata->uni_bra){
         //update simt stack top with branch target pc
         m_simt_stack[m_cgra_block_state[MF_DE]->get_cta_id()]->update_no_divergence(metadata->branch_target_meta_pc);
+        inc_stack_writes(1);
+        inc_stack_reads(1);
       }
       else {
         //predicate branch, wait for active mask to be done to update
@@ -1147,6 +1153,8 @@ void cgra_core_ctx::decode(){
     } else {
       //update simt stack top with next pc
       m_simt_stack[m_cgra_block_state[MF_DE]->get_cta_id()]->update_no_divergence(metadata->get_PC()+metadata->metadata_size());
+      inc_stack_writes(1);
+      inc_stack_reads(1);
     }
     //set state and fill the cfg block
     m_cgra_block_state[MF_DE]->set_decode_done();
@@ -1173,6 +1181,7 @@ void cgra_core_ctx::complete_cta(unsigned hw_cta_id){
       m_active_threads.reset(tid);
     }
   }
+  inc_cta(1);
 }
 
 //simple predict rule: if target pc > current pc, then predict not taken
@@ -1274,6 +1283,7 @@ void cgra_core_ctx::cta_schedule(){
         printf("DICE Sim uArch [CTA_SCHEDULE]: Cycle %d, hw_cta=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
         fflush(stdout);
       }
+      inc_e_blocks(1);
     }
   }
 }
@@ -1630,6 +1640,7 @@ void dispatcher_rfu_t::dispatch(){
         m_ready_threads[lane_id].pop_front();
         m_cgra_core->exec(tid,lane_id);//issue thread to cgra unit
         m_dispatched_thread++;
+        m_cgra_core->inc_dispatched_threads(1);
       } 
     } else {
       if(!exec_stalled()) {
@@ -1801,6 +1812,7 @@ void dispatcher_rfu_t::dispatch(){
               }
             } else {
               m_scoreboard->reserveRegisters((*m_dispatching_block)->get_current_metadata(), core_tid);
+              m_cgra_core->inc_scoreboard_ld_reserve((*m_dispatching_block)->get_current_metadata()->load_destination_regs.size());
             }
             if(g_debug_execution==3 &m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
               printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, dispatch and get operands of thread %d for dice block id = %d, lane_id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id() ,core_tid ,(*m_dispatching_block)->get_current_metadata()->meta_id,lane_id);

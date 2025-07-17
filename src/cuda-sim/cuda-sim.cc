@@ -267,7 +267,7 @@ void gpgpu_t::gpgpu_ptx_sim_unbindTexture(
 }
 
 #define MAX_INST_SIZE 8 /*bytes*/
-#define MAX_DICE_BITSTREAM_SIZE 256 /*bytes*/
+#define MAX_DICE_BITSTREAM_SIZE 512 /*bytes*/
 
 void function_info::dice_block_assemble() {
   if (m_assembled) {

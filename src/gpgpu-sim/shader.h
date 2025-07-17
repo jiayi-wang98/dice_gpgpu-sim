@@ -1702,6 +1702,7 @@ class shader_core_config : public core_config {
   unsigned dice_ldst_unit_temporal_coalescing_interval;
   unsigned dice_ldst_unit_temporal_coalescing_max_cmd;
   unsigned dice_enable_unrolling;
+  bool perfect_bitstream_cache;
 };
 
 struct shader_core_stats_pod {
@@ -1773,6 +1774,16 @@ struct shader_core_stats_pod {
   unsigned *dual_issue_nums;
 
   unsigned ctas_completed;
+
+  //dice power model preformance counters
+  unsigned *dice_simt_stack_read;
+  unsigned *dice_simt_stack_write;
+  unsigned *dice_dispatched_threads;
+  unsigned *dice_scoreboard_ld_reserve;
+  unsigned *dice_e_blocks;
+  unsigned *dice_cta;
+
+
   // memory access classification
   int gpgpu_n_mem_read_local;
   int gpgpu_n_mem_write_local;
@@ -1898,6 +1909,13 @@ class shader_core_stats : public shader_core_stats_pod {
 
     m_shader_dynamic_warp_issue_distro.resize(config->num_shader());
     m_shader_warp_slot_issue_distro.resize(config->num_shader());
+      //dice power model preformance counters
+    dice_simt_stack_read = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    dice_simt_stack_write = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    dice_dispatched_threads = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    dice_scoreboard_ld_reserve = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    dice_e_blocks = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
+    dice_cta = (unsigned *)calloc(config->gpgpu_num_sched_per_core, sizeof(unsigned));
   }
 
   ~shader_core_stats() {
