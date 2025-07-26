@@ -2331,115 +2331,24 @@ void ldst_unit::cycle_cgra(){
   //shared memory cycle is modeled as latency for each thread directly
   //
   std::map<unsigned, std::map<new_addr_type, unsigned>> bank_accs;  // bank -> word address -> access count
-  bool accept_new_access = true;
-  bool clear_current_access = false;
-  if(shared_cycle_count_set()){
-    accept_new_access = false;
-    clear_current_access = decrease_shared_cycle_count();
-  }
-  if(accept_new_access){
-    unsigned total_accesses = 0;
-    for (int k = 0; k < m_config->num_shmem_bank; k++) {  
-      unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
-      if(shared_port != unsigned(-1)){
-        mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
-        cgra_block_state_t* cgra_block = access.get_cgra_block_state();
-        new_addr_type addr = access.get_addr();
-        unsigned bank = m_config->shmem_bank_func(addr);
-        new_addr_type word = line_size_based_tag_func_cgra(addr, m_config->WORD_SIZE);
-        bank_accs[bank][word]++;
-      }
-    }
-    if (m_config->shmem_limited_broadcast) {
-      // step 2: look for and select a broadcast bank/word if one occurs
-      bool broadcast_detected = false;
-      new_addr_type broadcast_word = (new_addr_type)-1;
-      unsigned broadcast_bank = (unsigned)-1;
-      std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
-      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
-        unsigned bank = b->first;
-        std::map<new_addr_type, unsigned> &access_set = b->second;
-        std::map<new_addr_type, unsigned>::iterator w;
-        for (w = access_set.begin(); w != access_set.end(); ++w) {
-          if (w->second > 1) {
-            // found a broadcast
-            broadcast_detected = true;
-            broadcast_bank = bank;
-            broadcast_word = w->first;
-            break;
-          }
-        }
-        if (broadcast_detected) break;
-      }
-    
-      // step 3: figure out max bank accesses performed, taking account of
-      // broadcast case
-      unsigned max_bank_accesses = 0;
-      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
-        unsigned bank_accesses = 0;
-        std::map<new_addr_type, unsigned> &access_set = b->second;
-        std::map<new_addr_type, unsigned>::iterator w;
-        for (w = access_set.begin(); w != access_set.end(); ++w)
-          bank_accesses += w->second;
-        if (broadcast_detected && broadcast_bank == b->first) {
-          for (w = access_set.begin(); w != access_set.end(); ++w) {
-            if (w->first == broadcast_word) {
-              unsigned n = w->second;
-              assert(n > 1);  // or this wasn't a broadcast
-              assert(bank_accesses >= (n - 1));
-              bank_accesses -= (n - 1);
-              break;
-            }
-          }
-        }
-        if (bank_accesses > max_bank_accesses)
-          max_bank_accesses = bank_accesses;
-      }
-    
-      // step 4: accumulate
-      total_accesses += max_bank_accesses;
-    } else {
-      // step 2: look for the bank with the maximum number of access to
-      // different words
-      unsigned max_bank_accesses = 0;
-      std::map<unsigned, std::map<new_addr_type, unsigned> >::iterator b;
-      for (b = bank_accs.begin(); b != bank_accs.end(); b++) {
-        max_bank_accesses =
-            std::max(max_bank_accesses, (unsigned)b->second.size());
-      }
-    
-      // step 3: accumulate
-      total_accesses += max_bank_accesses;
-    }
-    //execute shared memory access for all ports
-    if (total_accesses == 1) { // no bank conflict
-      for (int k = 0; k < m_config->num_shmem_bank; k++) {  
-        unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
-        if(shared_port != unsigned(-1)){
-          mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
-          cgra_block_state_t* cgra_block = access.get_cgra_block_state();
-          shared_cycle_cgra(cgra_block, access, rc_fail, type);
-          m_dice_mem_request_queue->set_last_processed_port_shared(shared_port);
-        }
-      }
-    } else {
-      set_shared_cycle_count(total_accesses);
-    }
-  }
 
-  if(clear_current_access){
-    //clear current access
-    for (int k = 0; k < m_config->num_shmem_bank; k++) {  
-      unsigned shared_port = m_dice_mem_request_queue->get_next_process_port_shared();
-      if(shared_port != unsigned(-1)){
-        mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
-        cgra_block_state_t* cgra_block = access.get_cgra_block_state();
-        shared_cycle_cgra(cgra_block, access, rc_fail, type);
-        m_dice_mem_request_queue->set_last_processed_port_shared(shared_port);
+  std::vector<unsigned> shared_port_selected;
+  shared_port_selected.resize(m_config->num_shmem_bank, unsigned(-1));
+  for (int k = 0; k < m_config->num_shmem_bank; k++) {
+    shared_port_selected[k] = m_dice_mem_request_queue->get_next_process_port_shared(k);
+  }
+  for (int k = 0; k < m_config->num_shmem_bank; k++) {
+    unsigned shared_port = shared_port_selected[k];
+    if(shared_port != unsigned(-1)){
+      mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
+      if(g_debug_execution==3 && (m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core())){
+        printf("DICE-Sim uArch: [SHARED MEMORY]: cycle %d, memory port %d, shared bank %d, processing access(addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , shared_port, k , access.get_addr());
       }
+      cgra_block_state_t* cgra_block = access.get_cgra_block_state();
+      shared_cycle_cgra(cgra_block, access, rc_fail, type);
+      m_dice_mem_request_queue->set_last_processed_port_shared(shared_port, k);
     }
   }
-
   rc_fail = NO_RC_FAIL;
 
 
@@ -2954,11 +2863,11 @@ void ldst_unit::dice_push_accesses(dice_cfg_block_t *cfg_block,cgra_block_state_
     assert(access.get_cgra_block_state() != NULL);
     //check global memory access
     bool to_coalesce = false;
-    if(m_config->dice_ldst_unit_enable_temporal_coalescing){
-      if((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-        to_coalesce = true;
-      }
+    //if(m_config->dice_ldst_unit_enable_temporal_coalescing){ //move to inside coalesce with cycle count as 1
+    if((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
+      to_coalesce = true;
     }
+    //}
 
     if(to_coalesce){
       if(i< (accessq.size()/2)){
@@ -3030,9 +2939,16 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
   for (unsigned i = 0; i < m_config->m_L1D_config.l1_banks; i++){
     m_last_processed_port_memory[i] = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
   }
-  m_last_processed_port_shared = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
+
+  m_last_processed_port_shared.resize(m_config->num_shmem_bank);
+  for (unsigned i = 0; i < m_config->num_shmem_bank; i++){
+    m_last_processed_port_shared[i] = m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports-1;
+  }
   enable_temporal_coaleascing = m_config->dice_ldst_unit_enable_temporal_coalescing;
   temporal_coalescing_interval = m_config->dice_ldst_unit_temporal_coalescing_interval;
+  if(!enable_temporal_coaleascing){
+    temporal_coalescing_interval = 1; //if not enabled, set to 1
+  }
   temporal_coalescing_max_cmd = m_config->dice_ldst_unit_temporal_coalescing_max_cmd;
   m_ld_coalescing_counter.resize(m_config->dice_cgra_core_num_ld_ports);
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
@@ -3149,14 +3065,14 @@ unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
   //only one port has memory request
   if(port_has_memory_request.size() == 1){
     //check if the port is still waiting for coalescing
-    m_last_processed_port_memory[bank] = port_has_memory_request[0];
+    //m_last_processed_port_memory[bank] = port_has_memory_request[0];
     return port_has_memory_request[0];
   }
   //start from last processed port
   unsigned next_port = (m_last_processed_port_memory[bank]+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
   while(true){
     if(std::find(port_has_memory_request.begin(), port_has_memory_request.end(), next_port) != port_has_memory_request.end()){
-      m_last_processed_port_memory[bank] = next_port;
+      //m_last_processed_port_memory[bank] = next_port;
       return next_port;
     }
     next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
@@ -3768,14 +3684,20 @@ void dice_mem_request_queue::memory_coalescing_arch_reduce(bool is_write, const 
   }
 }
 
-unsigned dice_mem_request_queue::get_next_process_port_shared(){
+unsigned dice_mem_request_queue::get_next_process_port_shared(unsigned bank){
   //check which port has shared memory request
+
   std::vector<unsigned> port_has_shared_request;
   for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
     if(!m_ld_req_queue[i].empty()){
       mem_access_t access = m_ld_req_queue[i].front();
       if(access.get_space() == shared_space){
-        port_has_shared_request.push_back(i);
+        new_addr_type addr = access.get_addr();
+        unsigned bank_id = m_config->shmem_bank_func(addr);
+        if(bank_id == bank){
+          //same bank, include this port
+          port_has_shared_request.push_back(i);
+        }
       }
     }
   }
@@ -3783,7 +3705,12 @@ unsigned dice_mem_request_queue::get_next_process_port_shared(){
     if(!m_st_req_queue[i].empty()){
       mem_access_t access = m_st_req_queue[i].front();
       if(access.get_space() == shared_space){
-        port_has_shared_request.push_back(i+m_config->dice_cgra_core_num_ld_ports);
+        new_addr_type addr = access.get_addr();
+        unsigned bank_id = m_config->shmem_bank_func(addr);
+        if(bank_id == bank){
+          //same bank, include this port
+          port_has_shared_request.push_back(i+m_config->dice_cgra_core_num_ld_ports);
+        }
       }
     }
   }
@@ -3794,13 +3721,13 @@ unsigned dice_mem_request_queue::get_next_process_port_shared(){
     return port_has_shared_request[0];
   }
   //start from last processed port
-  unsigned next_port = (m_last_processed_port_shared+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
+  unsigned next_port = (m_last_processed_port_shared[bank]+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
   while(true){
     if(std::find(port_has_shared_request.begin(), port_has_shared_request.end(), next_port) != port_has_shared_request.end()){
       return next_port;
     }
     next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-    if(next_port == m_last_processed_port_shared){
+    if(next_port == m_last_processed_port_shared[bank]){
       return unsigned(-1);
     }
   }

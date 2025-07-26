@@ -754,6 +754,8 @@ void dice_cfg_block_t::memory_coalescing_arch_reduce_and_send(bool is_write, con
     }
   }
   m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
+  //printf("DICE_CFG_BLOCK: mem_access_t generated for %s at addr 0x%llx, sector mask = %s, size %d, port %d\n", is_write ? "store" : "load", addr, info.chunks.to_string().c_str(), size, *(info.port_idx.begin())); 
+  //fflush(stdout);
   //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
 }
 

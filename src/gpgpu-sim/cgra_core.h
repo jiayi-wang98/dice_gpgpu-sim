@@ -1112,11 +1112,11 @@ class cgra_unit {
     unsigned get_next_process_port_constant();
     unsigned get_next_process_port_texture();
     unsigned get_next_process_port_memory(unsigned bank);
-    unsigned get_next_process_port_shared();
+    unsigned get_next_process_port_shared(unsigned bank);
     void set_last_processed_port_constant(unsigned port) { m_last_processed_port_contant = port; }
     void set_last_processed_port_texture(unsigned port) { m_last_processed_port_texture = port; }
     void set_last_processed_port_memory(unsigned port, unsigned bank) { m_last_processed_port_memory[bank] = port; }
-    void set_last_processed_port_shared(unsigned port) { m_last_processed_port_shared = port; }
+    void set_last_processed_port_shared(unsigned port, unsigned bank) { m_last_processed_port_shared[bank] = port; }
 
     void update_coaleasing_counter();
     //bool coalesce_interval_done(unsigned port){
@@ -1202,7 +1202,7 @@ class cgra_unit {
     unsigned m_last_processed_port_contant;
     unsigned m_last_processed_port_texture;
     std::vector<unsigned> m_last_processed_port_memory; 
-    unsigned m_last_processed_port_shared;
+    std::vector<unsigned> m_last_processed_port_shared;
     std::vector<unsigned> m_ld_coalescing_counter;
     std::vector<unsigned> m_st_coalescing_counter;
     unsigned enable_temporal_coaleascing;

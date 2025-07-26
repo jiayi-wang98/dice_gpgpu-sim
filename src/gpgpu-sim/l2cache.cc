@@ -774,9 +774,9 @@ memory_sub_partition::breakdown_request_to_sector_requests(mem_fetch *mf) {
     }
   } else {
     printf(
-        "Invalid sector received, address = 0x%06llx, sector mask = %d, byte "
-        "mask = , data size = %u",
-        mf->get_addr(), mf->get_access_sector_mask().count(),
+        "Invalid sector received, address = 0x%06llx, sector mask = %s, "
+        "data size = %u",
+        mf->get_addr(), mf->get_access_sector_mask().to_string().c_str(),
         mf->get_data_size());
     fflush(stdout);
     assert(0 && "Undefined data size is received");
