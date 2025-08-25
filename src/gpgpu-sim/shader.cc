@@ -712,6 +712,31 @@ void shader_core_stats::print(FILE *fout) const {
     fprintf(fout, "WS%d:%d\t", i, dual_issue_nums[i]);
   fprintf(fout, "\n");
 
+  fprintf(fout, "DICE dispatcher Total occupancy distribution:\n");
+  fprintf(fout, "Stall_LDST_FIFO:%d\n", dice_dispatch_cycle_distro[0]);
+  fprintf(fout, "Stall_writeback_FIFO:%d\n", dice_dispatch_cycle_distro[1]);
+  fprintf(fout, "Stall_Scoreboard:%d\n", dice_dispatch_cycle_distro[2]);
+  fprintf(fout, "Stall_Idle:%d\n", dice_dispatch_cycle_distro[3]);
+  for (unsigned i = 4; i <= 96; i++)
+    fprintf(fout, "Total%d:%d\n", i - 3, dice_dispatch_cycle_distro[i]);
+  fprintf(fout, "\n");
+
+  fprintf(fout, "DICE dispatcher CGRA PE occupancy distribution:\n");
+  for (unsigned i = 0; i <= 64; i++)
+    fprintf(fout, "PE%d:%d\n", i, dice_dispatch_cycle_distro_cgra_ops[i]);
+  fprintf(fout, "\n");
+
+
+  fprintf(fout, "DICE dispatcher LDST Unit occupancy distribution:\n");
+  for (unsigned i = 0; i <= 8; i++)
+    fprintf(fout, "LDST Unit %d:%d\n", i, dice_dispatch_cycle_distro_ldst[i]);
+  fprintf(fout, "\n");
+
+  fprintf(fout, "DICE dispatcher branch occupancy distribution:\n");
+  for (unsigned i = 0; i <= 4; i++)
+    fprintf(fout, "Branch Unit %d:%d\n", i, dice_dispatch_cycle_distro_branch[i]);
+  fprintf(fout, "\n");
+
   m_outgoing_traffic_stats->print(fout);
   m_incoming_traffic_stats->print(fout);
 }

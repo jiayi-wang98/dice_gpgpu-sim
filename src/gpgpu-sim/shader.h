@@ -1782,6 +1782,10 @@ struct shader_core_stats_pod {
   unsigned *dice_scoreboard_ld_reserve;
   unsigned *dice_e_blocks;
   unsigned *dice_cta;
+  unsigned *dice_dispatch_cycle_distro;
+  unsigned *dice_dispatch_cycle_distro_branch;
+  unsigned *dice_dispatch_cycle_distro_ldst;
+  unsigned *dice_dispatch_cycle_distro_cgra_ops;
 
 
   // memory access classification
@@ -1890,6 +1894,15 @@ class shader_core_stats : public shader_core_stats_pod {
     m_n_diverge = (unsigned *)calloc(config->num_shader(), sizeof(unsigned));
     shader_cycle_distro =
         (unsigned *)calloc(config->warp_size + 3, sizeof(unsigned));
+    dice_dispatch_cycle_distro =
+        (unsigned *)calloc(97, sizeof(unsigned));
+    dice_dispatch_cycle_distro_branch =
+        (unsigned *)calloc(5, sizeof(unsigned)); 
+    dice_dispatch_cycle_distro_ldst =
+        (unsigned *)calloc(9, sizeof(unsigned));
+    dice_dispatch_cycle_distro_cgra_ops =
+        (unsigned *)calloc(65, sizeof(unsigned));
+
     last_shader_cycle_distro =
         (unsigned *)calloc(m_config->get_warp_size() + 3, sizeof(unsigned));
     single_issue_nums =
@@ -1932,6 +1945,10 @@ class shader_core_stats : public shader_core_stats_pod {
     free(m_n_diverge);
     free(shader_cycle_distro);
     free(last_shader_cycle_distro);
+    free(dice_dispatch_cycle_distro);
+    free(dice_dispatch_cycle_distro_branch);
+    free(dice_dispatch_cycle_distro_ldst);
+    free(dice_dispatch_cycle_distro_cgra_ops);
   }
 
   void new_grid() {}

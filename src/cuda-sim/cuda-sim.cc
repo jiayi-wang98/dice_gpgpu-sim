@@ -2180,8 +2180,8 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
         skip = !pred_lookup(pI->get_pred_mod(), pred_value.pred & 0x000F);
       }
     }
+    m_gpu->gpgpu_ctx->the_gpgpusim->g_the_gpu->gpu_sim_insn += skip ? 0 : pI->get_opcode() == MOV_OP?  0 : 1; // count only executed instructions
     int inst_opcode = pI->get_opcode();
-    
     if (skip) {
       if(pI->has_memory_write()){
       //if(pI->has_memory_write() || pI->has_memory_read()){ //if last instruction branch, then not set not active

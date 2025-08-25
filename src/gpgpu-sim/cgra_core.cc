@@ -1397,6 +1397,7 @@ void cgra_core_ctx::writeback(){
   }
 
   //register writeback
+  bool not_idle = false;
   for(unsigned lane_id=0; lane_id < 4; lane_id++){
     if(m_cgra_unit->out_valid(lane_id)){//not stalled
       m_cgra_unit->inc_num_executed_thread();
@@ -1408,7 +1409,21 @@ void cgra_core_ctx::writeback(){
       //m_scoreboard->releaseRegisters(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
       //move to m_dispatcher_rfu->writeback_ldst
       //m_scoreboard->releaseRegistersFromLoad(m_cgra_block_state[DP_CGRA]->get_current_metadata(), tid);
+      not_idle = true;
     }
+  }
+  if(not_idle){
+    //add actual distro considering predicated execution
+    dice_metadata* metadata = m_cgra_block_state[DP_CGRA]->get_current_metadata();
+    //unsigned number_of_loads = metadata->load_destination_regs.size();
+    //unsigned number_of_stores = metadata->num_store;
+    //unsigned number_of_branches = metadata->branch?1:0;
+    //unsigned number_of_cgra_ops = metadata->bitstream_length;
+    //unsigned total_operations = number_of_loads + number_of_stores + number_of_branches + number_of_cgra_ops;
+    //inc_dispatch_cycle_distro_active(actual_dispatch_count*total_operations);
+    //inc_dispatch_cycle_distro_ldst_active(actual_dispatch_count*(number_of_loads+number_of_stores));
+    //inc_dispatch_cycle_distro_branch(actual_dispatch_count*number_of_branches);
+    //inc_dispatch_cycle_distro_cgra_ops(actual_dispatch_count*number_of_cgra_ops);
   }
   //cycle every RF bank
   m_dispatcher_rfu->rf_cycle();
@@ -1796,10 +1811,12 @@ void dispatcher_rfu_t::dispatch(){
         }
       }
       if(!exec_stalled() && !collision){ //not dispatch if writeback buffer is full f9r current dispatching metadata or cgra_is_stalled
+        unsigned actual_dispatch_count = 0;
         for(unsigned lane_id=0;lane_id<4;lane_id++){
           unsigned tid = actual_dispatch_threads[lane_id];
           unsigned core_tid = unsigned(-1);
           if(tid != unsigned(-1)){
+            actual_dispatch_count++;
             core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
             read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
             if((*m_dispatching_block)->is_parameter_load()){
@@ -1824,6 +1841,30 @@ void dispatcher_rfu_t::dispatch(){
           }
           m_ready_threads[lane_id].push_back(core_tid);
         }
+        //update status
+        unsigned number_of_loads = (*m_dispatching_block)->get_current_metadata()->load_destination_regs.size();
+        unsigned number_of_stores = (*m_dispatching_block)->get_current_metadata()->num_store;
+        unsigned number_of_branches = (*m_dispatching_block)->get_current_metadata()->branch?1:0;
+        unsigned number_of_cgra_ops = (*m_dispatching_block)->get_current_metadata()->bitstream_length;
+        unsigned total_operations = number_of_loads + number_of_stores + number_of_branches + number_of_cgra_ops;
+        m_cgra_core->inc_dispatch_cycle_distro_active(actual_dispatch_count*total_operations);
+        m_cgra_core->inc_dispatch_cycle_distro_ldst_active(actual_dispatch_count*(number_of_loads+number_of_stores));
+        m_cgra_core->inc_dispatch_cycle_distro_branch(actual_dispatch_count*number_of_branches);
+        m_cgra_core->inc_dispatch_cycle_distro_cgra_ops(actual_dispatch_count*number_of_cgra_ops);
+      } else {
+        //status update
+        if(exec_stalled()){
+          if(m_cgra_core->is_exec_stalled_by_ldst_unit_queue_full()){
+            m_cgra_core->inc_dispatch_cycle_distro_stall(0);
+          } else if(m_cgra_core->is_exec_stalled_by_writeback_buffer_full()){
+            m_cgra_core->inc_dispatch_cycle_distro_stall(1);
+          } 
+        } else if (collision){
+          m_cgra_core->inc_dispatch_cycle_distro_stall(2);
+        }
+        m_cgra_core->inc_dispatch_cycle_distro_ldst_active(0);
+        m_cgra_core->inc_dispatch_cycle_distro_branch(0);
+        m_cgra_core->inc_dispatch_cycle_distro_cgra_ops(0);
       }
     }
     else{
@@ -1848,6 +1889,8 @@ void dispatcher_rfu_t::dispatch(){
     //  printf("decoded = %d\n", (*m_dispatching_block)->decode_done());
     //  printf("metadata_buffer_empty = %d\n", (*m_dispatching_block)->metadata_buffer_empty());
     //}
+    //idle status, nothing to dispatch
+    m_cgra_core->inc_dispatch_cycle_distro_stall(3);
   }
 }
 

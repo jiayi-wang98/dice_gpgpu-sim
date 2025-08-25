@@ -231,6 +231,31 @@ class cgra_core_ctx {
           m_stats->dice_cta[m_cgra_core_id] + active_count;
     }
 
+    void inc_dispatch_cycle_distro_active(unsigned active_count) {
+      m_stats->dice_dispatch_cycle_distro[active_count+3]++;
+    }
+
+    void inc_dispatch_cycle_distro_ldst_active(unsigned active_count) {
+      m_stats->dice_dispatch_cycle_distro_ldst[active_count]++;
+    }
+
+    void inc_dispatch_cycle_distro_branch(unsigned active_count) {
+      m_stats->dice_dispatch_cycle_distro_branch[active_count]++;
+    }
+
+    void inc_dispatch_cycle_distro_cgra_ops(unsigned active_count) {
+      m_stats->dice_dispatch_cycle_distro_cgra_ops[active_count]++;
+    }
+
+    void inc_dispatch_cycle_distro_stall(unsigned stall_index) {
+      //0: stall due to LDST FIFO full
+      //1: stall due to writeback buffer full
+      //2: stall due to scoreboard collision
+      //3: stall due to idle pipeline
+      assert(stall_index < 4);
+      m_stats->dice_dispatch_cycle_distro[stall_index]++;
+    }
+
     void incregfile_writes(unsigned active_count) {
       m_stats->m_write_regfile_acesses[m_cgra_core_id] =
           m_stats->m_write_regfile_acesses[m_cgra_core_id] + active_count;
