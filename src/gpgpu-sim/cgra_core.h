@@ -520,6 +520,7 @@ class cta_status_table{
     void clear_fetch_stalled_by_simt_stack(unsigned hw_cta_id, unsigned fetch_waiting_block_id){
       assert(m_cta_status[hw_cta_id].m_valid);
       assert(fetch_waiting_block_id == m_cta_status[hw_cta_id].m_fetch_waiting_block_id);
+      assert(m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack);
       m_cta_status[hw_cta_id].m_fetch_stalled_by_simt_stack = false;
     }
 

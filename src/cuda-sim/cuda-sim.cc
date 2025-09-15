@@ -3441,6 +3441,10 @@ void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) 
   //  printf("DICE: Core %d, next_metadata pc= %p, while giving %p for tid=%d, block=%d\n",m_cgra_core->get_id() ,metadata_pc,CFGBlock->get_metadata()->get_PC(),tid, CFGBlock->get_metadata()->meta_id);
   //  fflush(stdout);
   //}
+  if(metadata_pc != CFGBlock->get_metadata()->get_PC()){
+    printf("DICE-Sim Functional: tid %d metadata_pc = 0x%04x, but CFGBlock->get_metadata()->get_PC()=0x%04x\n", tid, metadata_pc, CFGBlock->get_metadata()->get_PC());
+    fflush(stdout);
+  }
   assert(metadata_pc == CFGBlock->get_metadata()->get_PC());   // make sure timing model and functional model are in sync
   set_next_meta_pc(metadata_pc + CFGBlock->get_metadata()->metadata_size());
   //if(m_cgra_core->get_id()==0){

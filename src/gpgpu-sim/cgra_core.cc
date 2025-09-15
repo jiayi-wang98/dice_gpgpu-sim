@@ -691,6 +691,11 @@ void cgra_core_ctx::fetch_metadata(){
         address_type next_pc, rpc;
         unsigned cta_id = m_cgra_block_state[MF_DE]->get_cta_id();
         m_simt_stack[cta_id]->get_pdom_stack_top_info(&next_pc, &rpc);
+        if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
+          //print simt stack for debug
+          m_simt_stack[cta_id]->print(stdout);
+          fflush(stdout);
+        }
         m_cgra_block_state[MF_DE]->set_next_pc(next_pc);
         pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
         address_type ppc = pc + PROGRAM_MEM_START;
@@ -744,6 +749,11 @@ void cgra_core_ctx::fetch_metadata(){
           m_cgra_block_state[MF_DE]->set_prefetch();//set as a prefetch block
           pc = m_cgra_block_state[MF_DE]->get_metadata_pc(); //just next_pc
           address_type ppc = pc + PROGRAM_MEM_START;
+          if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
+          //print simt stack for debug
+          m_simt_stack[m_cgra_block_state[MF_DE]->get_cta_id()]->print(stdout);
+          fflush(stdout);
+          }
           if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
             dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(pc);
             printf("DICE Sim uArch [FETCH_META_START]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n", m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id ,pc);
@@ -1380,6 +1390,7 @@ void cgra_core_ctx::writeback(){
           }        
           updateSIMTStack(cta_id,cfg_block);
           clear_fetch_stalled_by_simt_stack(cta_id,metadata->meta_id);
+          cfg_block->predicate_reg_cleared_before_wb=true;
         }
       }
     }
@@ -3801,10 +3812,17 @@ void block_commit_table::check_and_release() {
             assert(m_commit_table[i]->get_current_metadata()->branch);
             dice_cfg_block_t *cfg_block = m_commit_table[i]->get_current_cfg_block();
             assert(cfg_block != NULL);
-            //check if predicate registers are all written back
-            m_cgra_core->updateSIMTStack(m_commit_table[i]->get_cta_id(),cfg_block);
-            m_cgra_core->clear_fetch_stalled_by_simt_stack(m_commit_table[i]->get_cta_id(),m_commit_table[i]->get_current_metadata()->meta_id);
-            //m_cgra_core->clear_stalled_by_simt_stack();
+            //added to prevent a bug where a same block is in both stage DE and WB, that WB might clear the signal from DE and update stack extra time.
+            if(cfg_block->predicate_reg_cleared_before_wb==false){
+              //check if predicate registers are all written back
+              if(g_debug_execution==3 &m_cgra_core->get_id() == m_cgra_core->get_dice_trace_sampling_core()){
+                printf("DICE Sim uArch [UPDATE_SIMT_STACK]: Cycle %d, hw_cta=%d, Block=%d, writeback from mem down!\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle,cta_id, m_commit_table[i]->get_current_metadata()->meta_id);
+                fflush(stdout);
+              }  
+              m_cgra_core->updateSIMTStack(cta_id,cfg_block);
+              m_cgra_core->clear_fetch_stalled_by_simt_stack(m_commit_table[i]->get_cta_id(),m_commit_table[i]->get_current_metadata()->meta_id);
+              //m_cgra_core->clear_stalled_by_simt_stack();
+            }
           }
         }
 

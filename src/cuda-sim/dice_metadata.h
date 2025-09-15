@@ -209,6 +209,7 @@ class dice_cfg_block_t{
     addr_t branch_target_meta_pc;  // program counter address of branch target
     memory_space_t space;
     gpgpu_context* gpgpu_ctx;
+    bool predicate_reg_cleared_before_wb = false;
 
     std::map<unsigned, std::set<unsigned>> map_tid_invalid_writeback_regs; //map from tid to invalid reg_num set
 
