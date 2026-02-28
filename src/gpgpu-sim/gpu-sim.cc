@@ -610,6 +610,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
    "perfect bitstream cache mode",
    "0");
   option_parser_register(
+      opp, "-dice_enable_bitstream_prefetcher", OPT_INT32,
+      &dice_enable_bitstream_prefetcher,
+      "Enable DICE next-bitstream prefetcher (0=off, 1=on)", "0");
+  option_parser_register(
       opp, "-gpgpu_inst_fetch_throughput", OPT_INT32, &inst_fetch_throughput,
       "the number of fetched intruction per warp each cycle", "1");
   option_parser_register(opp, "-gpgpu_reg_file_port_throughput", OPT_INT32,

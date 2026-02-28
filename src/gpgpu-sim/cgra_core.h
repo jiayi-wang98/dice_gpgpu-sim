@@ -134,6 +134,8 @@ class cgra_core_ctx {
     void cta_schedule();
     void fetch_metadata();
     void fetch_bitstream();
+    void issue_next_bitstream_prefetch(address_type current_addr,
+                                       unsigned fetch_size);
     void decode();
     void execute();
     void exec(unsigned tid, unsigned lane_id);

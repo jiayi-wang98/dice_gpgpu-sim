@@ -961,6 +961,40 @@ bool cgra_block_state_t::barrier_reached(){
   }
 }
 
+void cgra_core_ctx::issue_next_bitstream_prefetch(address_type current_addr,
+                                                  unsigned fetch_size) {
+  if (!m_config->dice_enable_bitstream_prefetcher ||
+      m_config->perfect_bitstream_cache || fetch_size == 0) {
+    return;
+  }
+  // DICE bitstreams are assembled on 512-byte boundaries (see
+  // function_info::dice_block_assemble), so "next bitstream" is +0x200.
+  const unsigned bitstream_stride = 512;
+  address_type prefetch_addr = current_addr + bitstream_stride;
+
+  mem_access_t acc(BITSTREAM_ACC_R, prefetch_addr, fetch_size, false,
+                   m_gpu->gpgpu_ctx);
+  mem_fetch *mf = new mem_fetch(
+      acc, NULL /*prefetch*/, READ_PACKET_SIZE, 0, m_cgra_core_id, m_tpc,
+      m_memory_config, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+  std::list<cache_event> events;
+  enum cache_request_status status =
+      m_L1B->access((new_addr_type)prefetch_addr, mf,
+                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+  if (g_debug_execution == 3 && m_cgra_core_id == get_dice_trace_sampling_core()) {
+    printf(
+        "DICE Sim uArch [FETCH_BITS_PREFETCH]: Cycle %llu, core=%u, A=0x%llx, "
+        "A_plus_S=0x%llx, S=%u, status=%d\n",
+        (unsigned long long)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle),
+        m_cgra_core_id, (unsigned long long)current_addr,
+        (unsigned long long)prefetch_addr, bitstream_stride, status);
+    fflush(stdout);
+  }
+  if (status != MISS) {
+    delete mf;
+  }
+}
+
 void cgra_core_ctx::fetch_bitstream(){
   if(m_cgra_block_state[MF_DE]->dummy()) return;
   if (!m_bitstream_fetch_buffer.m_valid) { //if there is no bitstream in the buffer
@@ -968,9 +1002,11 @@ void cgra_core_ctx::fetch_bitstream(){
       mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
       //when previous kernel mis predict and still have outstanding bitstream fetch request
       if(m_cgra_block_state[MF_DE]->decode_done()==false || m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
-        printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Core %d, Cycle %d, hw_cta=%d\n",m_cgra_core_id, m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
-        printf("m_cgra_block_state[MF_DE]->decode_done()=%d, (mf->get_addr()-PROGRAM_MEM_START)=%d",m_cgra_block_state[MF_DE]->decode_done(),(mf->get_addr()-PROGRAM_MEM_START));
-        fflush(stdout);
+        if(g_debug_execution >= 3 && m_cgra_core_id == get_dice_trace_sampling_core()){
+          printf("DICE Sim uArch [PREFETCH_BITS_DISCARD]: Core %d, Cycle %d, hw_cta=%d\n",m_cgra_core_id, m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id());
+          printf("m_cgra_block_state[MF_DE]->decode_done()=%d, (mf->get_addr()-PROGRAM_MEM_START)=%d",m_cgra_block_state[MF_DE]->decode_done(),(mf->get_addr()-PROGRAM_MEM_START));
+          fflush(stdout);
+        }
         //note: it's possible that after misprediction, the next block is still a prefetch block from another CTA. This assert no longer needed
         //assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
       } else {
@@ -1023,6 +1059,10 @@ void cgra_core_ctx::fetch_bitstream(){
           status = m_L1B->access(
               (new_addr_type)ppc, mf,
               m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, events);
+        if (status == MISS || status == HIT) {
+          // Issue next-line bitstream prefetch as soon as A is accepted.
+          issue_next_bitstream_prefetch(ppc, nbytes);
+        }
         if (status == MISS) {
           m_cgra_block_state[MF_DE]->set_bmiss_pending();
           m_cgra_block_state[MF_DE]->set_last_bitstream_fetch(m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle);
