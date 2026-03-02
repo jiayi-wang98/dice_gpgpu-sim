@@ -610,6 +610,10 @@ void shader_core_config::reg_options(class OptionParser *opp) {
    "perfect bitstream cache mode",
    "0");
   option_parser_register(
+      opp, "-dice_enable_metadata_prefetcher", OPT_INT32,
+      &dice_enable_metadata_prefetcher,
+      "Enable DICE metadata next-cacheline prefetcher (0=off, 1=on)", "0");
+  option_parser_register(
       opp, "-dice_enable_bitstream_prefetcher", OPT_INT32,
       &dice_enable_bitstream_prefetcher,
       "Enable DICE next-bitstream prefetcher (0=off, 1=on)", "0");

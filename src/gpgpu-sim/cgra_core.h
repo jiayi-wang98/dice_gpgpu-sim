@@ -133,6 +133,8 @@ class cgra_core_ctx {
 
     void cta_schedule();
     void fetch_metadata();
+    void issue_next_metadata_prefetch(address_type current_addr,
+                                      unsigned fetch_size);
     void fetch_bitstream();
     void issue_next_bitstream_prefetch(address_type current_addr,
                                        unsigned fetch_size);

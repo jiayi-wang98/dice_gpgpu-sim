@@ -656,6 +656,44 @@ void cgra_core_ctx::accept_ldst_unit_response(mem_fetch *mf) {
                 check ptx_ir.h to verify this does not overlap \
                 other memory spaces */
 //outer execution pipeline
+void cgra_core_ctx::issue_next_metadata_prefetch(address_type current_addr,
+                                                  unsigned fetch_size) {
+  if (!m_config->dice_enable_metadata_prefetcher ||
+      m_config->perfect_inst_const_cache || fetch_size == 0) {
+    return;
+  }
+  const unsigned line_size = m_config->m_L1I_config.get_line_sz();
+  if (line_size == 0) {
+    return;
+  }
+  const unsigned offset = current_addr & (line_size - 1);
+  // Fetch the next cacheline boundary after current metadata address.
+  address_type prefetch_addr = current_addr + (line_size - offset);
+
+  mem_access_t acc(INST_ACC_R, prefetch_addr, fetch_size, false,
+                   m_gpu->gpgpu_ctx);
+  mem_fetch *mf = new mem_fetch(
+      acc, NULL /*prefetch*/, READ_PACKET_SIZE, 0, m_cgra_core_id, m_tpc,
+      m_memory_config, m_gpu->gpu_tot_sim_cycle + m_gpu->gpu_sim_cycle);
+  std::list<cache_event> events;
+  enum cache_request_status status =
+      m_L1I->access((new_addr_type)prefetch_addr, mf,
+                    m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+  if (g_debug_execution == 3 && m_cgra_core_id == get_dice_trace_sampling_core()) {
+    printf(
+        "DICE Sim uArch [FETCH_META_PREFETCH]: Cycle %llu, core=%u, A=0x%llx, "
+        "A_plus_S=0x%llx, S=%u, status=%d\n",
+        (unsigned long long)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle),
+        m_cgra_core_id, (unsigned long long)current_addr,
+        (unsigned long long)prefetch_addr, (unsigned)(prefetch_addr - current_addr),
+        status);
+    fflush(stdout);
+  }
+  if (status != MISS) {
+    delete mf;
+  }
+}
+
 void cgra_core_ctx::fetch_metadata(){
   if (!m_metadata_fetch_buffer.m_valid) { //if there is no metadata in the buffer
     if (m_L1I->access_ready()) { //if the instruction cache is ready to be accessed (i.e. there are data responses)
@@ -724,6 +762,10 @@ void cgra_core_ctx::fetch_metadata(){
           status = m_L1I->access(
               (new_addr_type)ppc, mf,
               m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+        if (status == MISS || status == HIT) {
+          // Issue next-line metadata prefetch as soon as A is accepted.
+          issue_next_metadata_prefetch(ppc, nbytes);
+        }
         if (status == MISS) {
           m_cgra_block_state[MF_DE]->set_imiss_pending();
           m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle);
@@ -779,6 +821,10 @@ void cgra_core_ctx::fetch_metadata(){
             status = m_L1I->access(
                 (new_addr_type)ppc, mf,
                 m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle, events);
+          if (status == MISS || status == HIT) {
+            // Apply same metadata next-line prefetch policy for branch-stall path.
+            issue_next_metadata_prefetch(ppc, nbytes);
+          }
           if (status == MISS) {
             m_cgra_block_state[MF_DE]->set_imiss_pending();
             m_cgra_block_state[MF_DE]->set_last_fetch(m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle);

@@ -1703,6 +1703,7 @@ class shader_core_config : public core_config {
   unsigned dice_ldst_unit_temporal_coalescing_max_cmd;
   unsigned dice_enable_unrolling;
   bool perfect_bitstream_cache;
+  int dice_enable_metadata_prefetcher;
   int dice_enable_bitstream_prefetcher;
 };
 
