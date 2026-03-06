@@ -3640,7 +3640,11 @@ unsigned CUDARTAPI __cudaPushCallConfiguration(dim3 gridDim, dim3 blockDim,
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
   }
-  cudaConfigureCallInternal(gridDim, blockDim, sharedMem, stream);
+  gpgpu_context *ctx = GPGPU_Context();
+  struct CUstream_st *s = (struct CUstream_st *)stream;
+  ctx->api->g_cuda_launch_stack.push_back(
+      kernel_config(gridDim, blockDim, sharedMem, s));
+  return g_last_cudaError = cudaSuccess;
 }
 
 cudaError_t CUDARTAPI __cudaPopCallConfiguration(dim3 *gridDim, dim3 *blockDim,
@@ -3648,6 +3652,17 @@ cudaError_t CUDARTAPI __cudaPopCallConfiguration(dim3 *gridDim, dim3 *blockDim,
                                                  void *stream) {
   if (g_debug_execution >= 3) {
     announce_call(__my_func__);
+  }
+  gpgpu_context *ctx = GPGPU_Context();
+  gpgpusim_ptx_assert(!ctx->api->g_cuda_launch_stack.empty(),
+                      "empty launch stack in __cudaPopCallConfiguration");
+  kernel_config &config = ctx->api->g_cuda_launch_stack.back();
+  if (gridDim) *gridDim = config.grid_dim();
+  if (blockDim) *blockDim = config.block_dim();
+  if (sharedMem) *sharedMem = config.shared_mem();
+  if (stream) {
+    cudaStream_t *stream_ptr = reinterpret_cast<cudaStream_t *>(stream);
+    *stream_ptr = reinterpret_cast<cudaStream_t>(config.get_stream());
   }
   return g_last_cudaError = cudaSuccess;
 }

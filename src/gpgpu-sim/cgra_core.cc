@@ -1056,8 +1056,13 @@ void cgra_core_ctx::fetch_bitstream(){
         //note: it's possible that after misprediction, the next block is still a prefetch block from another CTA. This assert no longer needed
         //assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
       } else {
-        m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the metadata miss flag
+        const bool was_demand_miss = m_cgra_block_state[MF_DE]->bmiss_pending();
+        m_cgra_block_state[MF_DE]->clear_bmiss_pending(); //clear the bitstream miss flag
         m_bitstream_fetch_buffer = ifetch_buffer_t(m_cgra_block_state[MF_DE]->get_bitstream_pc(), mf->get_access_size(), mf->get_wid()); //set the metadata fetch buffer
+        if (!was_demand_miss) {
+          // This block was satisfied by an earlier prefetch response; continue the chain.
+          issue_next_bitstream_prefetch(mf->get_addr(), mf->get_access_size());
+        }
         if(g_debug_execution==3 &m_cgra_core_id == get_dice_trace_sampling_core()){
           dice_metadata* meta = m_gpu->gpgpu_ctx->pc_to_metadata(m_cgra_block_state[MF_DE]->get_metadata_pc());
           printf("DICE Sim uArch [FETCH_BITS_END]: Cycle %d, hw_cta=%d, Block=%d, pc=0x%04x\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, m_cgra_block_state[MF_DE]->get_cta_id(), meta->meta_id,mf->get_addr());
@@ -2056,8 +2061,10 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
     unsigned tid = *it;
     unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,32);
     if(m_rf_bank_controller[bank_id]->ldst_buffer_full() == false){
-      if(block->is_parameter_load()){
-        assert(bank_id >=32);//constant memory, not gpr memory
+      if(block->is_parameter_load() && bank_id >=32){
+        // Constant-style parameter loads: one destination value is visible to
+        // all active threads in the CTA, so release all corresponding
+        // scoreboards without RF writeback traffic.
         unsigned cta_id = block->get_cta_id();
         for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
           if(block->active(t) == true) 
@@ -2068,6 +2075,8 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
           }
         }
       } else {
+        // Parameter loads that target RF-backed registers (e.g. %f/%r) follow
+        // normal per-thread writeback behavior.
         unsigned hw_tid_offset = m_cgra_core->get_cta_start_tid(block->get_cta_id());
         m_scoreboard->releaseRegisterFromLoad(hw_tid_offset+tid, reg_num);
         m_cgra_core->incregfile_writes(1);
