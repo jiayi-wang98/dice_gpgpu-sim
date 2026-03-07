@@ -242,6 +242,12 @@ stream_manager::stream_manager(gpgpu_sim *gpu, bool cuda_launch_blocking) {
 
 bool stream_manager::operation(bool *sim) {
   bool check = check_finished_kernel();
+  // If a kernel just finished, return to the outer simulation loop before
+  // launching any new work. This keeps the next kernel from being appended to
+  // the executed-kernel info that will be printed for the completed kernel.
+  if (check) {
+    return true;
+  }
   pthread_mutex_lock(&m_lock);
   //    if(check)m_gpu->print_stats();
   stream_operation op = front();
