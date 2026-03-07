@@ -1036,7 +1036,7 @@ void exec_shader_core_ctx::func_exec_inst(warp_inst_t &inst) {
 void shader_core_ctx::issue_warp(register_set &pipe_reg_set,
                                  const warp_inst_t *next_inst,
                                  const active_mask_t &active_mask,
-                                 unsigned warp_id, unsigned sch_id) {
+                                 unsigned warp_id, unsigned sch_id, bool ldst) {
   warp_inst_t **pipe_reg =
       pipe_reg_set.get_free(m_config->sub_core_model, sch_id);
   assert(pipe_reg);
@@ -3674,6 +3674,28 @@ void shader_core_ctx::cycle() {
     fetch();
   }
 }
+
+void shader_core_stats::print_regfile_stats(FILE *fout) const {
+  unsigned total_regfile_accesses = 0;
+  unsigned total_regfile_read_accesses = 0;
+  unsigned total_regfile_write_accesses = 0;
+  for(int i=0; i< m_config->num_shader(); i++) {
+    fprintf(fout, "SHADER %d:\n", i);
+    fprintf(fout, "shader_cycles = %d\n", shader_cycles[i]);
+    fprintf(fout, "gpgpu_n_m_read_regfile_acesses = %d\n", m_read_regfile_acesses[i]);
+    fprintf(fout, "gpgpu_n_m_write_regfile_acesses = %d\n", m_write_regfile_acesses[i]);
+    fprintf(fout, "\n");
+    total_regfile_accesses += m_read_regfile_acesses[i] + m_write_regfile_acesses[i];
+    total_regfile_read_accesses += m_read_regfile_acesses[i];
+    total_regfile_write_accesses += m_write_regfile_acesses[i];
+  }
+  fprintf(fout, "gpgpu_n_tot_regfile_acesses = %d\n", total_regfile_accesses);
+  fprintf(fout, "gpgpu_n_tot_regfile_read_acesses = %d\n",
+          total_regfile_read_accesses);
+  fprintf(fout, "gpgpu_n_tot_regfile_write_acesses = %d\n",
+          total_regfile_write_accesses);
+}
+
 
 // Flushes all content of the cache to memory
 

@@ -1999,6 +1999,8 @@ class shader_core_stats : public shader_core_stats_pod {
     return m_shader_warp_slot_issue_distro;
   }
 
+  void print_regfile_stats(FILE *fout) const;
+
  private:
   const shader_core_config *m_config;
 
@@ -2446,7 +2448,8 @@ class shader_core_ctx : public core_t {
   friend class LooseRoundRobbinScheduler;
   virtual void issue_warp(register_set &warp, const warp_inst_t *pI,
                           const active_mask_t &active_mask, unsigned warp_id,
-                          unsigned sch_id);
+                          unsigned sch_id, bool ldst = false);
+
 
   void create_front_pipeline();
   void create_schedulers();
