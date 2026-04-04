@@ -42,11 +42,10 @@ include ../../version_detection.mk
 
 OUTPUT_DIR=$(SIM_OBJ_FILES_DIR)/cuda-sim
 
-ASAN_FLAGS := -fsanitize=address -fno-omit-frame-pointer
 
-OPT	:=  -O3 -g3 -Wall -Wno-unused-function -Wno-sign-compare -MMD -MP $(ASAN_FLAGS)
+OPT	:=  -O3 -g3 -Wall -Wno-unused-function -Wno-sign-compare -MMD -MP
 ifeq ($(DEBUG),1)
-	OPT := -g3 -Wall  -Wno-unused-function -Wno-sign-compare $(ASAN_FLAGS)
+	OPT := -g3 -Wall  -Wno-unused-function -Wno-sign-compare
 endif
 OPT += -I$(CUDA_INSTALL_PATH)/include  -I$(OUTPUT_DIR)/ -I. -I$(SIM_OBJ_FILES_DIR)
 OPT += -fPIC 
