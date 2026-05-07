@@ -161,7 +161,7 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
         m_thread[core_tid]->dice_exec_block(cfg_block,t);
         //only generate one memory accesses 
         if(core_tid==tid) {
-          std::list<unsigned> masked_ops_reg;
+          std::vector<unsigned> masked_ops_reg;
           cfg_block->generate_mem_accesses(t,masked_ops_reg, unrolling_factor, lane_id);
           //push mem_access to ldst_unit's queue
           m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
@@ -185,18 +185,18 @@ void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, uns
       }
       m_thread[tid]->dice_exec_block(cfg_block,local_tid);
       //generate memory accesses to ldst unit
-      std::list<unsigned> masked_ops_reg;
+      std::vector<unsigned> masked_ops_reg;
       cfg_block->generate_mem_accesses(local_tid,masked_ops_reg, unrolling_factor, lane_id);
       //push mem_access to ldst_unit's queue
-      if(g_debug_execution==4 &m_cgra_core_id == get_dice_trace_sampling_core()){
+      if(g_debug_execution==4 && m_cgra_core_id == get_dice_trace_sampling_core()){
         cfg_block->print_m_accessq();
       }
       m_ldst_unit->dice_push_accesses(cfg_block,cgra_block);
       //release masked scoreboard record
-      for (std::list<unsigned>::iterator it = masked_ops_reg.begin(); it != masked_ops_reg.end(); ++it) {
+      for (std::vector<unsigned>::iterator it = masked_ops_reg.begin(); it != masked_ops_reg.end(); ++it) {
         m_scoreboard->releaseRegisterFromLoad(tid,(*it));
       }
-      if(g_debug_execution==4 &m_cgra_core_id == get_dice_trace_sampling_core()){
+      if(g_debug_execution==4 && m_cgra_core_id == get_dice_trace_sampling_core()){
         cfg_block->print_mem_ops_tid(local_tid);
       }
       //check status and update
@@ -2981,62 +2981,39 @@ bool ldst_unit::memory_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
 }
 
 
-void ldst_unit::dice_push_accesses(dice_cfg_block_t *cfg_block,cgra_block_state_t* cgra_block){ 
-  std::vector<std::list<mem_access_t>> accessq = cfg_block->get_accessq();
-  for(unsigned i = 0; i < accessq.size(); i++){
-    unsigned num_access = 1;
-    if(!cfg_block->get_metadata()->is_parameter_load) {
-      assert(accessq[i].size() <=1 ); //otherwise overflow
-    } else {
-      num_access = accessq[i].size();
-    }
+void ldst_unit::dice_push_accesses(dice_cfg_block_t *cfg_block,cgra_block_state_t* cgra_block){
+  // Take the per-port access queues by reference: pop_mem_access mutates them
+  // directly, so we no longer need to re-copy the whole vector-of-deques on
+  // every iteration the way the previous implementation did.
+  std::vector<std::deque<mem_access_t>> &accessq = cfg_block->get_accessq();
+  const unsigned port_count = accessq.size();
+  const unsigned half = port_count / 2;
+  const bool is_param_load = cfg_block->get_metadata()->is_parameter_load;
+  for(unsigned i = 0; i < port_count; i++){
     if(accessq[i].empty()) continue;
-    mem_access_t access = accessq[i].front();
-    cfg_block->pop_mem_access(i);
-    //accessq[i].pop_front();
-    access.assign_cgra_block_state(cgra_block);
-    assert(access.get_cgra_block_state() != NULL);
-    //check global memory access
-    bool to_coalesce = false;
-    //if(m_config->dice_ldst_unit_enable_temporal_coalescing){ //move to inside coalesce with cycle count as 1
-    if((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-      to_coalesce = true;
-    }
-    //}
-
-    if(to_coalesce){
-      if(i< (accessq.size()/2)){
-        m_dice_mem_request_queue->push_ld_request_pre_coalesce(access,i);
+    if(!is_param_load) assert(accessq[i].size() <= 1);
+    // Only the first access on a port is eligible for the coalescer; for a
+    // parameter load, subsequent accesses are pushed straight into the
+    // non-coalescing queue.
+    bool first = true;
+    while(!accessq[i].empty()){
+      mem_access_t access = accessq[i].front();
+      cfg_block->pop_mem_access(i);
+      access.assign_cgra_block_state(cgra_block);
+      assert(access.get_cgra_block_state() != NULL);
+      const bool to_coalesce = first && (
+          access.get_space() == global_space ||
+          access.get_space() == local_space  ||
+          access.get_space() == param_space_local);
+      if(i < half){
+        if(to_coalesce) m_dice_mem_request_queue->push_ld_request_pre_coalesce(access, i);
+        else            m_dice_mem_request_queue->push_ld_request(access, i);
       } else {
-        m_dice_mem_request_queue->push_st_request_pre_coalesce(access,i-accessq.size()/2);
+        if(to_coalesce) m_dice_mem_request_queue->push_st_request_pre_coalesce(access, i - half);
+        else            m_dice_mem_request_queue->push_st_request(access, i - half);
       }
-    } else {
-      if(i< (accessq.size()/2)){
-        m_dice_mem_request_queue->push_ld_request(access,i);
-      } else {
-        m_dice_mem_request_queue->push_st_request(access,i-accessq.size()/2);
-      }
-    }
-    //test
-    //access.print(stdout);
-    num_access--;
-    if(cfg_block->get_metadata()->is_parameter_load){
-      while(num_access){
-        accessq = cfg_block->get_accessq();
-        mem_access_t access = accessq[i].front();
-        cfg_block->pop_mem_access(i);
-        //accessq[i].pop_front();
-        access.assign_cgra_block_state(cgra_block);
-        assert(access.get_cgra_block_state() != NULL);
-        if(i< (accessq.size()/2)){
-          m_dice_mem_request_queue->push_ld_request(access,i);
-        } else {
-          m_dice_mem_request_queue->push_st_request(access,i-accessq.size()/2);
-        }
-        num_access--;
-        //test
-        //access.print(stdout);
-      }
+      first = false;
+      if(!is_param_load) break;
     }
   }
 }
@@ -3138,7 +3115,7 @@ unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
   if (n_total == 0) return unsigned(-1);
   for (unsigned step = 0; step < n_total; step++) {
     unsigned p = (m_last_processed_port_memory[bank] + 1 + step) % n_total;
-    const std::list<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
+    const std::deque<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
     if (q.empty()) continue;
     const mem_access_t &access = q.front();
     const memory_space_t space = access.get_space();
@@ -3740,7 +3717,7 @@ unsigned dice_mem_request_queue::get_next_process_port_shared(unsigned bank){
   if (n_total == 0) return unsigned(-1);
   for (unsigned step = 0; step < n_total; step++) {
     unsigned p = (m_last_processed_port_shared[bank] + 1 + step) % n_total;
-    const std::list<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
+    const std::deque<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
     if (q.empty()) continue;
     const mem_access_t &access = q.front();
     if (access.get_space() != shared_space) continue;

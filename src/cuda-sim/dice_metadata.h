@@ -261,7 +261,7 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
-    void generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
+    void generate_mem_accesses(unsigned tid, std::vector<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
 
     bool accessq_empty(){
       for(unsigned i=0; i<get_ldst_port_num(); i++){
@@ -270,7 +270,7 @@ class dice_cfg_block_t{
       return true;
     }
 
-    std::vector<std::list<mem_access_t>>& get_accessq() { return m_accessq; }
+    std::vector<std::deque<mem_access_t>>& get_accessq() { return m_accessq; }
 
     void pop_mem_access(unsigned port) {
       assert(!m_accessq[port].empty());
@@ -285,7 +285,7 @@ class dice_cfg_block_t{
         for(int i=0;i<get_ldst_port_num();i++){
           if(m_accessq[i].empty()) continue;
           printf("LDST Unit: Port %d\n",i);
-          std::list<mem_access_t>::iterator it;
+          std::deque<mem_access_t>::iterator it;
           for (it = m_accessq[i].begin(); it != m_accessq[i].end(); ++it) {
             printf("MEM_TXN_GEN:%s:%llx, Size:%d, LDST Unit Port:%d \n",
                    mem_access_type_str(it->get_type()), it->get_addr(),
@@ -373,7 +373,7 @@ class dice_cfg_block_t{
       unsigned enable[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
     };
     std::vector<per_thread_info> m_per_scalar_thread;
-    std::vector<std::list<mem_access_t>> m_accessq; //ldst_port->access per port
+    std::vector<std::deque<mem_access_t>> m_accessq; //ldst_port->access per port
 
     unsigned dec_stores_num;
     unsigned dec_loads_num;

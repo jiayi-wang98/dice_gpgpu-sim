@@ -424,7 +424,7 @@ unsigned dice_cfg_block_t::get_ldst_port_num(){
          m_config->dice_cgra_core_num_st_ports;
 }
 
-void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::list<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id) {
+void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id) {
   assert(lane_id<unrolling_factor);
   unsigned ldst_port_shift = 0;
   ldst_port_shift = get_ldst_port_num()/2/unrolling_factor*lane_id;

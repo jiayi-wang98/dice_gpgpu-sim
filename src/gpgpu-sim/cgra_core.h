@@ -973,8 +973,10 @@ class cgra_unit {
     unsigned m_cgra_buffer_size;
     unsigned m_ldst_buffer_size;
     unsigned m_bank_id;
-    std::list<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer; //(tid,block)
-    std::list<std::pair<unsigned,cgra_block_state_t*>> m_ldst_writeback_buffer; //(tid,block)
+    // std::deque has better cache locality and amortized-O(1) front-pop
+    // without per-node allocation, suitable for these FIFOs.
+    std::deque<std::pair<unsigned,cgra_block_state_t*>> m_cgra_writeback_buffer; //(tid,block)
+    std::deque<std::pair<unsigned,cgra_block_state_t*>> m_ldst_writeback_buffer; //(tid,block)
     
     //backward pointer
     dispatcher_rfu_t *m_rfu;
@@ -1038,7 +1040,7 @@ class cgra_unit {
     unsigned m_dispatched_thread;
     unsigned m_dispatched_bubble_count;
     std::vector<unsigned> m_last_dispatched_tid;
-    std::vector<std::list<unsigned>> m_ready_threads;
+    std::vector<std::deque<unsigned>> m_ready_threads;
     Scoreboard *m_scoreboard;
     std::vector<rf_bank_controller*> m_rf_bank_controller;
 
@@ -1215,10 +1217,10 @@ class cgra_unit {
     ldst_unit *m_ldst_unit;
     std::vector<unsigned> m_ld_port_credit;
     std::vector<unsigned> m_st_port_credit;
-    std::vector<std::list<mem_access_t>> m_ld_req_queue_pre_coalesce;
-    std::vector<std::list<mem_access_t>> m_st_req_queue_pre_coalesce;
-    std::vector<std::list<mem_access_t>> m_ld_req_queue;
-    std::vector<std::list<mem_access_t>> m_st_req_queue;
+    std::vector<std::deque<mem_access_t>> m_ld_req_queue_pre_coalesce;
+    std::vector<std::deque<mem_access_t>> m_st_req_queue_pre_coalesce;
+    std::vector<std::deque<mem_access_t>> m_ld_req_queue;
+    std::vector<std::deque<mem_access_t>> m_st_req_queue;
     struct dice_transaction_info {
       std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
       mem_access_byte_mask_t bytes;
