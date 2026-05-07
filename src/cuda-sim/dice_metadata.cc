@@ -166,7 +166,10 @@ void dice_metadata::dump(){
 
 void dice_metadata_parser::add_operand(const char *identifier) {
   //DICE_PARSE_DPRINTF("add_operand");
-  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: add operand %s\n", identifier); fflush(stdout);
+  if (g_debug_dicemeta_generation) {
+    printf("DICE Metadata Parser: add operand %s\n", identifier);
+    fflush(stdout);
+  }
   assert(gpgpu_ctx != NULL);
   fflush(stdout);
   //function_info *func_info = gpgpu_ctx->ptx_parser->g_global_symbol_table->lookup_function(g_current_function_name);
