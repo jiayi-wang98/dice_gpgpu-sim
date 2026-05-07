@@ -1892,7 +1892,9 @@ void gpgpu_sim::cycle() {
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
-    m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
+    const bool power_on = m_config.g_power_simulation_enabled;
+    if (power_on)
+      m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
       // move memory request from interconnect into memory partition (if not
       // backed up) Note:This needs to be called in DRAM clock domain if there
@@ -1906,8 +1908,11 @@ void gpgpu_sim::cycle() {
         if (mf) partiton_reqs_in_parallel_per_cycle++;
       }
       m_memory_sub_partition[i]->cache_cycle(gpu_sim_cycle + gpu_tot_sim_cycle);
-      m_memory_sub_partition[i]->accumulate_L2cache_stats(
-          m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
+      // accumulate_L2cache_stats only feeds the GPUWattch power model and
+      // never affects timing; skip when power simulation is disabled.
+      if (power_on)
+        m_memory_sub_partition[i]->accumulate_L2cache_stats(
+            m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX]);
     }
   }
   partiton_reqs_in_parallel += partiton_reqs_in_parallel_per_cycle;
@@ -1922,18 +1927,28 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & CORE) {
     // L1 cache + shader core pipeline stages
-    m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
+    const bool power_on = m_config.g_power_simulation_enabled;
+    // Per-cycle gather of per-cluster cache/icnt stats only feeds the
+    // GPUWattch power model. Profiling showed >70% of CPU time was spent
+    // here when power simulation is disabled (the default), because
+    // cache_stats is a vector<vector<unsigned long long>> and the
+    // operator() / operator+= calls become hot loops without affecting
+    // timing.
+    if (power_on)
+      m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_shader_config->n_simt_clusters; i++) {
       if (m_cluster[i]->get_not_completed() || get_more_cta_left()) {
         m_cluster[i]->core_cycle();
         *active_sms += m_cluster[i]->get_n_active_sms();
       }
       // Update core icnt/cache stats for GPUWattch
-      m_cluster[i]->get_icnt_stats(
-          m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
-          m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
-      m_cluster[i]->get_cache_stats(
-          m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
+      if (power_on) {
+        m_cluster[i]->get_icnt_stats(
+            m_power_stats->pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i],
+            m_power_stats->pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i]);
+        m_cluster[i]->get_cache_stats(
+            m_power_stats->pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX]);
+      }
       m_cluster[i]->get_current_occupancy(
           gpu_occupancy.aggregate_warp_slot_filled,
           gpu_occupancy.aggregate_theoretical_warp_slots);
