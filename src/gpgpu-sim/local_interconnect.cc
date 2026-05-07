@@ -177,27 +177,36 @@ void xbar_router::RR_Advance() {
 // IEEE/ACM transactions on networking 2 (1999): 188-201.
 // https://www.cs.rutgers.edu/~sn624/552-F18/papers/islip.pdf
 void xbar_router::iSLIP_Advance() {
-  vector<unsigned> node_tmp;
+  // The original implementation called in_buffers[node].empty() in two
+  // nested loops, O(N^2) deque::empty() (and the templated iterator
+  // operator==) calls per cycle. Profiling showed this dominated runtime
+  // once the GPUWattch stats gather was gated. Cache empty-state in a
+  // stack-resident bool array and update it on pop(). Same trick lets
+  // the conflict-count first pass skip the per-call std::vector<unsigned>
+  // node_tmp allocation in favor of a small fixed-size stack array
+  // (total_nodes is bounded by the GPU's shader+memory partition count).
   bool active = false;
-
   unsigned conflict_sub = 0;
   unsigned reqs = 0;
 
-  // calcaulte how many conflicts are there for stats
+  constexpr unsigned MAX_XBAR_NODES = 256;
+  assert(total_nodes <= MAX_XBAR_NODES);
+  bool input_nonempty[MAX_XBAR_NODES];
   for (unsigned i = 0; i < total_nodes; ++i) {
-    if (!in_buffers[i].empty()) {
-      Packet _packet_tmp = in_buffers[i].front();
-      if (!node_tmp.empty()) {
-        if (std::find(node_tmp.begin(), node_tmp.end(),
-                      _packet_tmp.output_deviceID) != node_tmp.end()) {
-          conflict_sub++;
-        } else
-          node_tmp.push_back(_packet_tmp.output_deviceID);
-      } else {
-        node_tmp.push_back(_packet_tmp.output_deviceID);
-      }
-      active = true;
-    }
+    input_nonempty[i] = !in_buffers[i].empty();
+    if (input_nonempty[i]) active = true;
+  }
+
+  // Conflict count: for each non-empty input, the head packet's output
+  // device. If two head packets target the same output, count one
+  // conflict. node_tmp_seen[output] tracks which outputs we've already
+  // seen requested.
+  bool node_tmp_seen[MAX_XBAR_NODES] = {0};
+  for (unsigned i = 0; i < total_nodes; ++i) {
+    if (!input_nonempty[i]) continue;
+    unsigned dst = in_buffers[i].front().output_deviceID;
+    if (node_tmp_seen[dst]) conflict_sub++;
+    else                    node_tmp_seen[dst] = true;
   }
 
   conflicts += conflict_sub;
@@ -211,11 +220,12 @@ void xbar_router::iSLIP_Advance() {
       for (unsigned j = 0; j < total_nodes; ++j) {
         unsigned node_id = (j + next_node[i]) % total_nodes;
 
-        if (!in_buffers[node_id].empty()) {
+        if (input_nonempty[node_id]) {
           Packet _packet = in_buffers[node_id].front();
           if (_packet.output_deviceID == i) {
             out_buffers[_packet.output_deviceID].push(_packet);
             in_buffers[node_id].pop();
+            input_nonempty[node_id] = !in_buffers[node_id].empty();
             if (verbose)
               printf("%d : cycle %d : send req from %d to %d\n", m_id, cycles,
                      node_id, i - _n_shader);
@@ -224,7 +234,7 @@ void xbar_router::iSLIP_Advance() {
             if (verbose) {
               for (unsigned k = j + 1; k < total_nodes; ++k) {
                 unsigned node_id2 = (k + next_node[i]) % total_nodes;
-                if (!in_buffers[node_id2].empty()) {
+                if (input_nonempty[node_id2]) {
                   Packet _packet2 = in_buffers[node_id2].front();
 
                   if (_packet2.output_deviceID == i)
