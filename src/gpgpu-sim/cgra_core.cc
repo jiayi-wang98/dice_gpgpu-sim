@@ -1606,7 +1606,8 @@ void cgra_unit::print() const {
   printf("%s CGRA pipeline (current latency = %d, is_busy = %d):  ", m_name.c_str(),m_latency,is_busy);
   for(unsigned lane_id = 0; lane_id < 4; lane_id++){
     for(unsigned i = 0; i < MAX_CGRA_FABRIC_LATENCY; i++){
-      printf("%d ", shift_registers[lane_id][i]);
+      unsigned phys = (m_head + i) % MAX_CGRA_FABRIC_LATENCY;
+      printf("%d ", shift_registers[lane_id][phys]);
     }
   }
   printf("\n");
@@ -1614,25 +1615,32 @@ void cgra_unit::print() const {
 }
 
 void cgra_unit::cycle(){
-  //shift the shift registers to the right
+  // Conceptually: shift_registers[lane][i] = shift_registers[lane][i-1] for
+  // i in [1, MAX_CGRA_FABRIC_LATENCY-1]. The original implementation did 4 ×
+  // (MAX-1) word writes per cycle. Equivalent rotation: decrement m_head so
+  // that the same physical slot now corresponds to one-higher logical
+  // position. The original kept slot[0] unchanged (shift only modifies
+  // slots [1..]); preserve that invariant by copying old logical-0 into the
+  // new head slot. One word per lane instead of MAX-1.
   if(stalled()){
     is_busy = true;
     return;
   }
+  const unsigned old_head = m_head;
+  const unsigned new_head = (old_head + MAX_CGRA_FABRIC_LATENCY - 1) % MAX_CGRA_FABRIC_LATENCY;
   for(unsigned lane_id = 0; lane_id < 4; lane_id++){
-    for (unsigned i = MAX_CGRA_FABRIC_LATENCY-1; i > 0; i--) {
-      shift_registers[lane_id][i] = shift_registers[lane_id][i - 1];
-    }
+    shift_registers[lane_id][new_head] = shift_registers[lane_id][old_head];
   }
-  //shift_registers[0] = unsigned(-1); //will be modified later
+  m_head = new_head;
+  // Recompute is_busy by scanning logical slots [0..m_latency].
   is_busy = false;
-  for(unsigned lane_id = 0; lane_id < 4; lane_id++){
-    for(unsigned i = 0; i < m_latency+1; i++){
-      if(shift_registers[lane_id][i] != unsigned(-1)){
+  for(unsigned lane_id = 0; lane_id < 4 && !is_busy; lane_id++){
+    for(unsigned i = 0; i <= m_latency; i++){
+      unsigned phys = (m_head + i) % MAX_CGRA_FABRIC_LATENCY;
+      if(shift_registers[lane_id][phys] != unsigned(-1)){
         is_busy = true;
         break;
       }
-      if(is_busy) break;
     }
   }
   if(g_debug_execution==3 && m_cgra_core->get_id() == m_cgra_core->get_dice_trace_sampling_core()){
@@ -1651,6 +1659,7 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
       shift_registers[lane_id][i] = unsigned(-1); //unsigned(-1) means empty/invalid
     }
   }
+  m_head = 0;
   m_latency = MAX_CGRA_FABRIC_LATENCY-1;
   stalled_by_ldst_unit_queue_full = false;
   stalled_by_wb_buffer_full = false;

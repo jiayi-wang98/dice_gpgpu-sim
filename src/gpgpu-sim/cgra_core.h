@@ -866,6 +866,18 @@ class cgra_unit {
    cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core, cgra_block_state_t **block);
    ~cgra_unit() {}
   
+   // The CGRA fabric pipeline used to be modeled as a 4 lanes ×
+   // MAX_CGRA_FABRIC_LATENCY array shifted right by one slot every cycle
+   // (~128 word writes per cycle). It is now a circular buffer with a single
+   // head pointer; the head decrements each cycle, so the same physical slot
+   // moves to one-higher logical position with no data movement. Logical i
+   // maps to physical (m_head + i) mod MAX_CGRA_FABRIC_LATENCY.
+   //
+   // The original shift kept slot[0] unchanged after the shift (slot[1] = old
+   // slot[0], slot[0] still old slot[0] until dispatch overwrites it). The
+   // ring buffer preserves that invariant by copying old slot[0] into the new
+   // head's position on each cycle (one word per lane).
+
    // modifiers
    void reinit(){
       is_busy = false;
@@ -876,6 +888,7 @@ class cgra_unit {
           shift_registers[lane_id][i] = unsigned(-1);
         }
       }
+      m_head = 0;
       m_num_executed_thread = 0;
    }
    void flush_pipeline() {
@@ -884,15 +897,16 @@ class cgra_unit {
           shift_registers[lane_id][i] = unsigned(-1);
         }
       }
+      m_head = 0;
       m_num_executed_thread = 0;
    }
    void exec(unsigned tid, unsigned lane_id) {
-    shift_registers[lane_id][0]=tid;
+    shift_registers[lane_id][m_head] = tid;
    }
    void cycle();
    void set_latency(unsigned l) { assert(l<MAX_CGRA_FABRIC_LATENCY); m_latency = l; }
    unsigned out_tid(unsigned lane_id) {
-      return shift_registers[lane_id][m_latency];
+      return shift_registers[lane_id][(m_head + m_latency) % MAX_CGRA_FABRIC_LATENCY];
    }
    unsigned out_valid(unsigned lane_id) {
       if(stalled()) return false;
@@ -921,6 +935,7 @@ class cgra_unit {
    cgra_core_ctx *m_cgra_core;
    const shader_core_config *m_config; //DICE-TODO: need to change to cgra_core_config or dice_config;
    unsigned shift_registers[4][MAX_CGRA_FABRIC_LATENCY]; //storing thread id
+   unsigned m_head; //ring-buffer head: physical index of logical slot 0
    bool is_busy;
    cgra_block_state_t **m_executing_block;
    bool stalled_by_wb_buffer_full;
