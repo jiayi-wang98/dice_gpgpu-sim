@@ -1165,50 +1165,6 @@ class cgra_unit {
     void set_last_processed_port_memory(unsigned port, unsigned bank) { m_last_processed_port_memory[bank] = port; }
     void set_last_processed_port_shared(unsigned port, unsigned bank) { m_last_processed_port_shared[bank] = port; }
 
-    void update_coaleasing_counter();
-    //bool coalesce_interval_done(unsigned port){
-    //  printf("coalesce_interval_done start, port = %d\n", port);
-    //  if(port>= m_ld_req_queue.size()) {
-    //    assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
-    //    //check store
-    //    if(m_st_coalescing_counter[port-m_ld_req_queue.size()] = temporal_coalescing_interval) {
-    //      m_st_coalescing_counter[port-m_ld_req_queue.size()] = 0;
-    //      printf("coalesce_interval_done end, t\n"); 
-    //      return true;
-    //    } else {
-    //      printf("coalesce_interval_done end, f\n"); 
-    //      return false;
-    //    }
-    //  } else {
-    //    //check load
-    //    if(m_ld_coalescing_counter[port] == temporal_coalescing_interval) {
-    //      m_ld_coalescing_counter[port] = 0;
-    //      printf("coalesce_interval_done end, t\n"); 
-    //      return true;
-    //    } else {
-    //      printf("coalesce_interval_done end,f \n"); 
-    //      return false;
-    //    }
-    //  }
-    //}
-
-    //void do_coalescing(unsigned port) {
-    //  if(port>= m_ld_req_queue.size()) {
-    //    assert(port-m_ld_req_queue.size() < m_st_req_queue.size());
-    //    //check store
-    //    do_st_coalescing(port-m_ld_req_queue.size());
-    //  } else {
-    //    //check load
-    //    do_ld_coalescing(port);
-    //  }
-    //}
-
-    void coalesce_cycle();
-
-    void do_ld_coalescing(unsigned port);
-    void do_st_coalescing(unsigned port);
-
-    //more close to hardware implementation
     void coalesce_cycle_new();
     void do_ld_coalescing_new(unsigned port);
     void do_st_coalescing_new(unsigned port);

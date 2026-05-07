@@ -2433,8 +2433,6 @@ void ldst_unit::cycle_cgra(){
     if (m_config->m_L1D_config.l1_latency > 0) L1_latency_queue_cycle_cgra();
   }
 
-  //m_dice_mem_request_queue->update_coaleasing_counter();  //This is maintained by queue itself
-
   //process and writeback new memory access
   enum mem_stage_stall_type rc_fail = NO_RC_FAIL;
   mem_stage_access_type type;
@@ -3126,51 +3124,7 @@ unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
   return unsigned(-1);
 }
 
-void dice_mem_request_queue::update_coaleasing_counter(){
-  //update coaleasing_counter based on the first request in each queue
-  //if the first request space is global/local, then increase the counter, otherwise reset the counter
-  //if the counter is larger than the interval, then back to zero
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(!m_ld_req_queue_pre_coalesce[i].empty()){
-      mem_access_t access = m_ld_req_queue_pre_coalesce[i].front();
-      if ((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-        if(m_ld_coalescing_counter[i] < temporal_coalescing_interval){
-          m_ld_coalescing_counter[i]++;
-        }
-      } else {
-        m_ld_coalescing_counter[i] = 0;
-      }
-    }
-  }
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
-    if(!m_st_req_queue_pre_coalesce[i].empty()){
-      mem_access_t access = m_st_req_queue_pre_coalesce[i].front();
-      if ((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-        if(m_st_coalescing_counter[i] < temporal_coalescing_interval){
-          m_st_coalescing_counter[i]++;
-        }
-      } else {
-        m_st_coalescing_counter[i] = 0;
-      }
-    }
-  }
-}
 
-void dice_mem_request_queue::coalesce_cycle(){
-  //check if the coalescing interval is done
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if((m_ld_coalescing_counter[i] >= temporal_coalescing_interval) || (m_ld_req_queue_pre_coalesce[i].size() >= temporal_coalescing_max_cmd)){
-      do_ld_coalescing(i);
-      m_ld_coalescing_counter[i] = 0;
-    }
-  }
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
-    if((m_st_coalescing_counter[i] >= temporal_coalescing_interval) || (m_st_req_queue_pre_coalesce[i].size() >= temporal_coalescing_max_cmd)){
-      do_st_coalescing(i);
-      m_st_coalescing_counter[i] = 0;
-    }
-  }
-}
 
 
 void dice_mem_request_queue::coalesce_cycle_new(){
@@ -3184,106 +3138,6 @@ void dice_mem_request_queue::coalesce_cycle_new(){
 }
 
 
-void dice_mem_request_queue::do_ld_coalescing(unsigned port){
-  //iterate through the first coalescing interval elements in the queue
-  assert(m_ld_req_queue_pre_coalesce[port].size() > 0);
-  unsigned coalescing_counter = 0;
-  bool sector_segment_size = false; 
-  if (m_config->gpgpu_coalesce_arch >= 20 &&
-    m_config->gpgpu_coalesce_arch < 39) {
-    // Fermi and Kepler, L1 is normal and L2 is sector
-    sector_segment_size = false;
-  } else if (m_config->gpgpu_coalesce_arch >= 40) {
-    // Maxwell, Pascal and Volta, L1 and L2 are sectors
-    // all requests should be 32 bytes
-    sector_segment_size = true;
-  }
-  unsigned segment_size = sector_segment_size? 32: 128;
-  std::map<new_addr_type, dice_transaction_info> rd_transactions;  // each block addr maps to a list of transactions
-  cgra_block_state_t* cgra_block = m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state();
-  //step 1, gather all transactions
-  while((!m_ld_req_queue_pre_coalesce[port].empty()) && (coalescing_counter < temporal_coalescing_max_cmd) && (cgra_block == m_ld_req_queue_pre_coalesce[port].front().get_cgra_block_state())){
-    mem_access_t access = m_ld_req_queue_pre_coalesce[port].front();
-    pop_ld_request_pre_coalesce(port);
-    if ((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-      //coalescing
-      unsigned addr = access.get_addr();
-      if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
-        printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, cmd addr = 0x%08x.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, addr);
-        fflush(stdout);
-      }
-      unsigned size = access.get_size();
-      mem_access_type access_type = access.get_type();
-      memory_space_t space = access.get_space();
-      std::set<unsigned> tids = access.get_tids();
-      unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
-      dice_transaction_info &info = rd_transactions[block_address];
-      unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
-                                          // chunk does this thread access?
-      info.chunks.set(chunk);
-      info.access_type = access_type;
-      info.space = space;
-      for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-        unsigned tid = *it;
-        info.active_threads.insert(tid);
-      }
-      //mem_access_sector_mask_t sector_mask;
-      //sector_mask.set(chunk);
-      unsigned idx = (addr & 127);
-      //std::bitset<128> byte_mask;
-      //active_mask_t active_mask = *m_block_active_mask;
-      for (unsigned i = 0; i < size; i++){
-        if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-          //byte_mask.set(idx + i);
-          info.bytes.set(idx + i);
-        }
-      }
-      //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
-      //use iterator to find the ld_dest_reg
-      std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
-      info.ld_dest_regs = ld_dest_regs;
-      info.port_idx.insert(port);
-      
-      //check if second access needed
-      if (block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
-        addr = addr + size - 1;
-        unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
-        dice_transaction_info &info =rd_transactions[block_address];
-        unsigned chunk = (addr & 127) / 32;
-        info.chunks.set(chunk);
-        for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-          unsigned tid = *it;
-          info.active_threads.insert(tid);
-        }
-        info.access_type = access_type;
-        info.space = space;
-        //sector_mask.set(chunk);
-        unsigned idx = (addr & 127);
-        for (unsigned i = 0; i < size; i++){
-          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-            //byte_mask.set(idx + i);
-            info.bytes.set(idx + i);
-          }
-        }
-        info.ld_dest_regs = ld_dest_regs;
-        info.port_idx.insert(port);
-      }
-      coalescing_counter++;
-    } else {
-      break;
-    }
-  }
-  if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
-    printf("DICE Sim uArch: [LD_COALESCING]: Cycle %d, Port %d, Coalesced %d cmd into %d cmd.\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle +  m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port, coalescing_counter, rd_transactions.size());
-    fflush(stdout);
-  }
-  //step 2, reduce size of each transaction
-  for (std::map<new_addr_type, dice_transaction_info>::iterator t = rd_transactions.begin(); t != rd_transactions.end(); t++) {
-    new_addr_type addr = t->first;
-    const dice_transaction_info &info = t->second;
-    memory_coalescing_arch_reduce(false, info, addr, segment_size, port, cgra_block);
-  }
-}
 
 
 void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
@@ -3552,102 +3406,6 @@ void dice_mem_request_queue::do_st_coalescing_new(unsigned port){
   }
 }
 
-void dice_mem_request_queue::do_st_coalescing(unsigned port){
-  //iterate through the first coalescing interval elements in the queue
-  if(g_debug_execution==3 && m_ldst_unit->get_cgra_core_id() == m_ldst_unit->get_cgra_core()->get_dice_trace_sampling_core()){
-    printf("DICE Sim uArch: [ST_COALESCING]: Cycle %d, Port %d\n",m_ldst_unit->get_cgra_core()->get_gpu()->gpu_sim_cycle + m_ldst_unit->get_cgra_core()->get_gpu()->gpu_tot_sim_cycle , port);
-    fflush(stdout);
-  }
-  assert(m_st_req_queue_pre_coalesce[port].size() > 0);
-  unsigned coalescing_counter = 0;
-  bool sector_segment_size = false;
-  if (m_config->gpgpu_coalesce_arch >= 20 &&
-    m_config->gpgpu_coalesce_arch < 39) {
-    // Fermi and Kepler, L1 is normal and L2 is sector
-    sector_segment_size = false;
-  } else if (m_config->gpgpu_coalesce_arch >= 40) {
-    // Maxwell, Pascal and Volta, L1 and L2 are sectors
-    // all requests should be 32 bytes
-    sector_segment_size = true;
-  }
-  unsigned segment_size = sector_segment_size? 32: 128;
-  std::map<new_addr_type, dice_transaction_info> st_transactions;  // each block addr maps to a list of transactions
-  cgra_block_state_t* cgra_block = m_st_req_queue_pre_coalesce[port].front().get_cgra_block_state();
-  //step 1, gather all transactions
-  while(!m_st_req_queue_pre_coalesce[port].empty() && coalescing_counter < temporal_coalescing_interval && cgra_block == m_st_req_queue_pre_coalesce[port].front().get_cgra_block_state()){
-    mem_access_t access = m_st_req_queue_pre_coalesce[port].front();
-    pop_st_request_pre_coalesce(port);
-    if ((access.get_space() == global_space) || (access.get_space() == local_space) || (access.get_space() == param_space_local)){
-      //coalescing
-      unsigned addr = access.get_addr();
-      unsigned size = access.get_size();
-      mem_access_type access_type = access.get_type();
-      memory_space_t space = access.get_space();
-      std::set<unsigned> tids = access.get_tids();
-      unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
-      dice_transaction_info &info = st_transactions[block_address];
-      unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
-                                          // chunk does this thread access?
-      info.chunks.set(chunk);
-      info.access_type = access_type;
-      info.space = space;
-      for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-        unsigned tid = *it;
-        info.active_threads.insert(tid);
-      }
-      //mem_access_sector_mask_t sector_mask;
-      //sector_mask.set(chunk);
-      unsigned idx = (addr & 127);
-      //std::bitset<128> byte_mask;
-      //active_mask_t active_mask = *m_block_active_mask;
-      for (unsigned i = 0; i < size; i++){
-        if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-          //byte_mask.set(idx + i);
-          info.bytes.set(idx + i);
-        }
-      }
-      //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
-      //use iterator to find the ld_dest_reg
-      std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
-      info.ld_dest_regs = ld_dest_regs;
-      info.port_idx.insert(port+m_config->dice_cgra_core_num_ld_ports);
-      
-      //check if second access needed
-      if (block_address != line_size_based_tag_func_cgra(addr + size - 1, segment_size)) {
-        addr = addr + size - 1;
-        unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
-        dice_transaction_info &info =st_transactions[block_address];
-        unsigned chunk = (addr & 127) / 32;
-        info.chunks.set(chunk);
-        for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-          unsigned tid = *it;
-          info.active_threads.insert(tid);
-        }
-        info.access_type = access_type;
-        info.space = space;
-        //sector_mask.set(chunk);
-        unsigned idx = (addr & 127);
-        for (unsigned i = 0; i < size; i++){
-          if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-            //byte_mask.set(idx + i);
-            info.bytes.set(idx + i);
-          }
-        }
-        info.ld_dest_regs = ld_dest_regs;
-        info.port_idx.insert(port+m_config->dice_cgra_core_num_ld_ports);
-      }
-      coalescing_counter++;
-    } else {
-      break;
-    }
-  }
-  //step 2, reduce size of each transaction
-  for (std::map<new_addr_type, dice_transaction_info>::iterator t = st_transactions.begin(); t != st_transactions.end(); t++) {
-    new_addr_type addr = t->first;
-    const dice_transaction_info &info = t->second;
-    memory_coalescing_arch_reduce(true, info, addr, segment_size, port+m_config->dice_cgra_core_num_ld_ports, cgra_block);
-  }
-}
 
 void dice_mem_request_queue::memory_coalescing_arch_reduce(bool is_write, const dice_transaction_info &info,new_addr_type addr, unsigned segment_size, unsigned port, cgra_block_state_t* cgra_block) {
   mem_access_type access_type = info.access_type;
