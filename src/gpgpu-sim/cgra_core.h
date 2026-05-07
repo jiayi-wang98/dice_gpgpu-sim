@@ -1056,48 +1056,64 @@ class cgra_unit {
   public:
     dice_mem_request_queue(const shader_core_config *config, class ldst_unit* ldst_unit);
 
+    // Per-port "queue is non-empty" bitmasks. Maintained on push/pop so that
+    // the round-robin port arbitration in get_next_process_port_* can avoid
+    // calling deque::empty() per port (which lowers to _Deque_iterator
+    // operator== at -O0 and was a hotspot, especially via shared-memory
+    // arbitration that scans all ports for every shared bank each cycle).
+    // 32 bits is plenty: dice_cgra_core_num_ld_ports/num_st_ports are <=32.
+    uint32_t m_ld_pending_mask = 0;
+    uint32_t m_st_pending_mask = 0;
+    uint32_t m_ld_pre_pending_mask = 0;
+    uint32_t m_st_pre_pending_mask = 0;
+
     void push_ld_request(mem_access_t access, unsigned port) {
       m_ld_req_queue[port].push_back(access);
       m_ld_port_credit[port]--;
-      //printf("DICE-Sim uArch:  push_ld_request, port = %d, credit = %d\n",  port, m_ld_port_credit[port]);
-      //fflush(stdout);
+      m_ld_pending_mask |= (1u << port);
       assert(access.get_cgra_block_state() != NULL);
     }
 
     void push_ld_request_pre_coalesce(mem_access_t access, unsigned port) {
       m_ld_req_queue_pre_coalesce[port].push_back(access);
       m_ld_port_credit[port]--;
-      //printf("DICE-Sim uArch:  push_ld_request_pre_coalesce, port = %d, addr=%p\n",  port, access.get_addr());
+      m_ld_pre_pending_mask |= (1u << port);
     }
 
     void push_st_request_pre_coalesce(mem_access_t access, unsigned port) {
       m_st_req_queue_pre_coalesce[port].push_back(access);
       m_st_port_credit[port]--;
+      m_st_pre_pending_mask |= (1u << port);
     }
 
     void push_st_request(mem_access_t access, unsigned port) {
       m_st_req_queue[port].push_back(access);
       m_st_port_credit[port]--;
+      m_st_pending_mask |= (1u << port);
     }
 
     void pop_ld_request(unsigned port) {
       m_ld_req_queue[port].pop_front();
       m_ld_port_credit[port]++;
+      if (m_ld_req_queue[port].empty()) m_ld_pending_mask &= ~(1u << port);
     }
 
     void pop_st_request(unsigned port) {
       m_st_req_queue[port].pop_front();
       m_st_port_credit[port]++;
+      if (m_st_req_queue[port].empty()) m_st_pending_mask &= ~(1u << port);
     }
 
     void pop_ld_request_pre_coalesce(unsigned port) {
       m_ld_req_queue_pre_coalesce[port].pop_front();
       m_ld_port_credit[port]++;
+      if (m_ld_req_queue_pre_coalesce[port].empty()) m_ld_pre_pending_mask &= ~(1u << port);
     }
 
     void pop_st_request_pre_coalesce(unsigned port) {
       m_st_req_queue_pre_coalesce[port].pop_front();
       m_st_port_credit[port]++;
+      if (m_st_req_queue_pre_coalesce[port].empty()) m_st_pre_pending_mask &= ~(1u << port);
     }
     
     void pop_request(unsigned port) {

@@ -3077,29 +3077,26 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_constant() {
-  // Single-pass round-robin scan starting at last_processed+1; the previous
-  // implementation built a per-call std::vector of matching ports and then
-  // searched it linearly per round-robin step (O(n^2)). With the scan we visit
-  // each port at most once and never allocate.
+  // Round-robin scan from last_processed+1 over the load ports. The non-empty
+  // bitmask lets us skip empty queues in O(1) instead of going through
+  // deque::empty() (which lowers to iterator equality at -O0).
   const unsigned n = m_config->dice_cgra_core_num_ld_ports;
-  if (n == 0) return unsigned(-1);
+  if (n == 0 || m_ld_pending_mask == 0) return unsigned(-1);
   for (unsigned step = 0; step < n; step++) {
     unsigned p = (m_last_processed_port_contant + 1 + step) % n;
-    if (!m_ld_req_queue[p].empty() && m_ld_req_queue[p].front().get_type() == CONST_ACC_R) {
-      return p;
-    }
+    if (!((m_ld_pending_mask >> p) & 1u)) continue;
+    if (m_ld_req_queue[p].front().get_type() == CONST_ACC_R) return p;
   }
   return unsigned(-1);
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_texture() {
   const unsigned n = m_config->dice_cgra_core_num_ld_ports;
-  if (n == 0) return unsigned(-1);
+  if (n == 0 || m_ld_pending_mask == 0) return unsigned(-1);
   for (unsigned step = 0; step < n; step++) {
     unsigned p = (m_last_processed_port_texture + 1 + step) % n;
-    if (!m_ld_req_queue[p].empty() && m_ld_req_queue[p].front().get_type() == TEXTURE_ACC_R) {
-      return p;
-    }
+    if (!((m_ld_pending_mask >> p) & 1u)) continue;
+    if (m_ld_req_queue[p].front().get_type() == TEXTURE_ACC_R) return p;
   }
   return unsigned(-1);
 }
@@ -3111,11 +3108,14 @@ unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
   const unsigned n_st = m_config->dice_cgra_core_num_st_ports;
   const unsigned n_total = n_ld + n_st;
   if (n_total == 0) return unsigned(-1);
+  // Combined bitmask: low n_ld bits for ld, then n_st bits for st.
+  const uint32_t combined = m_ld_pending_mask | (m_st_pending_mask << n_ld);
+  if (combined == 0) return unsigned(-1);
   for (unsigned step = 0; step < n_total; step++) {
     unsigned p = (m_last_processed_port_memory[bank] + 1 + step) % n_total;
-    const std::deque<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
-    if (q.empty()) continue;
-    const mem_access_t &access = q.front();
+    if (!((combined >> p) & 1u)) continue;
+    const mem_access_t &access = (p < n_ld) ? m_ld_req_queue[p].front()
+                                            : m_st_req_queue[p - n_ld].front();
     const memory_space_t space = access.get_space();
     if (space != global_space && space != local_space && space != param_space_local) continue;
     if (m_config->m_L1D_config.set_bank(access.get_addr()) != bank) continue;
@@ -3458,13 +3458,16 @@ void dice_mem_request_queue::memory_coalescing_arch_reduce(bool is_write, const 
     }
   }
   if(is_write){
+    const unsigned st_port = port - m_config->dice_cgra_core_num_ld_ports;
     mem_access_t access(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, port ,info.active, info.bytes, info.chunks,m_config->gpgpu_ctx);
     access.assign_cgra_block_state(cgra_block);
-    m_st_req_queue[port-m_config->dice_cgra_core_num_ld_ports].push_back(access);
+    m_st_req_queue[st_port].push_back(access);
+    m_st_pending_mask |= (1u << st_port);
   } else {
     mem_access_t access(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, port ,info.active, info.bytes, info.chunks,m_config->gpgpu_ctx);
     access.assign_cgra_block_state(cgra_block);
     m_ld_req_queue[port].push_back(access);
+    m_ld_pending_mask |= (1u << port);
   }
 }
 
@@ -3473,11 +3476,13 @@ unsigned dice_mem_request_queue::get_next_process_port_shared(unsigned bank){
   const unsigned n_st = m_config->dice_cgra_core_num_st_ports;
   const unsigned n_total = n_ld + n_st;
   if (n_total == 0) return unsigned(-1);
+  const uint32_t combined = m_ld_pending_mask | (m_st_pending_mask << n_ld);
+  if (combined == 0) return unsigned(-1);
   for (unsigned step = 0; step < n_total; step++) {
     unsigned p = (m_last_processed_port_shared[bank] + 1 + step) % n_total;
-    const std::deque<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
-    if (q.empty()) continue;
-    const mem_access_t &access = q.front();
+    if (!((combined >> p) & 1u)) continue;
+    const mem_access_t &access = (p < n_ld) ? m_ld_req_queue[p].front()
+                                            : m_st_req_queue[p - n_ld].front();
     if (access.get_space() != shared_space) continue;
     if (m_config->shmem_bank_func(access.get_addr()) != bank) continue;
     return p;
