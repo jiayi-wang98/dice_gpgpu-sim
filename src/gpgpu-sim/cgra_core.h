@@ -996,7 +996,7 @@ class cgra_unit {
     void rf_cycle();
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
-    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, std::set<unsigned> tids);
+    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, const std::set<unsigned> &tids);
     unsigned next_active_thread(unsigned unrolling_factor, unsigned unrolling_index, unsigned max_coalesce);
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }
@@ -1006,7 +1006,7 @@ class cgra_unit {
     bool exec_stalled() const { return m_cgra_core->is_exec_stalled(); }
     void read_operands(dice_metadata *metadata, unsigned tid);
     bool can_writeback_ldst_reg(unsigned bank_id, unsigned count);
-    bool can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids);
+    bool can_writeback_ldst_regs(const std::set<unsigned> &regs, const std::set<unsigned> &tids);
     unsigned get_actual_dispatched_count(){
       unsigned real_dispatched_count = m_dispatched_thread;
       for(unsigned i = 0; i < m_ready_threads.size(); i++) {

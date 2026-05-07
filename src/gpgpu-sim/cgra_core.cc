@@ -2001,15 +2001,14 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
   //check each output register in the metadata
   dice_metadata* metadata = block->get_current_metadata();
   unsigned num_writeback = 0;
-  bool all_valid = true;
-  std::map<unsigned, std::set<unsigned>> invalid_regs_map = block->get_current_cfg_block()->map_tid_invalid_writeback_regs;
-  //check if tid is in invalid_regs_map
-  std::map<unsigned, std::set<unsigned>>::iterator it_map = invalid_regs_map.find(tid);
-  std::set<unsigned> invalid_regs;
-  if(it_map != invalid_regs_map.end()){
-    invalid_regs = invalid_regs_map[tid];
-    all_valid = false;
-  }
+  // Look up the per-tid invalid-register set by reference (the map is keyed by
+  // tid; when no entry exists, all output regs are valid). Avoids copying the
+  // entire map and the per-tid set on every cgra writeback.
+  const std::map<unsigned, std::set<unsigned>> &invalid_regs_map =
+      block->get_current_cfg_block()->map_tid_invalid_writeback_regs;
+  std::map<unsigned, std::set<unsigned>>::const_iterator it_map = invalid_regs_map.find(tid);
+  const bool all_valid = (it_map == invalid_regs_map.end());
+  const std::set<unsigned> *invalid_regs = all_valid ? nullptr : &it_map->second;
 
   for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
     unsigned reg_num = (*it).reg_num();
@@ -2029,8 +2028,7 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
       m_cgra_core->incregfile_writes(1);
     } else {
       //check if the register is in the invalid register set
-      std::set<unsigned>::iterator it_invalid = invalid_regs.find(reg_num);
-      if(it_invalid == invalid_regs.end()){
+      if(invalid_regs->find(reg_num) == invalid_regs->end()){
         if(bank_id<32){
           assert(m_rf_bank_controller[bank_id]->wb_buffer_full() == false);
           //push to writeback buffer
@@ -2056,8 +2054,8 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
   m_num_write_access += num_writeback;
 }
 
-bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, std::set<unsigned> tids){
-  for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
+bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, const std::set<unsigned> &tids){
+  for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it){
     unsigned tid = *it;
     unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,32);
     if(m_rf_bank_controller[bank_id]->ldst_buffer_full() == false){
@@ -2108,26 +2106,24 @@ bool dispatcher_rfu_t::can_writeback_ldst_reg(unsigned bank_id, unsigned count){
   return false;
 }
 
-bool dispatcher_rfu_t::can_writeback_ldst_regs(std::set<unsigned> regs, std::set<unsigned> tids){
-  std::map<unsigned, unsigned> bank_id_count_map;
-  //initialize bank_id_count_map
-  for(unsigned i = 0; i < m_rf_bank_controller.size(); i++){
-    bank_id_count_map[i] = 0;
-  }
-  //count the number of registers writes in each bank
-  for(std::set<unsigned>::iterator it = regs.begin(); it != regs.end(); ++it){
+bool dispatcher_rfu_t::can_writeback_ldst_regs(const std::set<unsigned> &regs, const std::set<unsigned> &tids){
+  // Bank IDs are dense in [0, n_banks); use a fixed-size vector instead of a
+  // std::map. n_banks is small (32 typical) so this is much cheaper than the
+  // red-black tree we used to allocate per call.
+  const unsigned n_banks = m_rf_bank_controller.size();
+  std::vector<unsigned> bank_count(n_banks, 0);
+  for(std::set<unsigned>::const_iterator it = regs.begin(); it != regs.end(); ++it){
     unsigned reg_num = *it;
-    for (std::set<unsigned>::iterator tid = tids.begin(); tid != tids.end(); ++tid){
+    for(std::set<unsigned>::const_iterator tid = tids.begin(); tid != tids.end(); ++tid){
       unsigned bank_id = reg_number_to_bank_mapping(reg_num,*tid,32);
-      if(bank_id < m_rf_bank_controller.size()){
-        bank_id_count_map[bank_id]++;
+      if(bank_id < n_banks){
+        bank_count[bank_id]++;
       }
     }
   }
-  for(std::map<unsigned, unsigned>::iterator it = bank_id_count_map.begin(); it != bank_id_count_map.end(); ++it){
-    unsigned bank_id = it->first;
-    unsigned count = it->second;
-    if(count > 0 && can_writeback_ldst_reg(bank_id,count) == false){
+  for(unsigned bank_id = 0; bank_id < n_banks; bank_id++){
+    unsigned count = bank_count[bank_id];
+    if(count > 0 && !can_writeback_ldst_reg(bank_id, count)){
       return false;
     }
   }
@@ -2300,19 +2296,16 @@ bool Scoreboard::checkCollision(unsigned tid, const dice_metadata *metadata) con
 void ldst_unit::writeback_cgra(){
   // process next instruction that is going to writeback
   if (m_next_cgra_writeback!=NULL) {
-    bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(m_next_cgra_writeback->get_regs_num(),m_next_cgra_writeback->get_tids());
-    std::set<unsigned> writeback_regs = m_next_cgra_writeback->get_regs_num();
-    //assert(can_writeback);//this should always has the highest priority//no longer the case
-    //check if it's write allocate
+    const std::set<unsigned> &writeback_regs = m_next_cgra_writeback->get_regs_num();
+    const std::set<unsigned> &tids = m_next_cgra_writeback->get_tids();
+    bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs, tids);
     if(can_writeback==false){
-      std::set<unsigned> tids = m_next_cgra_writeback->get_tids();
-      std::set<unsigned> writeback_regs = m_next_cgra_writeback->get_regs_num();
       if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core() && (m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle)>45000){
         printf("DICE Sim uArch: [LDST_UNIT_WRITEBACK_FAIL]: cycle %d, tid =", m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
-        for (std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+        for (std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
           printf(" %d",*it);
         }
-        printf(", reg %d, addr 0x%08x\n",writeback_regs, m_next_cgra_writeback->get_addr());
+        printf(", addr 0x%08x\n", m_next_cgra_writeback->get_addr());
         fflush(stdout);
       }
     }
@@ -2320,8 +2313,8 @@ void ldst_unit::writeback_cgra(){
       can_writeback = false;
     }
     if (can_writeback) {
-      for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
-        if(m_dispatcher_rfu->writeback_ldst(m_next_cgra_writeback->get_cgra_block_state(), *it, m_next_cgra_writeback->get_tids())){
+      for (std::set<unsigned>::const_iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+        if(m_dispatcher_rfu->writeback_ldst(m_next_cgra_writeback->get_cgra_block_state(), *it, tids)){
         } else {
           assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
         }
@@ -2597,11 +2590,11 @@ mem_stage_stall_type ldst_unit::process_cache_access_cgra(
     for (unsigned i = 0; i < inc_ack; ++i) cgra_block->inc_store_req();
   }
   if (status == HIT) {
-    std::set<unsigned> tids = mf->get_tids();
-    bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(mf->get_regs_num(),tids);
+    const std::set<unsigned> &tids = mf->get_tids();
+    const std::set<unsigned> &writeback_regs = mf->get_regs_num();
+    bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs, tids);
     if(can_writeback){
-      std::set<unsigned> writeback_regs = mf->get_regs_num();
-      for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+      for (std::set<unsigned>::const_iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
         if(m_dispatcher_rfu->writeback_ldst(cgra_block, *it, tids)){
         } else {
           assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
@@ -2616,16 +2609,16 @@ mem_stage_stall_type ldst_unit::process_cache_access_cgra(
         }
         if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
           printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread ", m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
-          for (std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+          for (std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
             printf(" %d",*it);
           }
           printf(", reg ");
-          for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+          for (std::set<unsigned>::const_iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
             printf(" %d",*it);
           }
           printf(", current store done %d, need total %d\n",cgra_block->get_number_of_stores_done(), cgra_block->get_current_cfg_block()->get_num_stores());
           fflush(stdout);
-        } 
+        }
       }
       //direct writeback
       //cgra_block->get_current_cfg_block()->pop_mem_access(mf->get_ldst_port_num());
@@ -2657,24 +2650,8 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache_cgra(l1_cach
   if (m_config->m_L1D_config.l1_latency > 0) {
     //for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle // move to top level
       mem_fetch *mf = m_mf_allocator->alloc_cgra(cgra_block, access, m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
-      std::set<unsigned> tids = mf->get_tids();
-      std::set<unsigned> writeback_regs = mf->get_regs_num();
       unsigned bank_id = m_config->m_L1D_config.set_bank(mf->get_addr());
       assert(bank_id < m_config->m_L1D_config.l1_banks);
-
-      //debug info
-      for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
-        unsigned tid = *it;
-        //if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-        //  printf("DICE Sim uArch: [LDST_UNIT_L1D_LATENCY_QUEUE_PUSH]: Cycle %d, Push access(tid=%d,block=%d,addr=0x%08x) to latency queue \n regs =",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , tid, cgra_block->get_current_metadata()->meta_id, mf->get_addr());
-        //  
-        //  for(std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
-        //    printf(" %d",*it);
-        //  }
-        //  printf("\n");
-        //  fflush(stdout);
-        //}
-      }
 
       if ((l1_latency_queue[bank_id][m_config->m_L1D_config.l1_latency - 1]) ==
           NULL) {
@@ -2693,12 +2670,12 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache_cgra(l1_cach
         m_dice_mem_request_queue->pop_request(mf->get_ldst_port_num());
       } else {
         result = BK_CONF;
-        for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
-          unsigned tid = *it;
-          if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-            printf("DICE Sim uArch: [LDST_UNIT_L1D_LATENCY_QUEUE_STALL]: Cycle %d, Bank Conflict for access(tid=%d,block=%d,addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , tid, cgra_block->get_current_metadata()->meta_id, mf->get_addr());
-            fflush(stdout);
+        if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
+          const std::set<unsigned> &tids = mf->get_tids();
+          for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
+            printf("DICE Sim uArch: [LDST_UNIT_L1D_LATENCY_QUEUE_STALL]: Cycle %d, Bank Conflict for access(tid=%d,block=%d,addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, cgra_block->get_current_metadata()->meta_id, mf->get_addr());
           }
+          fflush(stdout);
         }
         delete mf;
       }
@@ -2720,7 +2697,8 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
     if ((l1_latency_queue[j][0]) != NULL) {
       mem_fetch *mf_next = l1_latency_queue[j][0];
-      std::set<unsigned> tids = mf_next->get_tids();
+      const std::set<unsigned> &tids = mf_next->get_tids();
+      const std::set<unsigned> &writeback_regs = mf_next->get_regs_num();
       std::list<cache_event> events;
       enum cache_request_status status =
           m_L1D->access(mf_next->get_addr(), mf_next,
@@ -2730,14 +2708,13 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
       bool write_sent = was_write_sent(events);
       bool read_sent = was_read_sent(events);
 
-      if (status == HIT) {        
+      if (status == HIT) {
         //check if writeback can be processed
         //writeback
         if(!mf_next->is_write()){
-          bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(mf_next->get_regs_num(),tids);
+          bool can_writeback = m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs, tids);
           if(can_writeback){
-            std::set<unsigned> writeback_regs = mf_next->get_regs_num();
-            for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+            for (std::set<unsigned>::const_iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
               if(m_dispatcher_rfu->writeback_ldst(mf_next->get_cgra_block_state(), *it, tids)){
               } else {
                 assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
@@ -2751,23 +2728,22 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
 
         l1_latency_queue[j][0] = NULL;
         if (mf_next->is_write()) {
-          std::set<unsigned> writeback_regs = mf_next->get_regs_num();
           //inc write ack
           unsigned stores_done_inc = tids.size();
           for (int i=0; i<stores_done_inc; i++){
             mf_next->get_cgra_block_state()->inc_number_of_stores_done();
           }
           if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-            for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+            for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
               printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread %d, regs =",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it);
-              for(std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it){
-                printf(" %d",*it);
+              for(std::set<unsigned>::const_iterator rit = writeback_regs.begin(); rit != writeback_regs.end(); ++rit){
+                printf(" %d",*rit);
               }
               printf(", current store done %d, need total %d\n",mf_next->get_cgra_block_state()->get_number_of_stores_done(), mf_next->get_cgra_block_state()->get_current_cfg_block()->get_num_stores());
               fflush(stdout);
             }
-          } 
-        } 
+          }
+        }
         // For write hit in WB policy
         if (mf_next->is_write() && !write_sent) {
           unsigned dec_ack =
@@ -2785,7 +2761,7 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
         assert(!read_sent);
         assert(!write_sent);
         if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-          for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+          for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
             printf("DICE Sim uArch: [LDST_UNIT_L1D_ACCESS_STALL]: Cycle %d, Bank Conflict for access(tid=%d,block=%d,addr=0x%08x)\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_cgra_block_state()->get_current_metadata()->meta_id, mf_next->get_addr());
           }
           fflush(stdout);
@@ -2793,14 +2769,14 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
       } else {
         assert(status == MISS || status == HIT_RESERVED);
         if(status == MISS && g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-          for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+          for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
             printf("DICE Sim uArch: [L1D LATENCY QUEUE]: cycle %d, MISS for thread %d, addr 0x%08x\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_addr());
           }
           fflush(stdout);
         }
 
         if(status == HIT_RESERVED && g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-          for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+          for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
             printf("DICE Sim uArch: [L1D LATENCY QUEUE]: cycle %d, HIT_RESERVED for thread %d, addr 0x%08x\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_addr());
           }
           fflush(stdout);
@@ -2812,7 +2788,7 @@ void ldst_unit::L1_latency_queue_cycle_cgra() {
             mf_next->get_cgra_block_state()->inc_number_of_stores_done();
           }
           if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-            for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+            for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
               printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, Store ack for thread %d, addr 0x%08x, number_of_stores_done = %d, need total = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, mf_next->get_addr(), mf_next->get_cgra_block_state()->get_number_of_stores_done(), mf_next->get_cgra_block_state()->get_current_cfg_block()->get_num_stores());
             }
             fflush(stdout);
@@ -2841,13 +2817,11 @@ bool ldst_unit::constant_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t
                                mem_stage_access_type &fail_type) {
   if (!cgra_block->ready_to_dispatch() || ((access.get_type() != CONST_ACC_R) ))
     return true;
-  mem_stage_stall_type fail;
-  std::set<unsigned> tids = access.get_tids();
-  fail = process_memory_access_queue_cgra(m_L1C, cgra_block, access);
+  mem_stage_stall_type fail = process_memory_access_queue_cgra(m_L1C, cgra_block, access);
 
   if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-    unsigned count = tids.size();
-    for (std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+    const std::set<unsigned> &tids = access.get_tids();
+    for (std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
       printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, const cache access for thread %d, addr = 0x%04x, block = %d, status = %s\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it, access.get_addr(), cgra_block->get_current_metadata()->meta_id, mem_stage_stall_type_str(fail));
     }
     fflush(stdout);
@@ -2886,18 +2860,18 @@ bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
   if (access.get_space() != shared_space) return true;
 
   //cgra_block->get_current_cfg_block()->pop_mem_access(access->get_ldst_port_num());
-  std::set<unsigned> writeback_regs = access.get_ldst_regs();
-  std::set<unsigned> tids = access.get_tids();
+  const std::set<unsigned> &writeback_regs = access.get_ldst_regs();
+  const std::set<unsigned> &tids = access.get_tids();
   if(!access.is_write()){
-    if(m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs,tids)){
-      for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
+    if(m_dispatcher_rfu->can_writeback_ldst_regs(writeback_regs, tids)){
+      for (std::set<unsigned>::const_iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
         if(m_dispatcher_rfu->writeback_ldst(cgra_block, *it, tids)){
         } else {
           assert(0 && "ERROR detect no RF conflict but actually RF conflict! ");
         }
       }
       m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
-    } 
+    }
   } else {
     m_dice_mem_request_queue->pop_request(access.get_ldst_port_num());
   }
@@ -2908,10 +2882,10 @@ bool ldst_unit::shared_cycle_cgra(cgra_block_state_t *cgra_block, mem_access_t a
       cgra_block->inc_number_of_stores_done();
     }
     if(g_debug_execution==3 && m_cgra_core_id == m_cgra_core->get_dice_trace_sampling_core()){
-      for (std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it) {
+      for (std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
         printf("DICE Sim uArch: [LDST_UNIT]: cycle %d, writeback done for thread %d, reg:", m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , *it);
-        for (std::set<unsigned>::iterator it = writeback_regs.begin(); it != writeback_regs.end(); ++it) {
-          printf(" %d",*it);
+        for (std::set<unsigned>::const_iterator rit = writeback_regs.begin(); rit != writeback_regs.end(); ++rit) {
+          printf(" %d",*rit);
         }
         printf(", current store done %d, need total %d\n",cgra_block->get_number_of_stores_done(), cgra_block->get_current_cfg_block()->get_num_stores());
       }
@@ -3452,7 +3426,7 @@ void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
   unsigned size = access.get_size();
   mem_access_type access_type = access.get_type();
   memory_space_t space = access.get_space();
-  std::set<unsigned> tids = access.get_tids();
+  const std::set<unsigned> &tids = access.get_tids();
   unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
   new_info.block_addr = block_address;
   unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
@@ -3460,25 +3434,16 @@ void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
   new_info.chunks.set(chunk);
   new_info.access_type = access_type;
   new_info.space = space;
-  for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-    unsigned tid = *it;
-    new_info.active_threads.insert(tid);
-  }
-  //mem_access_sector_mask_t sector_mask;
-  //sector_mask.set(chunk);
+  new_info.active_threads.insert(tids.begin(), tids.end());
   unsigned idx = (addr & 127);
-  //std::bitset<128> byte_mask;
-  //active_mask_t active_mask = *m_block_active_mask;
   for (unsigned i = 0; i < size; i++){
     if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-      //byte_mask.set(idx + i);
       new_info.bytes.set(idx + i);
     }
   }
   //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
   //use iterator to find the ld_dest_reg
-  std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
-  new_info.ld_dest_regs = ld_dest_regs;
+  new_info.ld_dest_regs = access.get_ldst_regs();
   new_info.port_idx.insert(port);
   new_info.block = cgra_block;
 
@@ -3614,7 +3579,7 @@ void dice_mem_request_queue::do_st_coalescing_new(unsigned port){
   unsigned size = access.get_size();
   mem_access_type access_type = access.get_type();
   memory_space_t space = access.get_space();
-  std::set<unsigned> tids = access.get_tids();
+  const std::set<unsigned> &tids = access.get_tids();
   unsigned block_address = line_size_based_tag_func_cgra(addr, segment_size);
   new_info.block_addr = block_address;
   unsigned chunk = (addr & 127) / 32;  // which 32-byte chunk within in a 128-byte
@@ -3622,25 +3587,16 @@ void dice_mem_request_queue::do_st_coalescing_new(unsigned port){
   new_info.chunks.set(chunk);
   new_info.access_type = access_type;
   new_info.space = space;
-  for(std::set<unsigned>::iterator it = tids.begin(); it != tids.end(); ++it){
-    unsigned tid = *it;
-    new_info.active_threads.insert(tid);
-  }
-  //mem_access_sector_mask_t sector_mask;
-  //sector_mask.set(chunk);
+  new_info.active_threads.insert(tids.begin(), tids.end());
   unsigned idx = (addr & 127);
-  //std::bitset<128> byte_mask;
-  //active_mask_t active_mask = *m_block_active_mask;
   for (unsigned i = 0; i < size; i++){
     if ((idx + i) < MAX_MEMORY_ACCESS_SIZE) {
-      //byte_mask.set(idx + i);
       new_info.bytes.set(idx + i);
     }
   }
   //check port index, if ld, find ld_dest reg index in metadata, if store, just circularly use 4-7
   //use iterator to find the ld_dest_reg
-  std::set<unsigned> ld_dest_regs = access.get_ldst_regs();
-  new_info.ld_dest_regs = ld_dest_regs;
+  new_info.ld_dest_regs = access.get_ldst_regs();
   new_info.port_idx.insert(true_store_port);
   new_info.block = cgra_block;
 

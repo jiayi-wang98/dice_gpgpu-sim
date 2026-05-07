@@ -126,8 +126,8 @@ class mem_fetch {
   const warp_inst_t &get_inst() { return m_inst; }
   //DICE-support
   class cgra_block_state_t* get_cgra_block_state() { return m_cgra_block; }
-  std::set<unsigned> get_regs_num() { return m_access.get_ldst_regs(); }
-  std::set<unsigned> get_tids() const { return m_access.get_tids(); }
+  const std::set<unsigned> &get_regs_num() const { return m_access.get_ldst_regs(); }
+  const std::set<unsigned> &get_tids() const { return m_access.get_tids(); }
   unsigned get_ldst_port_num() const { return m_access.get_ldst_port_num(); }
   memory_space_t get_space() const { return m_access.get_space(); }
 
