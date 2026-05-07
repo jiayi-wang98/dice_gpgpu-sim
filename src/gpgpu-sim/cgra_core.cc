@@ -1823,14 +1823,12 @@ void dispatcher_rfu_t::dispatch(){
     //calculating current dispatched thread count
     unsigned real_dispatched_count = get_actual_dispatched_count();
     if(real_dispatched_count < total_need_dispatch){
-      std::vector<unsigned> next_ready_threads;
-      std::vector<unsigned> actual_dispatch_threads;
-      next_ready_threads.resize(unrolling_factor);
-      actual_dispatch_threads.resize(4);
-      actual_dispatch_threads[0] = unsigned(-1);
-      actual_dispatch_threads[1] = unsigned(-1);
-      actual_dispatch_threads[2] = unsigned(-1);
-      actual_dispatch_threads[3] = unsigned(-1);
+      // unrolling_factor is 1, 2, or 4 (asserted by the switch below); use
+      // fixed-size stack arrays instead of allocating two std::vectors per
+      // dispatch call.
+      assert(unrolling_factor <= 4);
+      unsigned next_ready_threads[4]      = { unsigned(-1), unsigned(-1), unsigned(-1), unsigned(-1) };
+      unsigned actual_dispatch_threads[4] = { unsigned(-1), unsigned(-1), unsigned(-1), unsigned(-1) };
       for(unsigned unrolling_index=0;unrolling_index<unrolling_factor;unrolling_index++){
         next_ready_threads[unrolling_index] = next_active_thread(unrolling_factor, unrolling_index,max_coalesce);
       }
@@ -2462,12 +2460,18 @@ void ldst_unit::cycle_cgra(){
   rc_fail = NO_RC_FAIL;
   //memory cycle, round robin arbiter from all load and store ports to check all load request to contant cache
   //can process L1_bank numbers request per cycle from ports
-  std::vector<unsigned> port_selected;
-  port_selected.resize(m_config->m_L1D_config.l1_banks, unsigned(-1));
-  for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  
+  // Two-pass (gather then process) preserves the original semantic where every
+  // bank's port query sees the same pre-processing queue state. Fixed-size
+  // stack arrays avoid the per-cycle heap alloc the previous std::vectors did.
+  constexpr unsigned MAX_LD_BANKS = 64;
+  constexpr unsigned MAX_SHMEM_BANKS = 64;
+  const unsigned n_l1_banks = m_config->m_L1D_config.l1_banks;
+  assert(n_l1_banks <= MAX_LD_BANKS);
+  unsigned port_selected[MAX_LD_BANKS];
+  for (unsigned j = 0; j < n_l1_banks; j++) {
     port_selected[j] = m_dice_mem_request_queue->get_next_process_port_memory(j);
   }
-  for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  
+  for (unsigned j = 0; j < n_l1_banks; j++) {
     unsigned memory_port = port_selected[j];
     if(memory_port != unsigned(-1)){
       mem_access_t access = m_dice_mem_request_queue->get_request(memory_port);
@@ -2479,16 +2483,15 @@ void ldst_unit::cycle_cgra(){
       m_dice_mem_request_queue->set_last_processed_port_memory(memory_port,j);
     }
   }
-  //shared memory cycle is modeled as latency for each thread directly
-  //
-  std::map<unsigned, std::map<new_addr_type, unsigned>> bank_accs;  // bank -> word address -> access count
 
-  std::vector<unsigned> shared_port_selected;
-  shared_port_selected.resize(m_config->num_shmem_bank, unsigned(-1));
-  for (int k = 0; k < m_config->num_shmem_bank; k++) {
+  //shared memory cycle is modeled as latency for each thread directly
+  const unsigned n_shmem_banks = m_config->num_shmem_bank;
+  assert(n_shmem_banks <= MAX_SHMEM_BANKS);
+  unsigned shared_port_selected[MAX_SHMEM_BANKS];
+  for (unsigned k = 0; k < n_shmem_banks; k++) {
     shared_port_selected[k] = m_dice_mem_request_queue->get_next_process_port_shared(k);
   }
-  for (int k = 0; k < m_config->num_shmem_bank; k++) {
+  for (unsigned k = 0; k < n_shmem_banks; k++) {
     unsigned shared_port = shared_port_selected[k];
     if(shared_port != unsigned(-1)){
       mem_access_t access = m_dice_mem_request_queue->get_request(shared_port);
@@ -3099,119 +3102,51 @@ dice_mem_request_queue::dice_mem_request_queue(const shader_core_config *config,
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_constant() {
-  //check which port has contant memory request
-  std::vector<unsigned> port_has_contant_request;
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(!m_ld_req_queue[i].empty()){
-      mem_access_t access = m_ld_req_queue[i].front();
-      if(access.get_type() == CONST_ACC_R){
-        port_has_contant_request.push_back(i);
-      }
+  // Single-pass round-robin scan starting at last_processed+1; the previous
+  // implementation built a per-call std::vector of matching ports and then
+  // searched it linearly per round-robin step (O(n^2)). With the scan we visit
+  // each port at most once and never allocate.
+  const unsigned n = m_config->dice_cgra_core_num_ld_ports;
+  if (n == 0) return unsigned(-1);
+  for (unsigned step = 0; step < n; step++) {
+    unsigned p = (m_last_processed_port_contant + 1 + step) % n;
+    if (!m_ld_req_queue[p].empty() && m_ld_req_queue[p].front().get_type() == CONST_ACC_R) {
+      return p;
     }
   }
-  if(port_has_contant_request.empty()){
-    return unsigned(-1);
-  }
-  if(port_has_contant_request.size() == 1){
-    return port_has_contant_request[0];
-  }
-  //start from last processed port
-  unsigned next_port = (m_last_processed_port_contant+1) % m_config->dice_cgra_core_num_ld_ports;
-  while(true){
-    if(std::find(port_has_contant_request.begin(), port_has_contant_request.end(), next_port) != port_has_contant_request.end()){
-      return next_port;
-    }
-    next_port = (next_port+1) % m_config->dice_cgra_core_num_ld_ports;
-    if(next_port == m_last_processed_port_contant){
-      return unsigned(-1);
-    }
-  }
+  return unsigned(-1);
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_texture() {
-  //check which port has texture memory request
-  std::vector<unsigned> port_has_texture_request;
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(!m_ld_req_queue[i].empty()){
-      mem_access_t access = m_ld_req_queue[i].front();
-      if(access.get_type() == TEXTURE_ACC_R){
-        port_has_texture_request.push_back(i);
-      }
+  const unsigned n = m_config->dice_cgra_core_num_ld_ports;
+  if (n == 0) return unsigned(-1);
+  for (unsigned step = 0; step < n; step++) {
+    unsigned p = (m_last_processed_port_texture + 1 + step) % n;
+    if (!m_ld_req_queue[p].empty() && m_ld_req_queue[p].front().get_type() == TEXTURE_ACC_R) {
+      return p;
     }
   }
-  if(port_has_texture_request.empty()){
-    return unsigned(-1);
-  }
-  if(port_has_texture_request.size() == 1){
-    return port_has_texture_request[0];
-  }
-  //start from last processed port
-  unsigned next_port = (m_last_processed_port_texture+1) % m_config->dice_cgra_core_num_ld_ports;
-  while(true){
-    if(std::find(port_has_texture_request.begin(), port_has_texture_request.end(), next_port) != port_has_texture_request.end()){
-      return next_port;
-    }
-    next_port = (next_port+1) % m_config->dice_cgra_core_num_ld_ports;
-    if(next_port == m_last_processed_port_texture){
-      return unsigned(-1);
-    }
-  }
+  return unsigned(-1);
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_memory(unsigned bank)
 {
-  //check which port has global/local memory request
-  std::vector<unsigned> port_has_memory_request;
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(!m_ld_req_queue[i].empty()){
-      mem_access_t access = m_ld_req_queue[i].front();
-      if ((access.get_space() != global_space) && (access.get_space() != local_space) && (access.get_space() != param_space_local)){
-        continue;
-      } else {
-        unsigned bank_id = m_config->m_L1D_config.set_bank(access.get_addr());
-        if(bank_id != bank){
-          continue;
-        }
-        port_has_memory_request.push_back(i);
-      }
-    }
+  // Logical port space: [0, n_ld) for ld queues, [n_ld, n_ld+n_st) for st.
+  const unsigned n_ld = m_config->dice_cgra_core_num_ld_ports;
+  const unsigned n_st = m_config->dice_cgra_core_num_st_ports;
+  const unsigned n_total = n_ld + n_st;
+  if (n_total == 0) return unsigned(-1);
+  for (unsigned step = 0; step < n_total; step++) {
+    unsigned p = (m_last_processed_port_memory[bank] + 1 + step) % n_total;
+    const std::list<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
+    if (q.empty()) continue;
+    const mem_access_t &access = q.front();
+    const memory_space_t space = access.get_space();
+    if (space != global_space && space != local_space && space != param_space_local) continue;
+    if (m_config->m_L1D_config.set_bank(access.get_addr()) != bank) continue;
+    return p;
   }
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
-    if(!m_st_req_queue[i].empty()){
-      mem_access_t access = m_st_req_queue[i].front();
-      if ((access.get_space() != global_space) && (access.get_space() != local_space) && (access.get_space() != param_space_local)){
-        continue;
-      } else {
-        unsigned bank_id = m_config->m_L1D_config.set_bank(access.get_addr());
-        if(bank_id != bank){
-          continue;
-        }
-        port_has_memory_request.push_back(i+m_config->dice_cgra_core_num_ld_ports);
-      }
-    }
-  }
-  if(port_has_memory_request.empty()){
-    return unsigned(-1);
-  }
-
-  //only one port has memory request
-  if(port_has_memory_request.size() == 1){
-    //check if the port is still waiting for coalescing
-    //m_last_processed_port_memory[bank] = port_has_memory_request[0];
-    return port_has_memory_request[0];
-  }
-  //start from last processed port
-  unsigned next_port = (m_last_processed_port_memory[bank]+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-  while(true){
-    if(std::find(port_has_memory_request.begin(), port_has_memory_request.end(), next_port) != port_has_memory_request.end()){
-      //m_last_processed_port_memory[bank] = next_port;
-      return next_port;
-    }
-    next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-    if(next_port == m_last_processed_port_memory[bank]){
-      return unsigned(-1);
-    }
-  }
+  return unsigned(-1);
 }
 
 void dice_mem_request_queue::update_coaleasing_counter(){
@@ -3799,52 +3734,20 @@ void dice_mem_request_queue::memory_coalescing_arch_reduce(bool is_write, const 
 }
 
 unsigned dice_mem_request_queue::get_next_process_port_shared(unsigned bank){
-  //check which port has shared memory request
-
-  std::vector<unsigned> port_has_shared_request;
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_ld_ports; i++){
-    if(!m_ld_req_queue[i].empty()){
-      mem_access_t access = m_ld_req_queue[i].front();
-      if(access.get_space() == shared_space){
-        new_addr_type addr = access.get_addr();
-        unsigned bank_id = m_config->shmem_bank_func(addr);
-        if(bank_id == bank){
-          //same bank, include this port
-          port_has_shared_request.push_back(i);
-        }
-      }
-    }
+  const unsigned n_ld = m_config->dice_cgra_core_num_ld_ports;
+  const unsigned n_st = m_config->dice_cgra_core_num_st_ports;
+  const unsigned n_total = n_ld + n_st;
+  if (n_total == 0) return unsigned(-1);
+  for (unsigned step = 0; step < n_total; step++) {
+    unsigned p = (m_last_processed_port_shared[bank] + 1 + step) % n_total;
+    const std::list<mem_access_t> &q = (p < n_ld) ? m_ld_req_queue[p] : m_st_req_queue[p - n_ld];
+    if (q.empty()) continue;
+    const mem_access_t &access = q.front();
+    if (access.get_space() != shared_space) continue;
+    if (m_config->shmem_bank_func(access.get_addr()) != bank) continue;
+    return p;
   }
-  for(unsigned i = 0; i < m_config->dice_cgra_core_num_st_ports; i++){
-    if(!m_st_req_queue[i].empty()){
-      mem_access_t access = m_st_req_queue[i].front();
-      if(access.get_space() == shared_space){
-        new_addr_type addr = access.get_addr();
-        unsigned bank_id = m_config->shmem_bank_func(addr);
-        if(bank_id == bank){
-          //same bank, include this port
-          port_has_shared_request.push_back(i+m_config->dice_cgra_core_num_ld_ports);
-        }
-      }
-    }
-  }
-  if(port_has_shared_request.empty()){
-    return unsigned(-1);
-  }
-  if(port_has_shared_request.size() == 1){
-    return port_has_shared_request[0];
-  }
-  //start from last processed port
-  unsigned next_port = (m_last_processed_port_shared[bank]+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-  while(true){
-    if(std::find(port_has_shared_request.begin(), port_has_shared_request.end(), next_port) != port_has_shared_request.end()){
-      return next_port;
-    }
-    next_port = (next_port+1) % (m_config->dice_cgra_core_num_ld_ports+m_config->dice_cgra_core_num_st_ports);
-    if(next_port == m_last_processed_port_shared[bank]){
-      return unsigned(-1);
-    }
-  }
+  return unsigned(-1);
 }
 
 
@@ -3907,60 +3810,54 @@ void block_commit_table::check_and_release() {
 }
 
 unsigned fetch_scheduler::next_fetch_block(){
-  //find all ctas that is not blocked by simt stack
-  std::vector<unsigned> ready_cta_index;
-  std::vector<address_type> ready_cta_pc;
-  std::vector<unsigned> valid_cta_index;
-  std::vector<address_type> valid_cta_pc;
+  // Single-pass round-robin starting at last_fetch+1. Track the first
+  // unstalled ("ready") and first stalled-but-valid candidate we encounter so
+  // we can fall back to them if no candidate's next-pc matches the previously
+  // fetched pc. Avoids the four std::vectors the previous implementation
+  // allocated per call.
+  unsigned first_ready_idx = unsigned(-1);
+  address_type first_ready_pc = 0;
+  unsigned first_valid_idx = unsigned(-1);
+  address_type first_valid_pc = 0;
   for(unsigned i = 0; i < cta_status_table_size; i++){
     unsigned start_index = (i+m_last_fetch_cta_id+1)%cta_status_table_size;
-    if(!m_cta_status_table->is_free(start_index) && !m_cta_status_table->is_ret(start_index)){//has cta and not get ret block
-      if(!m_cta_status_table->fetch_stalled_by_simt_stack(start_index)){
-        //get stack top info
-        //among ready ctas, find if any ctas next metadata pc is the same as current metadata pc
-        address_type next_pc, rpc;
-        m_cgra_core->get_simt_stack(start_index)->get_pdom_stack_top_info(&next_pc, &rpc);
-        if(next_pc==m_previous_fetch_pc) {
-          //printf("DICE Sim uArch [FETCH_SCHEDULER_META_MATCH]: Cycle %d, Block %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , start_index);
-          m_last_fetch_cta_id = start_index;
-          m_previous_fetch_pc = next_pc;
-          return start_index;
-        } else {
-          ready_cta_pc.push_back(next_pc);
-          ready_cta_index.push_back(start_index);
-        }
-      } else {
-        //address_type next_pc, rpc;
-        //m_cgra_core->get_simt_stack(start_index)->get_pdom_stack_top_info(&next_pc, &rpc);
-        address_type next_pc = m_cta_status_table->get_prefetch_pc(start_index);
-        if(next_pc==m_previous_fetch_pc) {
-          //printf("DICE Sim uArch [FETCH_SCHEDULER_META_MATCH_PREFETCH]: Cycle %d, cta %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , start_index);
-          m_last_fetch_cta_id = start_index;
-          m_previous_fetch_pc = next_pc;
-          return start_index;
-        } else {
-          valid_cta_pc.push_back(next_pc);
-          valid_cta_index.push_back(start_index);
-        }
+    if(m_cta_status_table->is_free(start_index) || m_cta_status_table->is_ret(start_index))
+      continue;
+    if(!m_cta_status_table->fetch_stalled_by_simt_stack(start_index)){
+      address_type next_pc, rpc;
+      m_cgra_core->get_simt_stack(start_index)->get_pdom_stack_top_info(&next_pc, &rpc);
+      if(next_pc == m_previous_fetch_pc){
+        m_last_fetch_cta_id = start_index;
+        m_previous_fetch_pc = next_pc;
+        return start_index;
+      }
+      if(first_ready_idx == unsigned(-1)){
+        first_ready_idx = start_index;
+        first_ready_pc = next_pc;
+      }
+    } else {
+      address_type next_pc = m_cta_status_table->get_prefetch_pc(start_index);
+      if(next_pc == m_previous_fetch_pc){
+        m_last_fetch_cta_id = start_index;
+        m_previous_fetch_pc = next_pc;
+        return start_index;
+      }
+      if(first_valid_idx == unsigned(-1)){
+        first_valid_idx = start_index;
+        first_valid_pc = next_pc;
       }
     }
   }
-  //find one in ready state
-  if(ready_cta_index.size() > 0){
-    //printf("DICE Sim uArch [FETCH_SCHEDULER_READY]: Cycle %d, cta %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , ready_cta_index[0]);
-    m_last_fetch_cta_id = ready_cta_index[0];
-    m_previous_fetch_pc = ready_cta_pc[0];
-    return ready_cta_index[0];
-  } 
-
-  //find one in valid state
-  if(valid_cta_index.size() > 0){
-    //printf("DICE Sim uArch [FETCH_SCHEDULER_VALID]: Cycle %d, cta %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , valid_cta_index[0]);
-    m_last_fetch_cta_id = valid_cta_index[0];
-    m_previous_fetch_pc = valid_cta_pc[0];
-    return valid_cta_index[0];
+  if(first_ready_idx != unsigned(-1)){
+    m_last_fetch_cta_id = first_ready_idx;
+    m_previous_fetch_pc = first_ready_pc;
+    return first_ready_idx;
   }
-  
+  if(first_valid_idx != unsigned(-1)){
+    m_last_fetch_cta_id = first_valid_idx;
+    m_previous_fetch_pc = first_valid_pc;
+    return first_valid_idx;
+  }
   return unsigned(-1);
 }
 
