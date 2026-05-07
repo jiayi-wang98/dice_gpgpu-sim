@@ -30,6 +30,7 @@
 #define ABSTRACT_HARDWARE_MODEL_INCLUDED
 
 #include <vector>
+#include <bitset>
 #include <stdexcept>
 #include <algorithm>
 #include <numeric>
@@ -407,238 +408,179 @@ const unsigned MAX_WARP_SIZE = 1536;
 //typedef std::bitset<MAX_WARP_SIZE_SIMT_STACK> simt_mask_t;
 typedef std::vector<address_type> addr_vector_t;
 
+// simt_mask_t backed by std::bitset<MAX_WARP_SIZE>. The previous
+// implementation used std::vector<bool> which (a) heap-allocated on every
+// construction/copy, and (b) made count()/operator|=/&= O(n) per-bit loops.
+// std::bitset stores 1536 bits in 24 ulongs on the stack and lowers to
+// hardware popcount/word-AND/word-OR. The dynamic "logical" size is preserved
+// via m_size so size() / dump() / mismatch checks still match the prior API.
+//
+// Invariant: bits beyond m_size are always 0. All operations preserve this.
 class simt_mask_t {
   public:
-      // Constructor: allocate a bitmask with n bits (defaulting to false)
-      explicit simt_mask_t(std::size_t n = 32) //32 as normal gpu mode
-          : bits(n, false) {}
-  
-      // Copy and move constructors/assignments (defaulted)
-      simt_mask_t(const simt_mask_t &other)
-        : bits(other.bits) {
-        // Optionally add logging here if needed:
-        //printf("simt_mask_t copied (size: %zu)\n", bits.size()); fflush(stdout);
+      static constexpr std::size_t MAX_BITS = MAX_WARP_SIZE;
+      using storage_t = std::bitset<MAX_BITS>;
+
+      explicit simt_mask_t(std::size_t n = 32) : m_size(n) {
+          assert(n <= MAX_BITS);
       }
 
-      // Move Constructor
-      simt_mask_t(simt_mask_t &&other) noexcept
-      : bits(std::move(other.bits)) {}
-
+      simt_mask_t(const simt_mask_t&)            = default;
+      simt_mask_t(simt_mask_t&&) noexcept        = default;
       simt_mask_t& operator=(const simt_mask_t&) = default;
-      simt_mask_t& operator=(simt_mask_t&&) = default;
-  
-      // Set the bit at position pos to true (or a given value)
+      simt_mask_t& operator=(simt_mask_t&&)      = default;
+
       void set(std::size_t pos, bool value = true) {
-          if (pos >= bits.size()) {
-              printf("simt_mask_t::set: %d index out of range %d\n", pos, bits.size());fflush(stdout);
+          if (pos >= m_size) {
+              printf("simt_mask_t::set: %zu index out of range %zu\n", pos, m_size);
+              fflush(stdout);
               throw std::out_of_range("simt_mask_t::set: index out of range");
           }
-          bits[pos] = value;
-      }
-  
-      // Set all bits to true (optionally)
-      void set() {
-          std::fill(bits.begin(), bits.end(), true);
-      }
-  
-      // Reset the bit at position pos to false
-      void reset(std::size_t pos) {
-          if (pos >= bits.size()) {
-              throw std::out_of_range("simt_mask_t::reset: index out of range");
-          }
-          bits[pos] = false;
-      }
-  
-      // Reset all bits to false
-      void reset() {
-          std::fill(bits.begin(), bits.end(), false);
-      }
-  
-      // Test whether the bit at position pos is set
-      bool test(std::size_t pos) const {
-          if (pos >= bits.size()) {
-              throw std::out_of_range("simt_mask_t::test: index out of range");
-          }
-          return bits[pos];
-      }
-  
-      // Count the number of bits that are set to true
-      std::size_t count() const {
-          return static_cast<std::size_t>(std::count(bits.begin(), bits.end(), true));
-      }
-  
-      // Return the total number of bits
-      std::size_t size() const {
-          return bits.size();
-      }
-  
-      // Convert the mask to a string representation (e.g., "010101")
-      std::string to_string() const {
-          std::ostringstream oss;
-          for (bool b : bits) {
-              oss << (b ? '1' : '0');
-          }
-          return oss.str();
+          bits.set(pos, value);
       }
 
-      // to_ulong() converts the bitset to an unsigned long.
-      // It throws std::overflow_error if the value cannot be represented in an unsigned long.
+      void set() {
+          // Set logical bits [0..m_size-1] to 1; preserve invariant that bits >= m_size are 0.
+          bits.reset();
+          for (std::size_t i = 0; i < m_size; ++i) bits.set(i);
+      }
+
+      void reset(std::size_t pos) {
+          if (pos >= m_size) {
+              throw std::out_of_range("simt_mask_t::reset: index out of range");
+          }
+          bits.reset(pos);
+      }
+
+      void reset() { bits.reset(); }
+
+      bool test(std::size_t pos) const {
+          if (pos >= m_size) {
+              throw std::out_of_range("simt_mask_t::test: index out of range");
+          }
+          return bits.test(pos);
+      }
+
+      // Bits beyond m_size are guaranteed 0, so a full popcount equals the logical count.
+      std::size_t count() const { return bits.count(); }
+
+      std::size_t size() const { return m_size; }
+
+      bool any() const { return bits.any(); }
+
+      std::string to_string() const {
+          std::string out;
+          out.reserve(m_size);
+          for (std::size_t i = 0; i < m_size; ++i)
+              out.push_back(bits.test(i) ? '1' : '0');
+          return out;
+      }
+
       unsigned long to_ulong() const {
-        // Number of bits in an unsigned long.
-        const std::size_t max_bits = sizeof(unsigned long) * 8;
-        // Check if there are any set bits beyond the capacity of unsigned long.
-        if (bits.size() > max_bits) {
-            for (std::size_t i = max_bits; i < bits.size(); ++i) {
-                if (bits[i]) {
-                    throw std::overflow_error("simt_mask_t::to_ulong: bitset value too large");
-                }
-            }
-        }
-        unsigned long value = 0;
-        // Only iterate over the bits that can fit in an unsigned long.
-        std::size_t limit = std::min(bits.size(), max_bits);
-        for (std::size_t i = 0; i < limit; ++i) {
-            if (bits[i]) {
-                value |= (1UL << i);
-            }
-        }
-        return value;
+          const std::size_t max_bits = sizeof(unsigned long) * 8;
+          // Verify no set bit is above unsigned-long capacity within the logical size.
+          for (std::size_t i = max_bits; i < m_size; ++i) {
+              if (bits.test(i))
+                  throw std::overflow_error("simt_mask_t::to_ulong: bitset value too large");
+          }
+          unsigned long value = 0;
+          const std::size_t limit = std::min(m_size, max_bits);
+          for (std::size_t i = 0; i < limit; ++i)
+              if (bits.test(i)) value |= (1UL << i);
+          return value;
       }
 
       simt_mask_t operator~() const {
-        simt_mask_t result(size());
-        for (std::size_t i = 0; i < size(); ++i) {
-            result.set(i, !test(i));
-        }
-        return result;
+          simt_mask_t r(*this);
+          r.bits.flip();
+          // flip toggles all MAX_BITS bits; clear bits >= m_size to preserve invariant.
+          for (std::size_t i = m_size; i < MAX_BITS; ++i) r.bits.reset(i);
+          return r;
       }
 
-      // Compound bitwise OR assignment operator
       simt_mask_t& operator|=(const simt_mask_t& other) {
-        if (size() != other.size()) {
-            throw std::invalid_argument("simt_mask_t::operator|=: Size mismatch");
-        }
-        for (std::size_t i = 0; i < size(); ++i) {
-            // set bit i if either this bit or other's bit is true
-            bits[i] = bits[i] || other.bits[i];
-        }
-        return *this;
+          if (m_size != other.m_size)
+              throw std::invalid_argument("simt_mask_t::operator|=: Size mismatch");
+          bits |= other.bits;
+          return *this;
       }
 
-      // .any() returns true if at least one bit is set.
-      bool any() const {
-        return std::any_of(bits.begin(), bits.end(), [](bool b) { return b; });
-      }
-
-      // Compound bitwise AND assignment operator
       simt_mask_t& operator&=(const simt_mask_t& other) {
-        if (size() != other.size()) {
-            throw std::invalid_argument("simt_mask_t::operator&=: Size mismatch");
-        }
-        for (std::size_t i = 0; i < size(); ++i) {
-            // set bit i to true only if both bits are true
-            bits[i] = bits[i] && other.bits[i];
-        }
-        return *this;
+          if (m_size != other.m_size)
+              throw std::invalid_argument("simt_mask_t::operator&=: Size mismatch");
+          bits &= other.bits;
+          return *this;
       }
 
-      // Equality operator: compares underlying bits.
       bool operator==(const simt_mask_t& other) const {
-        return bits == other.bits;
+          return m_size == other.m_size && bits == other.bits;
       }
 
-  
-      // Operator[] for read/write access using a proxy object
       class reference {
-      public:
-          reference(std::vector<bool>& bits, std::size_t pos)
-              : bits(bits), pos(pos) {}
-  
-          // Implicit conversion to bool
-          operator bool() const {
-              return bits[pos];
-          }
-  
-          // Assignment from bool
-          reference& operator=(bool value) {
-              bits[pos] = value;
-              return *this;
-          }
-  
-          // Assignment from another reference
+        public:
+          reference(storage_t& b, std::size_t pos) : bits(b), pos(pos) {}
+          operator bool() const { return bits.test(pos); }
+          reference& operator=(bool value) { bits.set(pos, value); return *this; }
           reference& operator=(const reference& ref) {
-              bits[pos] = static_cast<bool>(ref);
+              bits.set(pos, static_cast<bool>(ref));
               return *this;
           }
-  
-      private:
-          std::vector<bool>& bits;
+        private:
+          storage_t& bits;
           std::size_t pos;
       };
-  
-      // Non-const operator[] returns a proxy
+
       reference operator[](std::size_t pos) {
-          if (pos >= bits.size()) {
+          if (pos >= m_size)
               throw std::out_of_range("simt_mask_t::operator[]: index out of range");
-          }
           return reference(bits, pos);
       }
-  
-      // Const operator[] returns the boolean value directly
-      bool operator[](std::size_t pos) const {
-          return test(pos);
-      }
-  
-      // Bitwise OR operator
+
+      bool operator[](std::size_t pos) const { return test(pos); }
+
       simt_mask_t operator|(const simt_mask_t& other) const {
-          if (size() != other.size()) {
-              throw std::invalid_argument("simt_mask_t::operator|: Size mismatch");
-          }
-          simt_mask_t result(size());
-          for (std::size_t i = 0; i < size(); ++i) {
-              result.set(i, test(i) || other.test(i));
-          }
-          return result;
+          simt_mask_t r(*this);
+          r |= other;
+          return r;
       }
-  
-      // Bitwise AND operator
+
       simt_mask_t operator&(const simt_mask_t& other) const {
-          if (size() != other.size()) {
-              throw std::invalid_argument("simt_mask_t::operator&: Size mismatch");
-          }
-          simt_mask_t result(size());
-          for (std::size_t i = 0; i < size(); ++i) {
-              result.set(i, test(i) && other.test(i));
-          }
-          return result;
+          simt_mask_t r(*this);
+          r &= other;
+          return r;
       }
-  
-      // Bitwise XOR operator
+
       simt_mask_t operator^(const simt_mask_t& other) const {
-          if (size() != other.size()) {
+          if (m_size != other.m_size)
               throw std::invalid_argument("simt_mask_t::operator^: Size mismatch");
-          }
-          simt_mask_t result(size());
-          for (std::size_t i = 0; i < size(); ++i) {
-              result.set(i, test(i) ^ other.test(i));
-          }
-          return result;
+          simt_mask_t r(*this);
+          r.bits ^= other.bits;
+          return r;
       }
-  
+
       void dump() const {
-        printf("SIMT MASK (%d) DUMPING: \n", size());
-          for (std::size_t i = 0; i < size(); ++i) {
-              printf("%d", test(i));
-          }
+          printf("SIMT MASK (%zu) DUMPING: \n", m_size);
+          for (std::size_t i = 0; i < m_size; ++i)
+              printf("%d", bits.test(i) ? 1 : 0);
           printf("\n");
           fflush(stdout);
       }
 
       void resize(std::size_t new_size, bool default_value = false) {
-        bits.resize(new_size, default_value);
+          assert(new_size <= MAX_BITS);
+          if (new_size > m_size) {
+              for (std::size_t i = m_size; i < new_size; ++i)
+                  bits.set(i, default_value);
+          } else if (new_size < m_size) {
+              for (std::size_t i = new_size; i < m_size; ++i)
+                  bits.reset(i);
+          }
+          m_size = new_size;
       }
+
   private:
-      std::vector<bool> bits;
+      storage_t bits;
+      std::size_t m_size = 32;
   };
 
 typedef simt_mask_t active_mask_t;
