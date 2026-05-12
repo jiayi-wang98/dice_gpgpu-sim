@@ -1815,6 +1815,12 @@ void dispatcher_rfu_t::dispatch(){
   }
   //check if all thread in current block is dispatched. if not, keep dispatching
   if ((*m_dispatching_block)->ready_to_dispatch() && !(*m_dispatching_block)->dispatch_done()) {
+    // DISPATCH_II enforcement: if the previous chunk reserved II>1, stall here.
+    if (m_ii_stall_remaining > 0) {
+      m_ii_stall_remaining--;
+      m_cgra_core->inc_dispatch_cycle_distro_stall(2);
+      return;
+    }
     //unsigned max_coalesce = m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval;
     unsigned max_coalesce = 32;
     //number of dispatch, if parameter load, just dispatch 1 thread.
@@ -1960,6 +1966,12 @@ void dispatcher_rfu_t::dispatch(){
         m_cgra_core->inc_dispatch_cycle_distro_ldst_active(actual_dispatch_count*(number_of_loads+number_of_stores));
         m_cgra_core->inc_dispatch_cycle_distro_branch(actual_dispatch_count*number_of_branches);
         m_cgra_core->inc_dispatch_cycle_distro_cgra_ops(actual_dispatch_count*number_of_cgra_ops);
+        // Arm DISPATCH_II stall: skip (ii-1) cycles before next chunk to model
+        // bank conflicts / structural hazards declared in metadata.
+        unsigned ii = (*m_dispatching_block)->get_current_metadata()->dispatch_ii;
+        if (ii > 1) {
+          m_ii_stall_remaining = ii - 1;
+        }
       } else {
         //status update
         if(exec_stalled()){
@@ -1986,6 +1998,7 @@ void dispatcher_rfu_t::dispatch(){
       (*m_dispatching_block)->set_dispatch_done();
       m_dispatched_thread = 0;
       m_dispatched_bubble_count = 0;
+      m_ii_stall_remaining = 0;
       for(unsigned i = 0; i < m_last_dispatched_tid.size(); i++){
         m_last_dispatched_tid[i] = unsigned(-1);
       }
@@ -2284,7 +2297,6 @@ bool Scoreboard::checkCollision(unsigned tid, const dice_metadata *metadata) con
   for (it2 = inst_regs.begin(); it2 != inst_regs.end(); it2++)
   {
     if (reg_table[tid].find(*it2) != reg_table[tid].end()) {
-      //printf("DICE-Sim uArch: cycle %d, collision detected for thread %d, reg %d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, tid, *it2);
       return true;
     }
   }
@@ -2292,7 +2304,6 @@ bool Scoreboard::checkCollision(unsigned tid, const dice_metadata *metadata) con
   std::set<unsigned int>::const_iterator it3;
   for(it3 = longopregs[tid].begin(); it3 != longopregs[tid].end(); it3++){
     if(inst_regs.find(*it3) != inst_regs.end()){
-      //printf("DICE-Sim uArch: cycle %d, collision detected for thread %d, reg %d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, tid, *it3);
       return true;
     }
   }

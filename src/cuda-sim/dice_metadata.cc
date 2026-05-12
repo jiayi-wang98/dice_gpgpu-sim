@@ -232,7 +232,7 @@ void dice_metadata_parser::set_out_regs(){
 }
 
 void dice_metadata_parser::set_ld_dest_regs(){
-  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Set LD destination Registers\n");  
+  if(g_debug_dicemeta_generation) printf("DICE Metadata Parser: Set LD destination Registers\n");
   g_current_dbb->load_destination_regs = g_operands;
   g_operands = std::list<operand_info>();
 }
@@ -487,6 +487,11 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
         case sstarr_space:
           is_shared_space = true;
           break;
+        case srf_space:
+          /* ld.srf is an in-fabric cross-thread RF read; it does NOT enter
+           * the LDST queue.  cuda-sim.cc:add_mem_op already skips srf, so we
+           * should never see srf_space here.  Keep the case for defense. */
+          continue;
         default:
           assert(0);
           break;

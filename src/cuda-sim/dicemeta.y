@@ -56,7 +56,7 @@ void yyerror(dice_metadata_parser *dicemeta_parser, const char *s) {
 /*----------------------------------------------------------------------------
   Declare tokens.
 ----------------------------------------------------------------------------*/
-%token DBB_ID UNROLLING_FACTOR UNROLLING_STRATEGY LAT IN_REGS OUT_REGS LD_DEST_REGS STORE 
+%token DBB_ID UNROLLING_FACTOR UNROLLING_STRATEGY LAT IN_REGS OUT_REGS LD_DEST_REGS DISPATCH_II STORE
 %token BRANCH BRANCH_UNI BRANCH_PRED BRANCH_TARGET BRANCH_RECVPC RET PARAMETER_LOAD BARRIER BITSTREAM_ADDR BITSTREAM_LENGTH FUNCTION
 %token <int_value> NUMBER
 %token <int_value> SPECIAL_REGISTER
@@ -166,6 +166,10 @@ field:
     | LD_DEST_REGS EQUALS reg_list {
         //printf("DICE METADATA PARSER: LD_DEST_REGS\n"); fflush(stdout);
         dicemeta_parser->set_ld_dest_regs();
+      }
+    | DISPATCH_II EQUALS NUMBER {
+        //printf("DICE METADATA PARSER: DISPATCH_II = %d\n", $3); fflush(stdout);
+        dicemeta_parser->set_dispatch_ii($3);
       }
     | STORE EQUALS NUMBER {
          //printf("DICE METADATA PARSER: STORE = %d\n", $3); fflush(stdout);

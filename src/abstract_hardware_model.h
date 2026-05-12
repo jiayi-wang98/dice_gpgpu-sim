@@ -56,6 +56,7 @@ enum _memory_space_t {
   local_space,
   shared_space,
   sstarr_space,
+  srf_space,         /* shared register file: cross-thread RF read via ld.srf */
   param_space_unclassified,
   param_space_kernel, /* global to all threads in a kernel : read-only */
   param_space_local,  /* local to a thread : read-writable */

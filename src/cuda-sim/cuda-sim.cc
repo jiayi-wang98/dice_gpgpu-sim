@@ -2191,7 +2191,13 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
         CFGBlock->dec_stores();
       } 
       else if(pI->has_memory_read()){
-        CFGBlock->dec_loads();
+        // ld.srf is not a real LDST load -- it's in-fabric and not counted
+        // by get_num_loads() (which uses LD_DEST_REGS).  Don't decrement
+        // dec_loads_num for predicated-off ld.srf, otherwise actual LDST
+        // loads_done > expected num_loads and the assertion fires.
+        if (pI->get_space().get_type() != srf_space) {
+          CFGBlock->dec_loads();
+        }
       }
       else {
         
@@ -2385,8 +2391,16 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     //if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
         if(pI->has_memory_read()||pI->has_memory_write()){
-          CFGBlock->space = insn_space;
-          CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num(),!skip);
+          // ld.srf / st.srf are in-fabric: the producer's value lives in its
+          // own RF and ld_exec reads it cross-thread.  No LDST queue entry,
+          // no port budget, no DBB flush.  Bank-conflict serialization is
+          // expressed via DISPATCH_II on the consumer DBB.
+          // Use pI->get_space() (static) rather than last_space() (dynamic):
+          // last_space() is stale when skip=true because ld_impl never ran.
+          if (pI->get_space().get_type() != srf_space) {
+            CFGBlock->space = insn_space;
+            CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num(),!skip);
+          }
         }
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics
         //assert(inst.memory_op == insn_memory_op);

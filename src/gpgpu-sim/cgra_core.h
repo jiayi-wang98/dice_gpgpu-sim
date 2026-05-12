@@ -990,6 +990,7 @@ class cgra_unit {
       m_dispatching_block = block;
       m_dispatched_thread = 0;
       m_dispatched_bubble_count = 0;
+      m_ii_stall_remaining = 0;
       m_last_dispatched_tid.resize(4);
       for(unsigned i = 0; i < m_last_dispatched_tid.size(); i++){
         m_last_dispatched_tid[i] = unsigned(-1);
@@ -1039,6 +1040,10 @@ class cgra_unit {
     cgra_block_state_t **m_dispatching_block;
     unsigned m_dispatched_thread;
     unsigned m_dispatched_bubble_count;
+    // DISPATCH_II enforcement: number of cycles to stall before next chunk.
+    // Set to (dispatch_ii - 1) after each successful chunk dispatch;
+    // decremented each cycle while >0, blocking new dispatches.
+    unsigned m_ii_stall_remaining;
     std::vector<unsigned> m_last_dispatched_tid;
     std::vector<std::deque<unsigned>> m_ready_threads;
     Scoreboard *m_scoreboard;

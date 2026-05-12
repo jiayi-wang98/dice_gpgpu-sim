@@ -38,8 +38,9 @@ int dicemeta_error( yyscan_t yyscanner, dice_metadata_parser* dicemeta_parser, c
 "LAT" TC; return LAT; 
 "IN_REGS" TC; return IN_REGS; 
 "OUT_REGS" TC; return OUT_REGS; 
-"LD_DEST_REGS" TC; return LD_DEST_REGS; 
-"STORE" TC; return STORE; 
+"LD_DEST_REGS" TC; return LD_DEST_REGS;
+"DISPATCH_II" TC; return DISPATCH_II;
+"STORE" TC; return STORE;
 "BRANCH_UNI" TC; return BRANCH_UNI; 
 "BRANCH_PRED" TC; return BRANCH_PRED; 
 "BRANCH_TARGET" TC; return BRANCH_TARGET; 

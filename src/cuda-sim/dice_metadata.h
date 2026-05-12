@@ -39,6 +39,7 @@ class dice_metadata {
       m_dicemeta_mem_index = 0;
       m_PC = 0;
       m_size = 32; //bytes
+      dispatch_ii = 1;
     }
 
     ~dice_metadata() {
@@ -66,6 +67,9 @@ class dice_metadata {
     std::list<operand_info> in_regs;
     std::list<operand_info> out_regs;
     std::list<operand_info> load_destination_regs;
+    // Initiation interval hint set by the compiler when static RF bank-conflict
+    // analysis predicts the SRF reads must serialize.  Default 1 (no stall).
+    int dispatch_ii;
     int num_store;
     bool branch;
     bool uni_bra;
@@ -170,6 +174,9 @@ class dice_metadata_parser {
   void set_in_regs();
   void set_out_regs();
   void set_ld_dest_regs();
+  void set_dispatch_ii(int ii){
+    g_current_dbb->dispatch_ii = ii;
+  }
   void set_branch_pred();
   void commit_function();
 };

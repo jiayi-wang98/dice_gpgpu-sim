@@ -45,6 +45,7 @@ class ptx_recognizer;
 #include <sstream>
 #include <string>
 #include "../abstract_hardware_model.h"
+#include "../gpgpu-sim/cgra_core.h"
 #include "../gpgpu-sim/gpu-sim.h"
 #include "../gpgpu-sim/shader.h"
 #include "cuda-math.h"
@@ -3343,6 +3344,13 @@ void decode_space(memory_space_t &space, ptx_thread_info *thread,
     case sstarr_space:
       mem = thread->m_sstarr_mem;
       break;
+    case srf_space:
+      /* ld.srf / st.srf are NOT routed through a memory_space object.
+       * ld_exec handles srf_space directly via cross-thread RF read.
+       * Reaching decode_space with srf_space therefore means the caller
+       * forgot to special-case it. */
+      assert(0 && "srf_space must be handled before decode_space");
+      break;
     case const_space:
       mem = thread->get_global_memory();
       break;
@@ -3388,6 +3396,58 @@ void ld_exec(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t data;
   memory_space_t space = pI->get_space();
   unsigned vector_spec = pI->get_vector();
+
+  // SRF (shared register file): cross-thread RF read.  The address is laid
+  // out register-major:  addr = reg_idx * (CTA_SIZE * 4) + tid_in_cta * 4.
+  // Resolve to the producer thread's RF directly, bypassing any memory
+  // backing.  Functional path only — Phase 4 layers the SRF port/bank
+  // timing model on top via metadata->srf_dest_regs.
+  {
+    static int dbg_any = 0;
+    static int dbg_srf = 0;
+    if (space.get_type() == srf_space) {
+      dbg_srf++;
+      if (dbg_srf < 4)
+        printf("[LD-EXEC-SRF#%d] tid=%u type=%d src1=0x%x\n", dbg_srf, (unsigned)thread->get_hw_tid(), (int)type, (unsigned)src1_data.u32);
+    }
+    dbg_any++;
+    if (dbg_any % 100000 == 1)
+      printf("[LD-EXEC any#%d srf#%d] tid=%u space_type=%d type=%d\n", dbg_any, dbg_srf, (unsigned)thread->get_hw_tid(), (int)space.get_type(), (int)type);
+  }
+  if (space.get_type() == srf_space) {
+    // CGRA-visible SRF address (register units, low 2 byte-bits dropped):
+    //   bits [4:0]  = real register index  (%r0..%r31)
+    //   bits [14:5] = thread index in CTA
+    // The physical RF bank is (tid + reg_idx) % 32 via an address-converter
+    // sitting in the SRF crossbar -- transparent to the functional model.
+    cgra_core_ctx *cgra = thread->get_cgra_core();
+    assert(cgra != NULL && "ld.srf used outside DICE CGRA context");
+    unsigned cta_size = cgra->get_kernel_block_size();
+    assert(cta_size > 0);
+    addr_t srf_addr = src1_data.u32;
+    unsigned reg_idx = srf_addr & 0x1F;
+    unsigned tid_in_cta = srf_addr >> 5;
+    assert(tid_in_cta < cta_size && "ld.srf tid_in_cta out of range for CTA");
+    // Look up producer's symbol "%rN" directly in the function's symbol table.
+    char regname[16];
+    snprintf(regname, sizeof(regname), "%%r%u", reg_idx);
+    symbol *prod_sym = thread->func_info()->get_symtab()->lookup(regname);
+    assert(prod_sym && "ld.srf reg_idx not declared in producer's .reg list");
+    unsigned consumer_hw_tid = thread->get_hw_tid();
+    unsigned consumer_tid_in_cta = consumer_hw_tid % cta_size;
+    unsigned cta_start_hw_tid = consumer_hw_tid - consumer_tid_in_cta;
+    unsigned producer_hw_tid = cta_start_hw_tid + tid_in_cta;
+    ptx_thread_info *producer = cgra->get_thread_info()[producer_hw_tid];
+    assert(producer != NULL && "ld.srf producer thread slot is empty");
+    ptx_reg_t v = producer->get_reg(prod_sym);
+    size_t lsize; int ltype_dummy;
+    type_info_key::type_decode(type, lsize, ltype_dummy);
+    if (type == S16_TYPE || type == S32_TYPE) sign_extend(v, lsize, dst);
+    thread->set_operand_value(dst, v, type, thread, pI);
+    thread->m_last_effective_address = srf_addr;
+    thread->m_last_memory_space = space;
+    return;
+  }
 
   memory_space *mem = NULL;
   addr_t addr = src1_data.u32;

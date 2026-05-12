@@ -324,6 +324,11 @@ void warp_inst_t::generate_mem_accesses() {
       break;
     case sstarr_space:
       break;
+    case srf_space:
+      /* ld.srf is handled in the CGRA fabric (dice_cfg_block_t), not via the
+       * conventional warp mem-access path. Should not reach here for SIMT
+       * warps; keep as a no-op so legacy paths don't assert. */
+      break;
     default:
       assert(0);
       break;
