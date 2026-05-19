@@ -2195,7 +2195,13 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
         // by get_num_loads() (which uses LD_DEST_REGS).  Don't decrement
         // dec_loads_num for predicated-off ld.srf, otherwise actual LDST
         // loads_done > expected num_loads and the assertion fires.
-        if (pI->get_space().get_type() != srf_space) {
+        //
+        // ATOM_OP: similarly, atomics' destinations are not in
+        // LD_DEST_REGS (DICE compiler treats them as wire-registers),
+        // so get_num_loads() doesn't count them. Skip dec_loads to
+        // keep the load count consistent.
+        if (pI->get_space().get_type() != srf_space &&
+            pI->get_opcode() != ATOM_OP) {
           CFGBlock->dec_loads();
         }
       }
@@ -2306,16 +2312,30 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     //                    false /*not atomic*/);
     }
 
-    if (pI->get_opcode() == ATOM_OP) {
-      printf("DICE Sim: BAR_OP is not supported in dice\n");
-      fflush(stdout);
-      assert(0);
-      //insn_memaddr = last_eaddr();
-      //insn_space = last_space();
-      //inst.add_callback(lane_id, last_callback().function,
-      //                  last_callback().instruction, this, true /*atomic*/);
-      //unsigned to_type = pI->get_type();
-      //insn_data_size = datatype2size(to_type);
+    if (pI->get_opcode() == ATOM_OP && !skip) {
+      // DICE atomic v1: execute the RMW synchronously via the callback
+      // that atom_impl prepared in m_last_dram_callback. This applies
+      // the read-modify-write to memory and writes the OLD value to the
+      // destination register in one functional step.
+      //
+      // The atomic op is then *not* added to the LDST queue (the
+      // suppression is done below in the add_mem_op block via an
+      // is-ATOM_OP check) — otherwise the LDST writeback would
+      // overwrite the dst reg with the post-RMW value loaded from
+      // memory.
+      //
+      // Counter side: for the power model we still want this access to
+      // show up as one read+write at the destination space; for now
+      // it's not counted, will revisit when wiring up the power-model
+      // for atomics (issue tracked in CGRA_ACCUMULATOR_DESIGN.md).
+      if (m_last_dram_callback.function != NULL) {
+        m_last_dram_callback.function(m_last_dram_callback.instruction, this);
+        m_last_dram_callback.function = NULL;
+      }
+      insn_memaddr = last_eaddr();
+      insn_space = last_space();
+      unsigned to_type = pI->get_type();
+      insn_data_size = datatype2size(to_type);
     }
 
     if (pI->get_opcode() == TEX_OP) {
@@ -2397,7 +2417,14 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
           // expressed via DISPATCH_II on the consumer DBB.
           // Use pI->get_space() (static) rather than last_space() (dynamic):
           // last_space() is stale when skip=true because ld_impl never ran.
-          if (pI->get_space().get_type() != srf_space) {
+          //
+          // ATOM_OP: we already executed the RMW synchronously above
+          // (m_last_dram_callback fired). Don't queue the access in
+          // LDST — its writeback would overwrite the dst reg with the
+          // post-RMW value loaded from memory, corrupting the
+          // atomicAdd return value.
+          if (pI->get_space().get_type() != srf_space &&
+              inst_opcode != ATOM_OP) {
             CFGBlock->space = insn_space;
             CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num(),!skip);
           }
