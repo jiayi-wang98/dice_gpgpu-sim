@@ -356,6 +356,7 @@ power_stat_t::power_stat_t(const shader_core_config *shader_config,
   m_active_sms = active_sms;
   m_config = shader_config;
   m_mem_config = mem_config;
+  m_shader_stats = shader_stats;  // for DICE counter delta accessors
 }
 
 void power_stat_t::visualizer_print(gzFile visualizer_file) {

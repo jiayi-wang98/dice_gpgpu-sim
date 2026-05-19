@@ -109,6 +109,7 @@ class cgra_core_ctx {
     //thread operation
     bool ptx_thread_done(unsigned hw_thread_id) const;
     void execute_CFGBlock(cgra_block_state_t* cfg_block);
+    void dicewattch_count_ops(cgra_block_state_t* cgra_block);
     void execute_1thread_CFGBlock(cgra_block_state_t* cgra_block,unsigned tid, unsigned lane_id);
     void checkExecutionStatusAndUpdate(cgra_block_state_t* cfg_block, unsigned tid);
 
@@ -233,6 +234,44 @@ class cgra_core_ctx {
     void inc_cta(unsigned active_count) {
       m_stats->dice_cta[m_cgra_core_id] =
           m_stats->dice_cta[m_cgra_core_id] + active_count;
+    }
+    // ALU op counters for DICEwattch — AccelWattch subdivision.
+    // Each call bumps by (ops_in_block * active_count).
+    void inc_int_ops(unsigned ops) {
+      m_stats->m_num_ialu_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_fpu_ops(unsigned ops) {
+      m_stats->m_num_fp_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_sfu_ops(unsigned ops) {
+      m_stats->m_num_sfu_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_imul_ops(unsigned ops) {
+      m_stats->m_num_imul_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_imul24_ops(unsigned ops) {
+      m_stats->m_num_imul24_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_imul32_ops(unsigned ops) {
+      m_stats->m_num_imul32_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_idiv_ops(unsigned ops) {
+      m_stats->m_num_idiv_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_fpmul_ops(unsigned ops) {
+      m_stats->m_num_fpmul_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_fpdiv_ops(unsigned ops) {
+      m_stats->m_num_fpdiv_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_trans_ops(unsigned ops) {  // SQRT/LG/SIN/EXP lumped in trans
+      m_stats->m_num_trans_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_tensor_ops(unsigned ops) {
+      m_stats->m_num_tensor_core_acesses[m_cgra_core_id] += ops;
+    }
+    void inc_tex_ops(unsigned ops) {
+      m_stats->m_num_tex_inst[m_cgra_core_id] += ops;
     }
 
     void inc_dispatch_cycle_distro_active(unsigned active_count) {

@@ -134,6 +134,67 @@ bool cgra_core_ctx::ptx_thread_done(unsigned hw_thread_id) const {
 }
 
 
+// DICEwattch helper: classify the ptx_instructions of a CFG block into
+// AccelWattch's full op categories (INT base / FPU base / DP / INT_MUL24 /
+// INT_MUL32 / INT_MUL / INT_DIV / FP_MUL / FP_DIV / SFU trans / TENSOR /
+// TEX / lumped-SFU) and bump the corresponding cumulative counters,
+// scaled by the active-thread count. Called once when the CGRA fabric
+// finishes a block.
+void cgra_core_ctx::dicewattch_count_ops(cgra_block_state_t* cgra_block) {
+  dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
+  if (!cfg_block || !cfg_block->get_diceblock()) return;
+  unsigned n_int=0, n_fpu=0, n_dp=0, n_sfu=0;
+  unsigned n_imul24=0, n_imul32=0, n_imul=0, n_idiv=0;
+  unsigned n_fmul=0, n_fdiv=0, n_trans=0;
+  unsigned n_tensor=0, n_tex=0;
+  for (unsigned i = 0; i < cfg_block->get_diceblock()->ptx_instructions.size();
+       i++) {
+    ptx_instruction* pI = cfg_block->get_diceblock()->ptx_instructions[i];
+    op_type op = pI->op;
+    special_ops sp = pI->sp_op;
+    // First handle SFU subdivisions tagged via sp_op (these can appear
+    // on instructions whose op is SP_OP/INTP_OP/SFU_OP).
+    switch (sp) {
+      case INT_MUL24_OP: n_imul24++; continue;
+      case INT_MUL32_OP: n_imul32++; continue;
+      case INT_MUL_OP:   n_imul++;   continue;
+      case INT_DIV_OP:   n_idiv++;   continue;
+      case FP_MUL_OP:    n_fmul++;   continue;
+      case FP_DIV_OP:    n_fdiv++;   continue;
+      case FP_SQRT_OP:
+      case FP_LG_OP:
+      case FP_SIN_OP:
+      case FP_EXP_OP:    n_trans++; continue;
+      default: break;  // fall through to op_type classification
+    }
+    switch (op) {
+      case ALU_OP:
+      case INTP_OP:        n_int++;    break;
+      case SP_OP:          n_fpu++;    break;
+      case DP_OP:          n_dp++;     break;
+      case SFU_OP:
+      case ALU_SFU_OP:     n_sfu++;    break;
+      case TENSOR_CORE_OP: n_tensor++; break;
+      default: break;  // loads/stores/branches/barriers/tex not here
+    }
+  }
+  unsigned active = cgra_block->active_count();
+  if (!active) return;
+  if (n_int)    inc_int_ops    (n_int    * active);
+  if (n_fpu)    inc_fpu_ops    (n_fpu    * active);
+  if (n_sfu)    inc_sfu_ops    (n_sfu    * active);
+  if (n_dp)     m_stats->m_num_fp_acesses[m_cgra_core_id] += n_dp * active;
+  if (n_imul24) inc_imul24_ops (n_imul24 * active);
+  if (n_imul32) inc_imul32_ops (n_imul32 * active);
+  if (n_imul)   inc_imul_ops   (n_imul   * active);
+  if (n_idiv)   inc_idiv_ops   (n_idiv   * active);
+  if (n_fmul)   inc_fpmul_ops  (n_fmul   * active);
+  if (n_fdiv)   inc_fpdiv_ops  (n_fdiv   * active);
+  if (n_trans)  inc_trans_ops  (n_trans  * active);
+  if (n_tensor) inc_tensor_ops (n_tensor * active);
+  if (n_tex)    inc_tex_ops    (n_tex    * active);
+}
+
 void cgra_core_ctx::execute_CFGBlock(cgra_block_state_t* cgra_block) {
   dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
   for (unsigned t = 0; t < m_kernel_block_size; t++) {
@@ -1402,6 +1463,8 @@ void cgra_core_ctx::cgra_execute_block(){
         fflush(stdout);
       }
       m_cgra_block_state[DP_CGRA]->set_cgra_fabric_done();
+      // DICEwattch: classify this block's ops once on completion.
+      dicewattch_count_ops(m_cgra_block_state[DP_CGRA]);
     }
   }
   m_cgra_unit->cycle();

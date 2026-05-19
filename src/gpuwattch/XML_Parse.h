@@ -99,6 +99,15 @@ enum perf_count_t {
   PIPE_A,
   IDLE_CORE_N,
   CONST_DYNAMICN,
+  // ---- DICE power-model performance counters (appended; existing indices
+  //      are unchanged so power-trace columns stay backward-compatible) ----
+  DICE_L1B_ACC,           // L1B (branch-metadata cache) accesses
+  DICE_SIMT_STACK_RD_N,   // per-DBB SIMT stack reads
+  DICE_SIMT_STACK_WR_N,   // per-DBB SIMT stack writes
+  DICE_DISPATCH_TH_N,     // dispatcher-issued thread count
+  DICE_SCB_LD_RSV_N,      // scoreboard load reserve/release events
+  DICE_E_BLOCKS_N,        // e-blocks pushed through BCT / cta_scheduler
+  DICE_CTA_N,             // active-CTA-table push+pop events
   NUM_PERFORMANCE_COUNTERS
 };
 

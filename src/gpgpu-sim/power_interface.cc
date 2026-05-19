@@ -134,6 +134,17 @@ void mcpat_cycle(const gpgpu_sim_config &config,
         n_icnt_mem_to_simt,
         n_icnt_simt_to_mem);  // Number of flits traversing the interconnect
 
+    // DICE overlay perf counters (per-sample deltas). The setter only takes
+    // effect inside update_components_power() when dice_power_model_enabled.
+    wrapper->set_dice_power(
+        (double)power_stats->get_l1b_accesses(),
+        (double)power_stats->get_dice_simt_stack_read(),
+        (double)power_stats->get_dice_simt_stack_write(),
+        (double)power_stats->get_dice_dispatched_threads(),
+        (double)power_stats->get_dice_scoreboard_ld_reserve(),
+        (double)power_stats->get_dice_e_blocks(),
+        (double)power_stats->get_dice_cta());
+
     wrapper->compute();
 
     wrapper->update_components_power();

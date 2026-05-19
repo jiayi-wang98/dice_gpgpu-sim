@@ -54,10 +54,150 @@ struct avg_max_min_counters {
   }
 };
 
+// ---- DICE power-model overlay parameters (per-access dynamic energies
+//      in nJ, all already scaled to the simulator's target node).
+//      Loaded from -gpgpu_dice_power_xml. -----------------------------------
+// AccelWattch-style scaling coefficients (names match the param names
+// in accelwattch_ptx_sim.xml so a user can copy any AccelWattch GPU XML
+// section verbatim into the DICE overlay).
+struct accelwattch_scaling_t {
+  double TOT_INST; double FP_INT;
+  double IC_H; double IC_M;
+  double DC_RH; double DC_RM; double DC_WH; double DC_WM;
+  double TC_H; double TC_M;
+  double CC_H; double CC_M;
+  double SHRD_ACC;
+  double REG_RD; double REG_WR; double NON_REG_OPs;
+  double INT_ACC; double FP_ACC; double DP_ACC;
+  double INT_MUL24_ACC; double INT_MUL32_ACC; double INT_MUL_ACC; double INT_DIV_ACC;
+  double FP_MUL_ACC; double FP_DIV_ACC;
+  double FP_SQRT_ACC; double FP_LG_ACC; double FP_SIN_ACC; double FP_EXP_ACC;
+  double DP_MUL_ACC; double DP_DIV_ACC;
+  double TENSOR_ACC; double TEX_ACC;
+  double MEM_RD; double MEM_WR; double MEM_PRE;
+  double L2_RH; double L2_RM; double L2_WH; double L2_WM;
+  double NOC_A;
+  double PIPE_A; double IDLE_CORE_N; double constant_power;
+};
+
+// Per-pipeline McPAT-derived energy constants (one value per pipeline,
+// per GPU model). These are the per-(scaled-counter-unit) energies that
+// McPAT/CACTI would compute internally for a given technology + structure
+// size; we expose them here so DICEwattch can produce an analytical
+// AccelWattch-equivalent report without invoking McPAT at runtime.
+struct dice_pipe_energy_t {
+  double E_int_pipe;       // INTP base
+  double E_fpu_pipe;       // FPUP base
+  double E_dpu_pipe;       // DPUP base
+  double E_sfu_pipe;       // all *_MUL* / *_DIV / FP_SQRT / LG / SIN / EXP / TENSOR / TEX
+  double E_icache;         // ICP (per IC_H/IC_M scaled count)
+  double E_ccache;         // CCP
+  double E_tcache;         // TCP
+  double E_dcache;         // DCP
+  double E_shmem;          // SHRDP
+  double E_l2;             // L2CP
+  double E_dram;           // DRAMP
+  double E_mcp;            // MCP
+  double E_noc;            // NOCP
+  double E_rf_read;        // RF read access
+  double E_rf_write;       // RF write access
+  double E_ibp;            // IBP (per TOT_INST)
+};
+
+struct dice_power_params_t {
+  // ---- DICE-specific structures (unchanged) ----
+  double bcache_read_e;
+  double bcache_write_e;
+  double simt_stack_rd_e;
+  double simt_stack_wr_e;
+  double scoreboard_rd_e;
+  double scoreboard_wr_e;
+  double dispatcher_th_e;
+  double bct_pushpop_e;
+  double bct_dec_e;
+  double active_cta_e;
+  double sched_eblock_e;
+  // ---- AccelWattch-format coefficients + per-pipe energies ----
+  accelwattch_scaling_t s;
+  dice_pipe_energy_t    e;
+  // ---- Fixed-power slots ----
+  double idle_core_p_mW;
+  double const_p_mW;
+  double static_p_mW;
+  double clock_freq_ghz;
+  bool loaded;
+};
+
 class gpgpu_sim_wrapper {
  public:
   gpgpu_sim_wrapper(bool power_simulation_enabled, char* xmlfile);
   ~gpgpu_sim_wrapper();
+
+  // DICE power overlay control
+  void enable_dice_power_model(const char* dice_xml_path);
+  bool dice_power_model_enabled() const { return m_dice_power_enabled; }
+  // Per-sample DICE perf counts (deltas since previous mcpat_cycle).
+  void set_dice_power(double l1b_acc, double simt_stack_rd,
+                      double simt_stack_wr, double dispatched_threads,
+                      double scoreboard_ld_reserve, double e_blocks,
+                      double cta);
+  // Emit a standalone DICE power report (uses cumulative-counter totals
+  // and the analytical workbook formulas). Independent of McPAT, so it
+  // works whether or not -power_simulation_enabled is set.
+  // Mirrors AccelWattch's per-kernel report format (per-component energy
+  // and power, plus a total).
+  struct dice_report_counters_t {
+    // DICE-specific counters
+    double l1b_acc;
+    double simt_stack_rd;
+    double simt_stack_wr;
+    double dispatched_threads;
+    double scoreboard_ld_reserve;
+    double e_blocks;
+    double cta;
+    // RF / cache accesses (shared with baseline)
+    double reg_reads;
+    double reg_writes;
+    double l1d_acc;
+    double icache_acc;
+    double ccache_acc;
+    double bcache_acc;
+    double tcache_acc;
+    double shmem_acc;
+    // Arithmetic unit accesses (AccelWattch-aligned subdivision).
+    double int_ops;        // base int (ALU_OP / INTP_OP, no special_op)
+    double fpu_ops;        // base fp  (SP_OP,  no special_op)
+    double sfu_ops;        // lumped fallback SFU
+    double dp_ops;         // DP_OP without special_op
+    double int_mul24_ops;
+    double int_mul32_ops;
+    double int_mul_ops;
+    double int_div_ops;
+    double fp_mul_ops;
+    double fp_div_ops;
+    double fp_sqrt_ops;
+    double fp_lg_ops;
+    double fp_sin_ops;
+    double fp_exp_ops;
+    double dp_mul_ops;
+    double dp_div_ops;
+    double tensor_ops;
+    double tex_ops;
+    // Memory subsystem
+    double l2_read_acc;
+    double l2_write_acc;
+    double dram_rd;
+    double dram_wr;
+    double dram_pre;
+    double noc_flits;
+    // Idle core cycles (cumulative across all SMs)
+    double idle_core_cycles;
+  };
+  void print_dice_power_kernel_report(
+      const std::string& kernel_info_string,
+      unsigned long long gpu_sim_cycle,
+      const dice_report_counters_t& c);
+  const dice_power_params_t& get_dice_params() const { return m_dice_params; }
 
   void init_mcpat(char* xmlfile, char* powerfile, char* power_trace_file,
                   char* metric_trace_file, char* steady_state_file,
@@ -163,6 +303,10 @@ class gpgpu_sim_wrapper {
   gzFile power_trace_file;
   gzFile metric_trace_file;
   gzFile steady_state_tacking_file;
+
+  // ---- DICE power overlay state ----
+  bool m_dice_power_enabled;
+  dice_power_params_t m_dice_params;
 };
 
 #endif /* GPGPU_SIM_WRAPPER_H_ */

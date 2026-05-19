@@ -49,7 +49,12 @@ const char* perf_count_label[] = {
     "CC_H,",        "CC_M,",    "SHRD_ACC,", "REG_RD,",      "REG_WR,",
     "NON_REG_OPs,", "SP_ACC,",  "SFU_ACC,",  "FPU_ACC,",     "MEM_RD,",
     "MEM_WR,",      "MEM_PRE,", "L2_RH,",    "L2_RM,",       "L2_WH,",
-    "L2_WM,",       "NOC_A,",   "PIPE_A,",   "IDLE_CORE_N,", "CONST_DYNAMICN"};
+    "L2_WM,",       "NOC_A,",   "PIPE_A,",   "IDLE_CORE_N,", "CONST_DYNAMICN,",
+    // DICE-specific perf counters (must match perf_count_t order in XML_Parse.h)
+    "DICE_L1B_ACC,",       "DICE_SIMT_STACK_RD,",
+    "DICE_SIMT_STACK_WR,", "DICE_DISPATCH_TH,",
+    "DICE_SCB_LD_RSV,",    "DICE_E_BLOCKS,",
+    "DICE_CTA"};
 
 void ParseXML::parse(char* filepath) {
   unsigned int i, j, k, m, n;

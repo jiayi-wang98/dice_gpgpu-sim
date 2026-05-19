@@ -143,6 +143,248 @@ class power_stat_t {
     pwr_mem_stat->save_stats();
     *m_average_pipeline_duty_cycle = 0;
     *m_active_sms = 0;
+    // Snapshot DICE counters for next-sample delta computation.
+    save_dice_stats();
+  }
+
+  // ---- DICE per-sample-delta accessors -----------------------------------
+  // The DICE counters in shader_core_stats are simple cumulative arrays
+  // (not dual-buffered like the McPAT-side ones); we snapshot them here.
+  unsigned long long m_dice_simt_stack_rd_prev = 0;
+  unsigned long long m_dice_simt_stack_wr_prev = 0;
+  unsigned long long m_dice_dispatched_th_prev = 0;
+  unsigned long long m_dice_scb_ld_rsv_prev = 0;
+  unsigned long long m_dice_e_blocks_prev = 0;
+  unsigned long long m_dice_cta_prev = 0;
+
+  unsigned long long sum_dice_counter(unsigned *vec) const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++) s += vec[i];
+    return s;
+  }
+  unsigned get_dice_simt_stack_read() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_simt_stack_read);
+    return (unsigned)(now - m_dice_simt_stack_rd_prev);
+  }
+  unsigned get_dice_simt_stack_write() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_simt_stack_write);
+    return (unsigned)(now - m_dice_simt_stack_wr_prev);
+  }
+  unsigned get_dice_dispatched_threads() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_dispatched_threads);
+    return (unsigned)(now - m_dice_dispatched_th_prev);
+  }
+  unsigned get_dice_scoreboard_ld_reserve() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_scoreboard_ld_reserve);
+    return (unsigned)(now - m_dice_scb_ld_rsv_prev);
+  }
+  unsigned get_dice_e_blocks() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_e_blocks);
+    return (unsigned)(now - m_dice_e_blocks_prev);
+  }
+  unsigned get_dice_cta() {
+    unsigned long long now = sum_dice_counter(m_shader_stats->dice_cta);
+    return (unsigned)(now - m_dice_cta_prev);
+  }
+  // L1B accesses since the previous sample (uses the dual-buffered
+  // core_cache_stats). DICE classifies branch-metadata loads as
+  // BITSTREAM_ACC_R upstream.
+  unsigned get_l1b_accesses() {
+    enum mem_access_type access_type[] = {BITSTREAM_ACC_R};
+    enum cache_request_status request_status[] = {HIT, MISS, HIT_RESERVED};
+    unsigned num_access_type =
+        sizeof(access_type) / sizeof(enum mem_access_type);
+    unsigned num_request_status =
+        sizeof(request_status) / sizeof(enum cache_request_status);
+    return (pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+               access_type, num_access_type, request_status,
+               num_request_status)) -
+           (pwr_mem_stat->core_cache_stats[PREV_STAT_IDX].get_stats(
+               access_type, num_access_type, request_status,
+               num_request_status));
+  }
+
+  void save_dice_stats() {
+    m_dice_simt_stack_rd_prev = sum_dice_counter(m_shader_stats->dice_simt_stack_read);
+    m_dice_simt_stack_wr_prev = sum_dice_counter(m_shader_stats->dice_simt_stack_write);
+    m_dice_dispatched_th_prev = sum_dice_counter(m_shader_stats->dice_dispatched_threads);
+    m_dice_scb_ld_rsv_prev    = sum_dice_counter(m_shader_stats->dice_scoreboard_ld_reserve);
+    m_dice_e_blocks_prev      = sum_dice_counter(m_shader_stats->dice_e_blocks);
+    m_dice_cta_prev           = sum_dice_counter(m_shader_stats->dice_cta);
+  }
+
+  // ---- Cumulative kernel-total accessors (standalone DICE power report) --
+  // These give kernel-wide totals across all cores. The caller is responsible
+  // for subtracting any prior-kernel baseline if it wants per-kernel deltas.
+  unsigned long long dice_total_simt_stack_read()  const { return sum_dice_counter(m_shader_stats->dice_simt_stack_read); }
+  unsigned long long dice_total_simt_stack_write() const { return sum_dice_counter(m_shader_stats->dice_simt_stack_write); }
+  unsigned long long dice_total_dispatched_threads() const { return sum_dice_counter(m_shader_stats->dice_dispatched_threads); }
+  unsigned long long dice_total_scoreboard_ld_reserve() const { return sum_dice_counter(m_shader_stats->dice_scoreboard_ld_reserve); }
+  unsigned long long dice_total_e_blocks() const { return sum_dice_counter(m_shader_stats->dice_e_blocks); }
+  unsigned long long dice_total_cta() const { return sum_dice_counter(m_shader_stats->dice_cta); }
+  unsigned long long dice_total_regfile_reads() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_read_regfile_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_regfile_writes() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_write_regfile_acesses[i];
+    return s;
+  }
+  // Cumulative cache totals come from the cache_stats running totals.
+  unsigned long long dice_total_l1d_accesses() const {
+    enum mem_access_type t[] = {GLOBAL_ACC_R, LOCAL_ACC_R, GLOBAL_ACC_W, LOCAL_ACC_W};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  unsigned long long dice_total_icache_accesses() const {
+    enum mem_access_type t[] = {INST_ACC_R};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  unsigned long long dice_total_ccache_accesses() const {
+    enum mem_access_type t[] = {CONST_ACC_R};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  unsigned long long dice_total_bcache_accesses() const {
+    enum mem_access_type t[] = {BITSTREAM_ACC_R};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  unsigned long long dice_total_shmem_accesses() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += pwr_mem_stat->shmem_read_access[CURRENT_STAT_IDX][i];
+    return s;
+  }
+  unsigned long long dice_total_tcache_accesses() const {
+    enum mem_access_type t[] = {TEXTURE_ACC_R};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->core_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  // Arithmetic-unit op totals (sum across shaders).
+  unsigned long long dice_total_int_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_ialu_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_fpu_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_fp_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_sfu_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_sfu_acesses[i];
+    return s;
+  }
+  // ALU subdivisions (AccelWattch-aligned)
+  unsigned long long dice_total_imul24_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_imul24_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_imul32_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_imul32_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_imul_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_imul_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_idiv_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_idiv_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_fpmul_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_fpmul_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_fpdiv_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_fpdiv_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_trans_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_trans_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_tensor_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_tensor_core_acesses[i];
+    return s;
+  }
+  unsigned long long dice_total_tex_ops() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_config->num_shader(); i++)
+      s += m_shader_stats->m_num_tex_inst[i];
+    return s;
+  }
+  // L2 totals (read + write, hit + miss).
+  unsigned long long dice_total_l2_read_accesses() const {
+    enum mem_access_type t[] = {GLOBAL_ACC_R, LOCAL_ACC_R, CONST_ACC_R,
+                                TEXTURE_ACC_R, INST_ACC_R};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  unsigned long long dice_total_l2_write_accesses() const {
+    enum mem_access_type t[] = {GLOBAL_ACC_W, LOCAL_ACC_W, L1_WRBK_ACC};
+    enum cache_request_status s[] = {HIT, MISS, HIT_RESERVED};
+    return pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].get_stats(
+        t, sizeof(t)/sizeof(t[0]), s, sizeof(s)/sizeof(s[0]));
+  }
+  // DRAM totals across all memory channels.
+  unsigned long long dice_total_dram_reads() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_mem_config->m_n_mem; i++)
+      s += pwr_mem_stat->n_rd[CURRENT_STAT_IDX][i];
+    return s;
+  }
+  unsigned long long dice_total_dram_writes() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_mem_config->m_n_mem; i++)
+      s += pwr_mem_stat->n_wr[CURRENT_STAT_IDX][i];
+    return s;
+  }
+  unsigned long long dice_total_dram_precharges() const {
+    unsigned long long s = 0;
+    for (unsigned i = 0; i < m_mem_config->m_n_mem; i++)
+      s += pwr_mem_stat->n_pre[CURRENT_STAT_IDX][i];
+    return s;
+  }
+  // NoC total flits in both directions.
+  long long dice_total_noc_flits() const {
+    long long s = 0;
+    for (unsigned i = 0; i < m_config->n_simt_clusters; i++)
+      s += pwr_mem_stat->n_simt_to_mem[CURRENT_STAT_IDX][i]
+         + pwr_mem_stat->n_mem_to_simt[CURRENT_STAT_IDX][i];
+    return s;
   }
 
   unsigned get_total_inst() {
@@ -775,6 +1017,7 @@ class power_stat_t {
   float *m_active_sms;
   const shader_core_config *m_config;
   const memory_config *m_mem_config;
+  shader_core_stats *m_shader_stats;  // raw shader_core_stats for DICE counter deltas
 };
 
 #endif /*POWER_LATENCY_STAT_H*/

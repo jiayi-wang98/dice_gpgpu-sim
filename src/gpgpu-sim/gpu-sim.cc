@@ -126,6 +126,17 @@ void power_config::reg_options(class OptionParser *opp) {
   option_parser_register(opp, "-steady_state_definition", OPT_CSTR,
                          &gpu_steady_state_definition,
                          "allowed deviation:number of samples", "8:4");
+
+  // ---- DICE power overlay (analytical SCHEDP / PIPEP / RFP + BCP) --------
+  option_parser_register(opp, "-gpgpu_dice_power_model", OPT_BOOL,
+                         &g_gpgpu_dice_power_model,
+                         "Enable DICE analytical SCHEDP/PIPEP/RFP overrides "
+                         "and BCP slot (1=On, 0=Off)",
+                         "0");
+  option_parser_register(opp, "-gpgpu_dice_power_xml", OPT_CSTR,
+                         &g_gpgpu_dice_power_xml,
+                         "DICE power overlay XML (per-access dynamic energies)",
+                         "accelwattch_dice_sim.xml");
 }
 
 void memory_config::reg_options(class OptionParser *opp) {
@@ -1129,6 +1140,12 @@ void gpgpu_sim::init() {
     init_mcpat(m_config, m_gpgpusim_wrapper, m_config.gpu_stat_sample_freq,
                gpu_tot_sim_insn, gpu_sim_insn);
   }
+  // DICE overlay can run alongside McPAT or fully standalone (when
+  // -power_simulation_enabled 0); it only needs the overlay XML.
+  if (m_config.g_gpgpu_dice_power_model) {
+    m_gpgpusim_wrapper->enable_dice_power_model(
+        m_config.g_gpgpu_dice_power_xml);
+  }
 #endif
 }
 
@@ -1419,6 +1436,58 @@ void gpgpu_sim::gpu_print_stat() {
         gpu_sim_cycle, gpu_tot_sim_cycle, gpu_tot_sim_insn + gpu_sim_insn,
         kernel_info_str, true);
     mcpat_reset_perf_count(m_gpgpusim_wrapper);
+  }
+  // Standalone DICEwattch power report. Runs independently of
+  // -power_simulation_enabled so we can still get a report when McPAT is
+  // unavailable or unreliable (e.g. the current dice tree's gtx480 XML /
+  // RTX2060S config mismatch).
+  if (m_config.g_gpgpu_dice_power_model &&
+      m_gpgpusim_wrapper->dice_power_model_enabled()) {
+    gpgpu_sim_wrapper::dice_report_counters_t c = {};
+    c.l1b_acc             = (double)m_power_stats->dice_total_bcache_accesses();
+    c.simt_stack_rd       = (double)m_power_stats->dice_total_simt_stack_read();
+    c.simt_stack_wr       = (double)m_power_stats->dice_total_simt_stack_write();
+    c.dispatched_threads  = (double)m_power_stats->dice_total_dispatched_threads();
+    c.scoreboard_ld_reserve= (double)m_power_stats->dice_total_scoreboard_ld_reserve();
+    c.e_blocks            = (double)m_power_stats->dice_total_e_blocks();
+    c.cta                 = (double)m_power_stats->dice_total_cta();
+    c.reg_reads           = (double)m_power_stats->dice_total_regfile_reads();
+    c.reg_writes          = (double)m_power_stats->dice_total_regfile_writes();
+    c.l1d_acc             = (double)m_power_stats->dice_total_l1d_accesses();
+    c.icache_acc          = (double)m_power_stats->dice_total_icache_accesses();
+    c.ccache_acc          = (double)m_power_stats->dice_total_ccache_accesses();
+    c.bcache_acc          = (double)m_power_stats->dice_total_bcache_accesses();
+    c.tcache_acc          = (double)m_power_stats->dice_total_tcache_accesses();
+    c.shmem_acc           = (double)m_power_stats->dice_total_shmem_accesses();
+    c.int_ops             = (double)m_power_stats->dice_total_int_ops();
+    c.fpu_ops             = (double)m_power_stats->dice_total_fpu_ops();
+    c.sfu_ops             = (double)m_power_stats->dice_total_sfu_ops();
+    c.dp_ops              = 0;  // DP ops folded into fpu_ops counter
+    c.int_mul24_ops       = (double)m_power_stats->dice_total_imul24_ops();
+    c.int_mul32_ops       = (double)m_power_stats->dice_total_imul32_ops();
+    c.int_mul_ops         = (double)m_power_stats->dice_total_imul_ops();
+    c.int_div_ops         = (double)m_power_stats->dice_total_idiv_ops();
+    c.fp_mul_ops          = (double)m_power_stats->dice_total_fpmul_ops();
+    c.fp_div_ops          = (double)m_power_stats->dice_total_fpdiv_ops();
+    // Trans counter lumps SQRT+LG+SIN+EXP (we can't separate them in the
+    // current DICE cgra_core hook). Put all in FP_SQRT for now.
+    c.fp_sqrt_ops         = (double)m_power_stats->dice_total_trans_ops();
+    c.fp_lg_ops           = 0;
+    c.fp_sin_ops          = 0;
+    c.fp_exp_ops          = 0;
+    c.dp_mul_ops          = 0;
+    c.dp_div_ops          = 0;
+    c.tensor_ops          = (double)m_power_stats->dice_total_tensor_ops();
+    c.tex_ops             = (double)m_power_stats->dice_total_tex_ops();
+    c.l2_read_acc         = (double)m_power_stats->dice_total_l2_read_accesses();
+    c.l2_write_acc        = (double)m_power_stats->dice_total_l2_write_accesses();
+    c.dram_rd             = (double)m_power_stats->dice_total_dram_reads();
+    c.dram_wr             = (double)m_power_stats->dice_total_dram_writes();
+    c.dram_pre            = (double)m_power_stats->dice_total_dram_precharges();
+    c.noc_flits           = (double)m_power_stats->dice_total_noc_flits();
+    c.idle_core_cycles    = 0;  // TODO: plumb per-cycle idle-core tally
+    m_gpgpusim_wrapper->print_dice_power_kernel_report(
+        kernel_info_str, (unsigned long long)gpu_sim_cycle, c);
   }
 #endif
 
@@ -1892,7 +1961,8 @@ void gpgpu_sim::cycle() {
   // L2 operations follow L2 clock domain
   unsigned partiton_reqs_in_parallel_per_cycle = 0;
   if (clock_mask & L2) {
-    const bool power_on = m_config.g_power_simulation_enabled;
+    const bool power_on = m_config.g_power_simulation_enabled ||
+                          m_config.g_gpgpu_dice_power_model;
     if (power_on)
       m_power_stats->pwr_mem_stat->l2_cache_stats[CURRENT_STAT_IDX].clear();
     for (unsigned i = 0; i < m_memory_config->m_n_mem_sub_partition; i++) {
@@ -1927,7 +1997,10 @@ void gpgpu_sim::cycle() {
 
   if (clock_mask & CORE) {
     // L1 cache + shader core pipeline stages
-    const bool power_on = m_config.g_power_simulation_enabled;
+    // Standalone DICE power overlay also needs the per-cluster cache stats
+    // (for L1I/L1B/L1C/L1D/shmem totals in the kernel report).
+    const bool power_on = m_config.g_power_simulation_enabled ||
+                          m_config.g_gpgpu_dice_power_model;
     // Per-cycle gather of per-cluster cache/icnt stats only feeds the
     // GPUWattch power model. Profiling showed >70% of CPU time was spent
     // here when power simulation is disabled (the default), because

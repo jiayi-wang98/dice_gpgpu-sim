@@ -110,6 +110,10 @@ struct power_config {
 
   char *g_power_config_name;
 
+  // ---- DICE power overlay options ----
+  bool g_gpgpu_dice_power_model;
+  char *g_gpgpu_dice_power_xml;
+
   bool m_valid;
   bool g_power_simulation_enabled;
   bool g_power_trace_enabled;
