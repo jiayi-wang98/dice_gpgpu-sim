@@ -1037,6 +1037,7 @@ class mem_access_t {
     m_ldst_port_num = access.m_ldst_port_num;
     m_space = access.m_space;
     m_cgra_block_state = access.m_cgra_block_state;
+    m_is_atomic = access.m_is_atomic;
   }
 
   void assign_cgra_block_state(class cgra_block_state_t *cgra_block_state) {
@@ -1050,6 +1051,11 @@ class mem_access_t {
   const std::set<unsigned> &get_ldst_regs() const { return m_ldst_regs; }
   unsigned get_ldst_port_num() const { return m_ldst_port_num; }
   memory_space_t get_space() const { return m_space.get_type(); }
+  // DICE atomic v2: per-access atomic flag. SIMT carries this via m_inst on
+  // the mem_fetch; DICE mem_fetches don't have m_inst, so the flag lives on
+  // the access itself and mem_fetch::isatomic()/do_atomic() route through it.
+  bool is_atomic() const { return m_is_atomic; }
+  void set_atomic(bool v) { m_is_atomic = v; }
 
   new_addr_type get_addr() const { return m_addr; }
   void set_addr(new_addr_type addr) { m_addr = addr; }
@@ -1130,6 +1136,7 @@ class mem_access_t {
   unsigned m_ldst_port_num;
   memory_space_t m_space;
   class cgra_block_state_t *m_cgra_block_state;
+  bool m_is_atomic;
 };
 
 class mem_fetch;

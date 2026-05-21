@@ -31,6 +31,7 @@
 #include "mem_latency_stat.h"
 #include "shader.h"
 #include "visualizer.h"
+#include "cgra_core.h"
 
 unsigned mem_fetch::sm_next_mf_request_uid = 1;
 
@@ -139,11 +140,24 @@ void mem_fetch::set_status(enum mem_fetch_status status,
 }
 
 bool mem_fetch::isatomic() const {
-  if (m_inst.empty()) return false;
-  return m_inst.isatomic();
+  // SIMT path: m_inst carries the per-lane callbacks, so isatomic mirrors
+  // warp_inst_t::isatomic. DICE path: m_inst is empty (the cfg_block carries
+  // the per-tid callbacks); the flag lives on m_access.
+  if (!m_inst.empty()) return m_inst.isatomic();
+  return m_access.is_atomic();
 }
 
-void mem_fetch::do_atomic() { m_inst.do_atomic(m_access.get_warp_mask()); }
+void mem_fetch::do_atomic() {
+  if (!m_inst.empty()) {
+    m_inst.do_atomic(m_access.get_warp_mask());
+    return;
+  }
+  // DICE atomic v2 (deferred): route per-tid callbacks via cgra_block_state.
+  // Currently unused — DICE atomics run synchronously in dice_exec_inst_light
+  // (see cuda-sim.cc). This path stays wired in case a future iteration
+  // moves the RMW to L2-pop time.
+  if (m_cgra_block) m_cgra_block->do_atomic_dice(m_access.get_tids());
+}
 
 bool mem_fetch::istexture() const {
   if (m_inst.empty()) return false;

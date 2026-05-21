@@ -222,6 +222,14 @@ class power_stat_t {
   unsigned long long dice_total_scoreboard_ld_reserve() const { return sum_dice_counter(m_shader_stats->dice_scoreboard_ld_reserve); }
   unsigned long long dice_total_e_blocks() const { return sum_dice_counter(m_shader_stats->dice_e_blocks); }
   unsigned long long dice_total_cta() const { return sum_dice_counter(m_shader_stats->dice_cta); }
+  // Accumulator-PE op count: atom.shared firings (DICE-design intent
+  // is that atom.shared is the acc-PE intrinsic, so every firing is one
+  // PE-cycle pipeline add). Tracked as a single global counter in
+  // cuda-sim.cc; we just expose it here so DICEwattch can pull it.
+  unsigned long long dice_total_acc_ops() const {
+    extern unsigned long long g_dice_acc_op_count;
+    return g_dice_acc_op_count;
+  }
   unsigned long long dice_total_regfile_reads() const {
     unsigned long long s = 0;
     for (unsigned i = 0; i < m_config->num_shader(); i++)

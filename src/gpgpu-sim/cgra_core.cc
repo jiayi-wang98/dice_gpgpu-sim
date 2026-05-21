@@ -271,7 +271,10 @@ void cgra_core_ctx::checkExecutionStatusAndUpdate(cgra_block_state_t* cgra_block
   //get instructions from the cfg_block
   for(unsigned i=0; i<cfg_block->get_diceblock()->ptx_instructions.size(); i++){
     ptx_instruction *pI = cfg_block->get_diceblock()->ptx_instructions[i];
-    if (pI->isatomic()) cgra_block->inc_n_atomic();
+    // NOTE: m_n_atomic is incremented in ldst_unit::dice_push_accesses when
+    // the atomic mem_fetch is allocated and pushed to icnt, not here.
+    // Keeping the count tied to "in-flight on the wire" rather than
+    // "functionally issued" — decrement happens when the mf returns.
     if (pI->space.is_local() && (pI->is_load() || pI->is_store())) {
       new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
       unsigned num_addrs;
@@ -987,6 +990,11 @@ void cgra_core_ctx::get_L1C_sub_stats(struct cache_sub_stats &css) const {
 }
 void cgra_core_ctx::get_L1T_sub_stats(struct cache_sub_stats &css) const {
   m_ldst_unit->get_L1T_sub_stats(css);
+}
+
+void cgra_block_state_t::do_atomic_dice(const std::set<unsigned> &tids) {
+  dice_cfg_block_t *cfg = get_current_cfg_block();
+  if (cfg) cfg->do_atomic(tids);
 }
 
 dice_cfg_block_t* cgra_block_state_t::get_current_cfg_block() {
@@ -2585,6 +2593,22 @@ void ldst_unit::cycle_cgra(){
   //process interconnect data
   if (!m_response_fifo.empty()) {
     mem_fetch *mf = m_response_fifo.front();
+    // DICE atomic Design A: atomic mf bypasses L1D fill (real HW routes
+    // atomics around L1D; the RMW + dst RF write already happened at L2
+    // pop via mem_fetch::do_atomic()). Route to m_next_global_cgra so the
+    // existing writeback_cgra path handles scoreboard release +
+    // inc_number_of_loads_done uniformly with regular loads. Requires the
+    // atom dst reg to be listed in the DBB's LD_DEST_REGS so the
+    // load-completion counter matches.
+    if (mf->isatomic()) {
+      if (m_next_global_cgra == NULL) {
+        mf->set_status(IN_SHADER_FETCHED,
+          m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+        m_response_fifo.pop_front();
+        m_next_global_cgra = mf;
+      }
+      return;
+    }
     if (mf->get_access_type() == TEXTURE_ACC_R) {
       if (m_L1T->fill_port_free()) {
         m_L1T->fill(mf, m_cgra_core->get_gpu()->gpu_sim_cycle+ m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
@@ -2731,6 +2755,29 @@ void cgra_block_state_t::inc_number_of_stores_done() {
 mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache_cgra(l1_cache *cache, cgra_block_state_t* cgra_block, mem_access_t access) {
   mem_stage_stall_type result = NO_RC_FAIL;
   //bool no_bk_conf = 0;
+  // DICE atomic Design A: atomics bypass L1D entirely (real HW routes
+  // atomics to the L2 atomic unit). The access has already passed through
+  // the temporal coalescer, so cross-tid same-line atomics arrive here as
+  // one coalesced mem_access_t. Alloc the mem_fetch and push directly to
+  // the interconnect. L2 fires mem_fetch::do_atomic() at pop, which fans
+  // the RMW out to per-tid atom_callbacks registered on the cfg_block.
+  // The atom mf returns to response_fifo, gets routed to m_next_global_cgra,
+  // then writeback_cgra releases scoreboard + inc_number_of_loads_done —
+  // same path as a regular load miss, so atom counts as a load uniformly.
+  if (access.is_atomic()) {
+    unsigned ctrl_size = access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
+    unsigned size = access.get_size() + ctrl_size;
+    if (m_icnt->full(size, true)) {
+      return ICNT_RC_FAIL;
+    }
+    mem_fetch *mf = m_mf_allocator->alloc_cgra(
+        cgra_block, access,
+        m_cgra_core->get_gpu()->gpu_sim_cycle +
+            m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
+    m_icnt->push(mf);
+    m_dice_mem_request_queue->pop_request(mf->get_ldst_port_num());
+    return NO_RC_FAIL;
+  }
   if (m_config->m_L1D_config.l1_latency > 0) {
     //for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {  // We can handle at max l1_banks reqs per cycle // move to top level
       mem_fetch *mf = m_mf_allocator->alloc_cgra(cgra_block, access, m_cgra_core->get_gpu()->gpu_sim_cycle + m_cgra_core->get_gpu()->gpu_tot_sim_cycle);
@@ -3295,8 +3342,11 @@ void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
   new_info.ld_dest_regs = access.get_ldst_regs();
   new_info.port_idx.insert(port);
   new_info.block = cgra_block;
+  // DICE atomic v2: carry the atomic flag through the temporal coalescer
+  // so cross-tid same-line atomics merge into one mem_fetch (mirroring
+  // SIMT's memory_coalescing_arch_atomic per-warp granularity).
+  new_info.is_atomic = access.is_atomic();
 
-  
   //if no existing coalescing transaction info, then just push the new info to the buffer
   if(!m_coalescing_transaction_info_buffer_valid[port]){
     m_coalescing_transaction_info_buffer[port] = new_info;
@@ -3321,6 +3371,7 @@ void dice_mem_request_queue::do_ld_coalescing_new(unsigned port){
        (m_coalescing_transaction_info_buffer[port].access_type == new_info.access_type) &&
        (m_coalescing_transaction_info_buffer[port].space == new_info.space) &&
        (m_coalescing_transaction_info_buffer[port].ld_dest_regs == new_info.ld_dest_regs) &&
+       (m_coalescing_transaction_info_buffer[port].is_atomic == new_info.is_atomic) &&
         (m_coalescing_transaction_info_buffer[port].block == cgra_block)){
       //can be coalesced, just merge the info
       m_coalescing_transaction_info_buffer[port].chunks |= new_info.chunks;
@@ -3535,11 +3586,13 @@ void dice_mem_request_queue::memory_coalescing_arch_reduce(bool is_write, const 
     const unsigned st_port = port - m_config->dice_cgra_core_num_ld_ports;
     mem_access_t access(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, port ,info.active, info.bytes, info.chunks,m_config->gpgpu_ctx);
     access.assign_cgra_block_state(cgra_block);
+    access.set_atomic(info.is_atomic);
     m_st_req_queue[st_port].push_back(access);
     m_st_pending_mask |= (1u << st_port);
   } else {
     mem_access_t access(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, port ,info.active, info.bytes, info.chunks,m_config->gpgpu_ctx);
     access.assign_cgra_block_state(cgra_block);
+    access.set_atomic(info.is_atomic);
     m_ld_req_queue[port].push_back(access);
     m_ld_pending_mask |= (1u << port);
   }

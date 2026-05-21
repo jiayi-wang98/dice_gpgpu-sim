@@ -788,7 +788,7 @@ class fetch_scheduler{
      }
 
      bool block_done(){
-      return loads_done() && stores_done(); 
+      return loads_done() && stores_done();
      }
 
      bool loads_done();
@@ -813,6 +813,9 @@ class fetch_scheduler{
 
      dice_cfg_block_t* get_current_cfg_block();
      dice_metadata* get_current_metadata();
+     // DICE atomic v2 forwarder: called from mem_fetch::do_atomic() at L2
+     // pop. Routes per-tid atom_callbacks through the current cfg block.
+     void do_atomic_dice(const std::set<unsigned> &tids);
      dice_block_t *get_dice_block();
      virtual address_type get_metadata_pc() const { return m_next_metadata_pc; }
      void set_next_pc(address_type pc) { m_next_metadata_pc = pc; }
@@ -1241,7 +1244,7 @@ class cgra_unit {
       std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
       mem_access_byte_mask_t bytes;
       active_mask_t active;  // threads in this transaction
-  
+
       bool test_bytes(unsigned start_bit, unsigned end_bit) {
         for (unsigned i = start_bit; i <= end_bit; i++)
           if (bytes.test(i)) return true;
@@ -1254,6 +1257,10 @@ class cgra_unit {
       std::set<unsigned> active_threads;
       new_addr_type block_addr;  // address of the transaction
       cgra_block_state_t *block;  // block that this transaction belongs to
+      // DICE atomic v2: atomic flag carried through the temporal coalescer
+      // so cross-tid same-line atomics merge into one mem_fetch. Coalesce
+      // compatibility requires same is_atomic value.
+      bool is_atomic = false;
     };
 
     std::vector<dice_transaction_info> m_coalescing_transaction_info_buffer;

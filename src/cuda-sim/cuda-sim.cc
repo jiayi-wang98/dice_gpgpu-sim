@@ -55,6 +55,10 @@ typedef void *yyscan_t;
 #include "ptx_sim.h"
 
 int g_debug_execution = 0;
+// Cumulative count of DICE accumulator-PE ops (atom.shared firings).
+// Read by DICEwattch at kernel-report time, charged at PIPE_A energy
+// (one PE-cycle pipeline add), not at SHRD_ACC.
+unsigned long long g_dice_acc_op_count = 0;
 // Output debug information to file options
 
 void cuda_sim::ptx_opcocde_latency_options(option_parser_t opp) {
@@ -2190,18 +2194,18 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
         //CFGBlock->set_not_active(tid);
         CFGBlock->dec_stores();
       } 
-      else if(pI->has_memory_read()){
-        // ld.srf is not a real LDST load -- it's in-fabric and not counted
-        // by get_num_loads() (which uses LD_DEST_REGS).  Don't decrement
-        // dec_loads_num for predicated-off ld.srf, otherwise actual LDST
-        // loads_done > expected num_loads and the assertion fires.
-        //
-        // ATOM_OP: similarly, atomics' destinations are not in
-        // LD_DEST_REGS (DICE compiler treats them as wire-registers),
-        // so get_num_loads() doesn't count them. Skip dec_loads to
-        // keep the load count consistent.
-        if (pI->get_space().get_type() != srf_space &&
-            pI->get_opcode() != ATOM_OP) {
+      else if(pI->has_memory_read() || pI->get_opcode() == ATOM_OP){
+        // ld.srf is in-fabric — not counted by get_num_loads().
+        // atom.shared (DICE accumulator-PE model) is also in-fabric on
+        // the local SM and not enqueued in LDST. Treat both the same way:
+        // do NOT decrement loads when predicated off.
+        // Global atom under Design A: dst is in LD_DEST_REGS and counts
+        // toward get_num_loads(), so skipped atoms must dec_loads (mirror
+        // of regular ld).
+        const bool is_smem_atom =
+            (pI->get_opcode() == ATOM_OP) &&
+            (pI->get_space().get_type() == shared_space);
+        if (pI->get_space().get_type() != srf_space && !is_smem_atom) {
           CFGBlock->dec_loads();
         }
       }
@@ -2313,29 +2317,43 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     }
 
     if (pI->get_opcode() == ATOM_OP && !skip) {
-      // DICE atomic v1: execute the RMW synchronously via the callback
-      // that atom_impl prepared in m_last_dram_callback. This applies
-      // the read-modify-write to memory and writes the OLD value to the
-      // destination register in one functional step.
+      // DICE atomic.
       //
-      // The atomic op is then *not* added to the LDST queue (the
-      // suppression is done below in the add_mem_op block via an
-      // is-ATOM_OP check) — otherwise the LDST writeback would
-      // overwrite the dst reg with the post-RMW value loaded from
-      // memory.
-      //
-      // Counter side: for the power model we still want this access to
-      // show up as one read+write at the destination space; for now
-      // it's not counted, will revisit when wiring up the power-model
-      // for atomics (issue tracked in CGRA_ACCUMULATOR_DESIGN.md).
-      if (m_last_dram_callback.function != NULL) {
-        m_last_dram_callback.function(m_last_dram_callback.instruction, this);
-        m_last_dram_callback.function = NULL;
-      }
+      // atom_impl (already called via OP_DEF above) has set
+      // m_last_dram_callback.function = atom_callback and captured the
+      // effective address; the RMW has NOT happened yet.
+      assert(m_last_dram_callback.function != NULL &&
+             "atom_impl must have set m_last_dram_callback");
       insn_memaddr = last_eaddr();
       insn_space = last_space();
       unsigned to_type = pI->get_type();
       insn_data_size = datatype2size(to_type);
+
+      if (insn_space.get_type() == shared_space) {
+        // DICE accumulator-PE model: atom.shared executes on the local SM
+        // (no NoC, no L2 atomic unit). Fire the RMW + dst RF write
+        // synchronously — this is the behavioral analog of one PE-cycle
+        // stateful accumulator running in CTA-dispatch order. The atom
+        // does NOT enter the LDST queue (no global mem traffic).
+        m_last_dram_callback.function(m_last_dram_callback.instruction, this);
+        m_last_dram_callback.function = NULL;
+        // DICEwattch: charge as accumulator-PE op (PIPE_A energy), not as
+        // a SMEM bank atomic. The counter is summed across SMs at report
+        // time. Atom.shared in DICE is, by design, the acc-PE intrinsic.
+        extern unsigned long long g_dice_acc_op_count;
+        g_dice_acc_op_count++;
+      } else {
+        // atom.global (Design A): register the callback on the cfg_block;
+        // add_mem_op queues a mem_fetch with is_atomic=true that bypasses
+        // L1D, traverses NoC, fires do_atomic at L2 pop, returns via
+        // response_fifo → writeback_cgra for the dst RF + scoreboard release.
+        CFGBlock->add_callback(tid,
+                               m_last_dram_callback.function,
+                               m_last_dram_callback.instruction,
+                               this,
+                               true /*atomic*/);
+        m_last_dram_callback.function = NULL;
+      }
     }
 
     if (pI->get_opcode() == TEX_OP) {
@@ -2410,23 +2428,43 @@ void ptx_thread_info::dice_exec_inst_light(dice_cfg_block_t *CFGBlock, ptx_instr
     //if skip then the memory request is still generated but skipped in LD/ST queue.
     //if (!skip) {
       if (!((inst_opcode == MMA_LD_OP || inst_opcode == MMA_ST_OP))) {
-        if(pI->has_memory_read()||pI->has_memory_write()){
+        // ATOM_OP has_memory_read/write classification depends on operand
+        // typing — gate it in explicitly. For atomics, the RMW happens at
+        // L2 pop; here we just need to queue the mem_access so a mem_fetch
+        // is allocated and pushed through NoC.
+        if(pI->has_memory_read()||pI->has_memory_write()||
+           (inst_opcode==ATOM_OP && !skip)){
           // ld.srf / st.srf are in-fabric: the producer's value lives in its
           // own RF and ld_exec reads it cross-thread.  No LDST queue entry,
-          // no port budget, no DBB flush.  Bank-conflict serialization is
-          // expressed via DISPATCH_II on the consumer DBB.
-          // Use pI->get_space() (static) rather than last_space() (dynamic):
-          // last_space() is stale when skip=true because ld_impl never ran.
+          // no port budget, no DBB flush.
           //
-          // ATOM_OP: we already executed the RMW synchronously above
-          // (m_last_dram_callback fired). Don't queue the access in
-          // LDST — its writeback would overwrite the dst reg with the
-          // post-RMW value loaded from memory, corrupting the
-          // atomicAdd return value.
-          if (pI->get_space().get_type() != srf_space &&
-              inst_opcode != ATOM_OP) {
+          // atom.shared (DICE accumulator-PE model): the RMW already fired
+          // synchronously above; do not enqueue — there's no NoC/L2 trip.
+          const bool is_atomic = (inst_opcode == ATOM_OP);
+          const bool is_smem_atom =
+              is_atomic && (insn_space.get_type() == shared_space);
+          if (pI->get_space().get_type() != srf_space && !is_smem_atom) {
             CFGBlock->space = insn_space;
-            CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, insn_memory_op,insn_data_size,pI->dst().reg_num(),!skip);
+            // Global atomics: treat as memory_load for LDST queueing (the
+            // dst-RF writeback path mirrors a load). The actual RMW is
+            // gated by the per-tid callback; insn_memory_op stays load
+            // even though atomics also write memory.
+            _memory_op_t op_for_lddst = is_atomic ? memory_load : insn_memory_op;
+            // The dst-register number is meaningful only when this op
+            // writes back a value to the RF: loads, and atomics whose
+            // dst is the OLD value (Design A). Pure stores have no
+            // RF writeback; for them pI->dst() is the memory operand
+            // and reg_num_valid() will be false. Probing the operand
+            // directly (rather than recomputing load-vs-store from the
+            // opcode) future-proofs us against new PTX shapes that
+            // happen to have a non-register dst operand.
+            unsigned dst_reg_num = 0;
+            if (pI->dst().reg_num_valid()) {
+              dst_reg_num = pI->dst().reg_num();
+            }
+            CFGBlock->add_mem_op(tid, insn_memaddr, insn_space, op_for_lddst,
+                                 insn_data_size, dst_reg_num,
+                                 !skip, is_atomic);
           }
         }
         //metadata->data_size = insn_data_size;  // simpleAtomicIntrinsics

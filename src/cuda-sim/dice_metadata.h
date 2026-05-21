@@ -239,7 +239,7 @@ class dice_cfg_block_t{
 
     unsigned get_ldst_port_num();
 
-    void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0, unsigned enable = 1) {
+    void add_mem_op(unsigned n, new_addr_type addr, memory_space_t space, _memory_op_t insn_memory_op, unsigned size, unsigned ld_dest_reg = 0, unsigned enable = 1, bool is_atomic = false) {
       if (!m_per_scalar_thread_valid) {
         m_per_scalar_thread.resize(m_block_size);
         m_per_scalar_thread_valid = true;
@@ -254,8 +254,50 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].ld_dest_reg[index] = ld_dest_reg;
       m_per_scalar_thread[n].count++;
       m_per_scalar_thread[n].enable[index] = enable;
+      m_per_scalar_thread[n].is_atomic[index] = is_atomic;
       //printf("DICE Sim uArch [MEM_ACCESS]: thread %u, addr 0x%04x, space %d, mem_op %d, size %d ,num_of_mem_access = %d\n", n, addr, space, insn_memory_op , size,index);
       //fflush(stdout);
+    }
+
+    // DICE atomic v2: mirror of warp_inst_t::add_callback. Stores the
+    // atom_callback for tid in the cfg block; fires later when the atomic
+    // mem_fetch returns from L2 via mem_fetch::do_atomic().
+    void add_callback(unsigned tid,
+                      void (*function)(const class inst_t *, class ptx_thread_info *),
+                      const class inst_t *inst,
+                      class ptx_thread_info *thread,
+                      bool atomic) {
+      if (!m_per_scalar_thread_valid) {
+        m_per_scalar_thread.resize(m_block_size);
+        m_per_scalar_thread_valid = true;
+      }
+      assert(tid < m_per_scalar_thread.size() && "tid out of bounds");
+      if (atomic) m_should_do_atomic = true;
+      m_per_scalar_thread[tid].callback.function = function;
+      m_per_scalar_thread[tid].callback.instruction = inst;
+      m_per_scalar_thread[tid].callback.thread = thread;
+    }
+
+    bool isatomic() const { return m_should_do_atomic; }
+
+    // Fires per-tid atom_callbacks for the given tid set. Mirrors
+    // warp_inst_t::do_atomic. Currently unused — DICE atoms run the RMW
+    // synchronously in dice_exec_inst_light. Kept wired for a future
+    // deferred-RMW model (callback fired at L2 pop).
+    void do_atomic(const std::set<unsigned> &tids) {
+      if (!m_should_do_atomic) return;
+      if (!m_per_scalar_thread_valid) return;
+      for (std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it) {
+        unsigned tid = *it;
+        if (tid >= m_per_scalar_thread.size()) continue;
+        dram_callback_t &cb = m_per_scalar_thread[tid].callback;
+        if (cb.function && cb.thread) {
+          cb.function(cb.instruction, cb.thread);
+          cb.function = NULL;
+          cb.instruction = NULL;
+          cb.thread = NULL;
+        }
+      }
     }
     void set_addr(unsigned n, new_addr_type *addr, unsigned num_addrs) {
       if (!m_per_scalar_thread_valid) {
@@ -324,7 +366,7 @@ class dice_cfg_block_t{
       std::bitset<4> chunks;  // bitmask: 32-byte chunks accessed
       mem_access_byte_mask_t bytes;
       active_mask_t active;  // threads in this transaction
-  
+
       bool test_bytes(unsigned start_bit, unsigned end_bit) {
         for (unsigned i = start_bit; i <= end_bit; i++)
           if (bytes.test(i)) return true;
@@ -336,6 +378,7 @@ class dice_cfg_block_t{
       memory_space_t space;
       std::set<unsigned> active_threads;
       unsigned original_block_address;
+      bool is_atomic = false;  // DICE atomic v2: propagated to mem_access_t
     };
     void memory_coalescing_arch_reduce_and_send(bool is_write, const dice_transaction_info &info, new_addr_type addr, unsigned segment_size);
 
@@ -354,6 +397,7 @@ class dice_cfg_block_t{
     dice_metadata *m_metadata;
     dice_block_t *m_diceblock;
     bool m_per_scalar_thread_valid;
+    bool m_should_do_atomic = false;
     struct per_thread_info {
       per_thread_info() {
         for (unsigned i = 0; i < MAX_ACCESSES_PER_BLOCK_PER_THREAD; i++){
@@ -362,8 +406,12 @@ class dice_cfg_block_t{
           mem_op[i] = no_memory_op;
           size[i] = 0;
           enable[i] = 0;
+          is_atomic[i] = false;
         }
         count = 0;
+        callback.function = NULL;
+        callback.instruction = NULL;
+        callback.thread = NULL;
       }
       dram_callback_t callback;
       new_addr_type
@@ -378,6 +426,7 @@ class dice_cfg_block_t{
       unsigned ld_dest_reg[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
       unsigned count;
       unsigned enable[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
+      bool is_atomic[MAX_ACCESSES_PER_BLOCK_PER_THREAD];
     };
     std::vector<per_thread_info> m_per_scalar_thread;
     std::vector<std::deque<mem_access_t>> m_accessq; //ldst_port->access per port

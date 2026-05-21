@@ -117,6 +117,9 @@ struct dice_power_params_t {
   double bct_dec_e;
   double active_cta_e;
   double sched_eblock_e;
+  // Per-op energy for the DICE accumulator-PE (one PE-cycle pipeline
+  // add when atom.shared fires). Defaults to PIPE_A (~0.0257 nJ).
+  double dice_acc_op_e;
   // ---- AccelWattch-format coefficients + per-pipe energies ----
   accelwattch_scaling_t s;
   dice_pipe_energy_t    e;
@@ -164,6 +167,9 @@ class gpgpu_sim_wrapper {
     double bcache_acc;
     double tcache_acc;
     double shmem_acc;
+    // DICE accumulator-PE op count (atom.shared firings). Charged at
+    // PIPE_A energy, not at SHRD_ACC (SMEM bank).
+    double acc_ops;
     // Arithmetic unit accesses (AccelWattch-aligned subdivision).
     double int_ops;        // base int (ALU_OP / INTP_OP, no special_op)
     double fpu_ops;        // base fp  (SP_OP,  no special_op)

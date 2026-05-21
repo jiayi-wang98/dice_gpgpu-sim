@@ -457,13 +457,20 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
         if(m_per_scalar_thread[tid].mem_op[i] == memory_load){
           masked_ops_reg.push_back(m_per_scalar_thread[tid].ld_dest_reg[i]);
         }
-        continue; 
-      } 
+        continue;
+      }
+      // Per-iteration reset of the persistent-across-iterations switch
+      // state. Without this, an earlier ld.shared / ld.const op in the same
+      // DBB carries its is_shared_space / cache_block_size into the next
+      // op's classification — atomics in particular need a clean slate.
+      cache_block_size = 0;
+      is_shared_space = false;
       new_addr_type addr = m_per_scalar_thread[tid].memreqaddr[i];
       memory_space_t space = m_per_scalar_thread[tid].space[i];
       _memory_op_t insn_memory_op = m_per_scalar_thread[tid].mem_op[i];
       unsigned size = m_per_scalar_thread[tid].size[i];
       unsigned ld_dest_reg = m_per_scalar_thread[tid].ld_dest_reg[i];
+      bool is_atomic_acc = m_per_scalar_thread[tid].is_atomic[i];
       bool is_write = insn_memory_op == memory_store;
       mem_access_type access_type;
       switch (space.get_type()) {
@@ -496,6 +503,11 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
           assert(0);
           break;
       }
+      // DICE atomic Design A: atom is treated as a load for port/scoreboard/
+      // load-count bookkeeping. The atom's dst reg MUST be listed in the
+      // DBB's LD_DEST_REGS so the L1D-path port search below finds it.
+      // After this, the access flows through the same coalescer as a normal
+      // load and gets L1D-bypassed in process_memory_access_queue_l1cache_cgra.
       //const/texture space cache
       if(cache_block_size){
         mem_access_byte_mask_t byte_mask;
@@ -518,6 +530,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
               std::set<unsigned> tids;
               tids.insert(tid);
               mem_access_t access(access_type, addr,space, cache_block_size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(), gpgpu_ctx);
+              access.set_atomic(is_atomic_acc);
               m_accessq[port_index].push_back(access);
               break;
             }
@@ -533,6 +546,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
           std::set<unsigned> tids;
           tids.insert(tid);
           mem_access_t access(access_type, addr, space, cache_block_size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),byte_mask,mem_access_sector_mask_t(),gpgpu_ctx);
+          access.set_atomic(is_atomic_acc);
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
@@ -555,6 +569,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
               std::set<unsigned> tids;
               tids.insert(tid);
               mem_access_t access(access_type, addr,space, size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(), gpgpu_ctx);
+              access.set_atomic(is_atomic_acc);
               m_accessq[port_index].push_back(access);
               break;
             }
@@ -570,6 +585,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
           std::set<unsigned> tids;
           tids.insert(tid);
           mem_access_t access(access_type, addr, space, size, is_write, tids, ld_dest_regs, port_index, simt_mask_t(),mem_access_byte_mask_t(),mem_access_sector_mask_t(),gpgpu_ctx);
+          access.set_atomic(is_atomic_acc);
           m_accessq[port_index].push_back(access);
           num_stores++;
         }
@@ -591,6 +607,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
         info.access_type = access_type;
         info.space = space;
         info.active_threads.insert(tid);
+        if (is_atomic_acc) info.is_atomic = true;
         //mem_access_sector_mask_t sector_mask;
         //sector_mask.set(chunk);
 
@@ -651,6 +668,7 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
             info.access_type = access_type;
             info.space = space;
             info.original_block_address = original_block_address;
+            if (is_atomic_acc) info.is_atomic = true;
             //sector_mask.set(chunk);
             unsigned idx = (addr & 127);
             for (unsigned i = 0; i < size; i++){
@@ -761,8 +779,10 @@ void dice_cfg_block_t::memory_coalescing_arch_reduce_and_send(bool is_write, con
       assert(lower_half_used && upper_half_used);
     }
   }
-  m_accessq[*(info.port_idx.begin())].push_back(mem_access_t(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx));
-  //printf("DICE_CFG_BLOCK: mem_access_t generated for %s at addr 0x%llx, sector mask = %s, size %d, port %d\n", is_write ? "store" : "load", addr, info.chunks.to_string().c_str(), size, *(info.port_idx.begin())); 
+  mem_access_t coalesced(access_type, addr, info.space, size, is_write, info.active_threads, info.ld_dest_regs, *(info.port_idx.begin()),info.active, info.bytes, info.chunks,m_config->gpgpu_ctx);
+  coalesced.set_atomic(info.is_atomic);
+  m_accessq[*(info.port_idx.begin())].push_back(coalesced);
+  //printf("DICE_CFG_BLOCK: mem_access_t generated for %s at addr 0x%llx, sector mask = %s, size %d, port %d\n", is_write ? "store" : "load", addr, info.chunks.to_string().c_str(), size, *(info.port_idx.begin()));
   //fflush(stdout);
   //mem_access_t access(access_type, addr, space, segment_size, is_write, tid, ld_dest_reg, port_index, active_mask,byte_mask,sector_mask,gpgpu_ctx);
 }

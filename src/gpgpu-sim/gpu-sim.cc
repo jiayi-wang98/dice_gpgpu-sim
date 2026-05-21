@@ -1459,6 +1459,7 @@ void gpgpu_sim::gpu_print_stat() {
     c.bcache_acc          = (double)m_power_stats->dice_total_bcache_accesses();
     c.tcache_acc          = (double)m_power_stats->dice_total_tcache_accesses();
     c.shmem_acc           = (double)m_power_stats->dice_total_shmem_accesses();
+    c.acc_ops             = (double)m_power_stats->dice_total_acc_ops();
     c.int_ops             = (double)m_power_stats->dice_total_int_ops();
     c.fpu_ops             = (double)m_power_stats->dice_total_fpu_ops();
     c.sfu_ops             = (double)m_power_stats->dice_total_sfu_ops();

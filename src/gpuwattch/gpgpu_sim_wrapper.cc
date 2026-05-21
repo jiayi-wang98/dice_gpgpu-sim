@@ -213,6 +213,9 @@ void gpgpu_sim_wrapper::enable_dice_power_model(const char* dice_xml_path) {
   m_dice_params.s.L2_WM          = 2.18020968;
   m_dice_params.s.NOC_A          = 83.18977901;
   m_dice_params.s.PIPE_A         = 0.0257;
+  // Accumulator-PE op energy: one PE-cycle pipeline add when atom.shared
+  // fires. Defaults to the PIPE_A scaling coefficient.
+  m_dice_params.dice_acc_op_e    = 0.0257;
   m_dice_params.s.IDLE_CORE_N    = 1.0;
   m_dice_params.s.constant_power = 32.32522272;
   // ---- DICEwattch per-pipe energy constants (one per pipeline,
@@ -256,6 +259,7 @@ void gpgpu_sim_wrapper::enable_dice_power_model(const char* dice_xml_path) {
     else if (strcmp(k, "DICE_BCT_DEC_E")        == 0) m_dice_params.bct_dec_e       = v;
     else if (strcmp(k, "DICE_ACTIVE_CTA_E")     == 0) m_dice_params.active_cta_e    = v;
     else if (strcmp(k, "DICE_SCHED_EBLOCK_E")   == 0) m_dice_params.sched_eblock_e  = v;
+    else if (strcmp(k, "DICE_ACC_OP_E")         == 0) m_dice_params.dice_acc_op_e   = v;
     // ---- AccelWattch-format scaling coefficients (drop-in copy from any
     //      AccelWattch GPU XML; names must match accelwattch_ptx_sim.xml) ----
     else if (strcmp(k, "TOT_INST")       == 0) m_dice_params.s.TOT_INST       = v;
@@ -365,6 +369,7 @@ void gpgpu_sim_wrapper::print_dice_power_kernel_report(
   c.bcache_acc           = c_cum.bcache_acc           - prev_c.bcache_acc;
   c.tcache_acc           = c_cum.tcache_acc           - prev_c.tcache_acc;
   c.shmem_acc            = c_cum.shmem_acc            - prev_c.shmem_acc;
+  c.acc_ops              = c_cum.acc_ops              - prev_c.acc_ops;
   c.int_ops              = c_cum.int_ops              - prev_c.int_ops;
   c.fpu_ops              = c_cum.fpu_ops              - prev_c.fpu_ops;
   c.sfu_ops              = c_cum.sfu_ops              - prev_c.sfu_ops;
@@ -449,7 +454,12 @@ void gpgpu_sim_wrapper::print_dice_power_kernel_report(
                             + 2.0 * c.scoreboard_ld_reserve * d.scoreboard_wr_e
                             + c.cta                * d.active_cta_e
                             + c.e_blocks           * d.bct_pushpop_e
-                            + c.l1d_acc            * d.bct_dec_e;
+                            + c.l1d_acc            * d.bct_dec_e
+                            // Accumulator-PE op: one PE-cycle pipeline add
+                            // per atom.shared firing. The acc-PE is a
+                            // stateful self-feedback PE in DICE, so the
+                            // op cost is PIPE_A, not SHRD_ACC.
+                            + c.acc_ops            * d.dice_acc_op_e;
   const double e_BCP        = c.bcache_acc * d.bcache_read_e;
 
   // ---- Convert per-kernel energy to average power (mW).
@@ -545,6 +555,8 @@ void gpgpu_sim_wrapper::print_dice_power_kernel_report(
   cnt[DICE_SCB_LD_RSV_N]    = c.scoreboard_ld_reserve;
   cnt[DICE_E_BLOCKS_N]      = c.e_blocks;
   cnt[DICE_CTA_N]           = c.cta;
+  // Note: acc_ops isn't allocated a perf_count_t slot, but we emit it
+  // alongside the kernel header so a single-line `grep acc_ops` works.
 
   // ---- Cross-kernel accumulators (mirror GPUWattch's gpu_tot_*). ----
   static int    g_dice_kernel_count   = 0;
@@ -574,6 +586,8 @@ void gpgpu_sim_wrapper::print_dice_power_kernel_report(
   rf << kernel_info_string << "\n";
   rf << "Kernel Average Power Data:\n";
   rf << "kernel_avg_power = " << kernel_avg_power << "\n";
+  rf << "dice_acc_ops = " << c.acc_ops
+     << ", e_acc_ops_nJ = " << (c.acc_ops * d.dice_acc_op_e) << "\n";
   for (unsigned i = 0; i < NUM_COMPONENTS_MODELLED; ++i)
     rf << "gpu_avg_" << pwr_cmp_label[i] << " = " << cmp_p[i] << "\n";
   for (unsigned i = 0; i < NUM_PERFORMANCE_COUNTERS; ++i)
