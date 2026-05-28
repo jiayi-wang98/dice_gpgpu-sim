@@ -52,10 +52,13 @@ class cgra_core_ctx {
   public:
     cgra_core_ctx(class gpgpu_sim *gpu,class simt_core_cluster *cluster,
       unsigned cgra_core_id, unsigned tpc_id,const shader_core_config *config,
-      const memory_config *mem_config,shader_core_stats *stats);
+      const memory_config *mem_config,shader_core_stats *stats,
+      class l1_cache *shared_l1d = NULL,
+      class read_only_cache *shared_l1i = NULL,
+      class read_only_cache *shared_l1b = NULL);
     
-    virtual ~cgra_core_ctx() { 
-      free(m_thread);  
+    virtual ~cgra_core_ctx() {
+      free(m_thread);
       deleteSIMTStack();
       delete m_dispatcher_rfu;
       delete m_block_commit_table;
@@ -64,8 +67,10 @@ class cgra_core_ctx {
       delete m_fetch_scheduler;
       delete m_icnt;
       delete m_mem_fetch_allocator;
-      delete m_L1I;
-      delete m_L1B;
+      // Skip deletes on cluster-shared cache instances: only the CP that
+      // allocated them (the one with m_shared_* == NULL) frees them.
+      if (m_shared_l1i == NULL) delete m_L1I;
+      if (m_shared_l1b == NULL) delete m_L1B;
       delete m_ldst_unit;
       delete m_scoreboard;
       delete m_threadState;
@@ -365,6 +370,27 @@ class cgra_core_ctx {
     
     //ldst_unit
     ldst_unit *m_ldst_unit;
+    // Optional cluster-shared L1D pointer (dice_shared_l1d=1). Held here
+    // so create_execution_unit() can forward it into the ldst_unit ctor.
+    // NULL = legacy per-CP-private L1D.
+    class l1_cache *m_shared_l1d;
+    // Optional cluster-shared L1I / L1B pointers (dice_shared_il1 /
+    // dice_shared_l1b). Same semantics: when set, create_front_pipeline()
+    // reuses the pointer instead of allocating.
+    class read_only_cache *m_shared_l1i;
+    class read_only_cache *m_shared_l1b;
+  public:
+    // Returns this CP's ldst_unit's L1D (used by the cluster to capture
+    // CP 0's L1D and hand it to subsequent CPs in shared-L1D mode).
+    class l1_cache *get_ldst_l1d() const;
+    // Same pattern for L1I / L1B sharing.
+    class read_only_cache *get_L1I() const { return m_L1I; }
+    class read_only_cache *get_L1B() const { return m_L1B; }
+    // Phase E bank arbiter peek: does this CP's ldst latency-queue have an
+    // mf waiting at head-of-pipeline for the given L1D bank?
+    bool ldst_l1_slot0_pending(unsigned bank) const;
+    // Owning cluster (so ldst_unit can query the bank winner each cycle).
+    class simt_core_cluster *get_cluster() const { return m_cluster; }
 
     //writeback block commit table
     block_commit_table *m_block_commit_table;
@@ -455,9 +481,12 @@ class exec_cgra_core_ctx : public cgra_core_ctx {
                         unsigned cgra_core_id, unsigned tpc_id,
                         const shader_core_config *config,
                         const memory_config *mem_config,
-                        shader_core_stats *stats)
+                        shader_core_stats *stats,
+                        class l1_cache *shared_l1d = NULL,
+                        class read_only_cache *shared_l1i = NULL,
+                        class read_only_cache *shared_l1b = NULL)
        : cgra_core_ctx(gpu, cluster, cgra_core_id, tpc_id, config, mem_config,
-                         stats) {
+                         stats, shared_l1d, shared_l1i, shared_l1b) {
      create_front_pipeline();
      create_dispatcher();
      create_execution_unit();
@@ -518,7 +547,7 @@ class cta_status_table{
       m_cta_status[hw_cta_id].m_num_live_threads = num_live_threads;
       m_cta_status[hw_cta_id].m_start_thread = start_thread;
       m_cta_status[hw_cta_id].m_end_thread = end_thread;
-      m_cta_status[hw_cta_id].m_cta_size = (num_live_threads % 256) ? 256*(num_live_threads/256+1) : num_live_threads;
+      m_cta_status[hw_cta_id].m_cta_size = (num_live_threads % 128) ? 128*(num_live_threads/128+1) : num_live_threads;
     }
 
     void deactive_cta(unsigned hw_cta_id) {

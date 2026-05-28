@@ -189,7 +189,9 @@ void xbar_router::iSLIP_Advance() {
   unsigned conflict_sub = 0;
   unsigned reqs = 0;
 
-  constexpr unsigned MAX_XBAR_NODES = 256;
+  // Bumped from 256 → 1024 to accommodate A100-class configs
+  // (108 clusters × 4 CPs + 40 mem × 4 sub-partitions ≈ 592 nodes).
+  constexpr unsigned MAX_XBAR_NODES = 1024;
   assert(total_nodes <= MAX_XBAR_NODES);
   bool input_nonempty[MAX_XBAR_NODES];
   for (unsigned i = 0; i < total_nodes; ++i) {

@@ -1419,10 +1419,15 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.s32 = MY_MIN_I(data.s32, src2_data.s32);
           data_ready = true;
           break;
+        case F32_TYPE:
+          // DICE acc-PE native float min.
+          op_result.f32 = (data.f32 < src2_data.f32) ? data.f32 : src2_data.f32;
+          data_ready = true;
+          break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MIN only "
-              "accepts u32 and s32\n");
+              "accepts u32, s32, and f32\n");
           assert(0);
           break;
       }
@@ -1440,10 +1445,16 @@ void atom_callback(const inst_t *inst, ptx_thread_info *thread) {
           op_result.s32 = MY_MAX_I(data.s32, src2_data.s32);
           data_ready = true;
           break;
+        case F32_TYPE:
+          // DICE acc-PE native float max — lets acc.max.f32 reduce floats
+          // directly without the sortable-int encoding hack.
+          op_result.f32 = (data.f32 > src2_data.f32) ? data.f32 : src2_data.f32;
+          data_ready = true;
+          break;
         default:
           printf(
               "Execution error: type mismatch with instruction\natom.MAX only "
-              "accepts u32 and s32\n");
+              "accepts u32, s32, and f32\n");
           assert(0);
           break;
       }

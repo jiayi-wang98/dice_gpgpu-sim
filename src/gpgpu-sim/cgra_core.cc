@@ -49,7 +49,9 @@ const char *mem_stage_stall_type_str(enum mem_stage_stall_type type) {
 
 cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   unsigned cgra_core_id, unsigned tpc_id,const shader_core_config *config,
-  const memory_config *mem_config,shader_core_stats *stats){
+  const memory_config *mem_config,shader_core_stats *stats,
+  l1_cache *shared_l1d, read_only_cache *shared_l1i,
+  read_only_cache *shared_l1b){
   if(g_debug_execution >= 3){
     printf("DICE Sim uArch: create_cgra_core_ctx() id=%d\n", cgra_core_id);
     fflush(stdout);
@@ -69,6 +71,11 @@ cgra_core_ctx::cgra_core_ctx(gpgpu_sim *gpu,simt_core_cluster *cluster,
   m_kernel = NULL;
   m_cgra_core_id = cgra_core_id;
   m_tpc = tpc_id;
+  // Stash the (possibly-NULL) shared L1D/L1I/L1B pointers; downstream
+  // create_*() forwards them so the CP reuses the cluster instance.
+  m_shared_l1d = shared_l1d;
+  m_shared_l1i = shared_l1i;
+  m_shared_l1b = shared_l1b;
 
   m_last_inst_gpu_sim_cycle = 0;
   m_last_inst_gpu_tot_sim_cycle = 0;
@@ -376,7 +383,16 @@ void cgra_core_ctx::set_max_cta(const kernel_info_t &kernel){
   kernel_max_cta_per_shader = m_config->max_cta(kernel);
   unsigned int gpu_cta_size = kernel.threads_per_cta();
   //align to multiples of 256
-  kernel_padded_threads_per_cta = (gpu_cta_size % 256) ? 256 * ((gpu_cta_size / 256) + 1): gpu_cta_size;
+  kernel_padded_threads_per_cta = (gpu_cta_size % 128) ? 128 * ((gpu_cta_size / 128) + 1): gpu_cta_size;
+  // Clamp by padded-thread budget: each hw_cta_id slot consumes
+  // kernel_padded_threads_per_cta thread IDs (not gpu_cta_size). The
+  // scoreboard, m_thread[], and m_threadState[] are sized to
+  // dice_cgra_core_max_threads, so the product slot*padded must fit.
+  unsigned padded_cap = m_config->dice_cgra_core_max_threads /
+                        kernel_padded_threads_per_cta;
+  if (padded_cap == 0) padded_cap = 1;
+  if (kernel_max_cta_per_shader > padded_cap)
+    kernel_max_cta_per_shader = padded_cap;
 }
 
 void cgra_core_ctx::get_icnt_power_stats(long &n_simt_to_mem,
@@ -390,10 +406,13 @@ unsigned cgra_core_ctx::get_dice_trace_sampling_core(){
 }
 
 void cgra_core_ctx::get_cache_stats(cache_stats &cs) {
-  // Adds stats from each cache to 'cs'
-  cs += m_L1I->get_stats();          // Get L1I stats
-  cs += m_L1B->get_stats();         // Get L1B stats
-  m_ldst_unit->get_cache_stats(cs);  // Get L1D, L1C, L1T stats
+  // Adds stats from each cache to 'cs'. When a cache is cluster-shared the
+  // same instance is referenced by all CPs — only the owner (m_shared_*
+  // pointer is NULL on the CP that allocated it) accumulates, otherwise we
+  // would multiply-count the cluster-shared cache across CPs.
+  if (m_shared_l1i == NULL) cs += m_L1I->get_stats();
+  if (m_shared_l1b == NULL) cs += m_L1B->get_stats();
+  m_ldst_unit->get_cache_stats(cs);  // L1D dedup handled in ldst_unit.
 }
 
 float cgra_core_ctx::get_current_occupancy(unsigned long long &active,
@@ -433,8 +452,8 @@ void cgra_core_ctx::issue_block2core(kernel_info_t &kernel){
   // determine hardware threads that will be used for this CTA
   int cta_size = kernel.threads_per_cta();
   int padded_cta_size = cta_size;
-  if (cta_size % 256)
-    padded_cta_size = ((cta_size / 256) + 1) * (256);
+  if (cta_size % 128)
+    padded_cta_size = ((cta_size / 128) + 1) * (128);
 
   unsigned int start_thread, end_thread;
   start_thread = free_cta_hw_id * padded_cta_size; 
@@ -502,8 +521,16 @@ address_type cgra_core_ctx::next_meta_pc(int tid) const {
 }
 
 bool cgra_core_ctx::can_issue_1block(kernel_info_t &kernel) {
-  return (m_active_blocks < m_config->max_cta(kernel));
-  //return (m_active_blocks < 1);//TODO
+  // Mirror the padded-thread cap applied in set_max_cta() so the cluster's
+  // issue loop can't over-allocate hw_cta_ids beyond what the per-CGRA-core
+  // 512-thread scoreboard / m_thread[] can hold.
+  unsigned cta_size = kernel.threads_per_cta();
+  unsigned padded = (cta_size % 128) ? 128 * ((cta_size / 128) + 1) : cta_size;
+  unsigned padded_cap = m_config->dice_cgra_core_max_threads / (padded ? padded : 1);
+  if (padded_cap == 0) padded_cap = 1;
+  unsigned cap = m_config->max_cta(kernel);
+  if (cap > padded_cap) cap = padded_cap;
+  return (m_active_blocks < cap);
 }
 
 void cgra_core_ctx::init_CTA(unsigned cta_id, unsigned start_thread,
@@ -552,10 +579,43 @@ void exec_simt_core_cluster::create_cgra_core_ctx() {
   }
   m_core = NULL;
   m_cgra_core = new cgra_core_ctx *[m_config->n_simt_cores_per_cluster];
+
+  // Shared-cache mode (dice_shared_{l1d,il1,l1b}): CP 0 allocates each
+  // cache as usual (using its own m_icnt for miss-routing). The cluster
+  // captures the pointer post-construction and feeds it to CPs 1..N-1
+  // so they reuse the same instance. When a knob is 0, that cache stays
+  // per-CP private (legacy behaviour). The MSHR demux (access_ready_for /
+  // next_access_for) keeps polling correct under sharing.
+  m_shared_l1d = NULL;
+  m_shared_l1i = NULL;
+  m_shared_l1b = NULL;
+
   for (unsigned i = 0; i < m_config->n_simt_cores_per_cluster; i++) {
     unsigned sid = m_config->cid_to_sid(i, m_cluster_id);
+
+    l1_cache *shared_l1d_for_this_cp =
+        (m_config->dice_shared_l1d && i > 0) ? m_shared_l1d : NULL;
+    read_only_cache *shared_l1i_for_this_cp =
+        (m_config->dice_shared_il1 && i > 0) ? m_shared_l1i : NULL;
+    read_only_cache *shared_l1b_for_this_cp =
+        (m_config->dice_shared_l1b && i > 0) ? m_shared_l1b : NULL;
+
     m_cgra_core[i] = new exec_cgra_core_ctx(m_gpu, this, sid, m_cluster_id,
-                                         m_config, m_mem_config, m_stats);
+                                         m_config, m_mem_config, m_stats,
+                                         shared_l1d_for_this_cp,
+                                         shared_l1i_for_this_cp,
+                                         shared_l1b_for_this_cp);
+
+    // Capture CP 0's caches as the cluster-shared instances.
+    if (i == 0) {
+      if (m_config->dice_shared_l1d)
+        m_shared_l1d = m_cgra_core[0]->get_ldst_l1d();
+      if (m_config->dice_shared_il1)
+        m_shared_l1i = m_cgra_core[0]->get_L1I();
+      if (m_config->dice_shared_l1b)
+        m_shared_l1b = m_cgra_core[0]->get_L1B();
+    }
+
     m_core_sim_order.push_back(i);
   }
 }
@@ -644,16 +704,28 @@ void cgra_core_ctx::create_front_pipeline(){
 
 #define STRSIZE 1024
   char name[STRSIZE];
-  snprintf(name, STRSIZE, "L1I_%03d", m_cgra_core_id);
-  m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_cgra_core_id,
-                              get_shader_instruction_cache_id(), m_icnt,
-                              IN_L1I_MISS_QUEUE);
+  // Shared-cache mode: CP 0 allocates as usual (its m_icnt provides the
+  // memport into the cluster); subsequent CPs reuse the cluster-captured
+  // pointer instead of building their own. Polling on the shared instance
+  // uses access_ready_for / next_access_for so each CP only pops its own
+  // mfs out of the (now-shared) MSHR.
+  if (m_shared_l1i != NULL) {
+    m_L1I = m_shared_l1i;
+  } else {
+    snprintf(name, STRSIZE, "L1I_%03d", m_cgra_core_id);
+    m_L1I = new read_only_cache(name, m_config->m_L1I_config, m_cgra_core_id,
+                                get_shader_instruction_cache_id(), m_icnt,
+                                IN_L1I_MISS_QUEUE);
+  }
 
-  snprintf(name, STRSIZE, "L1B_%03d", m_cgra_core_id);
-  m_L1B = new read_only_cache(name, m_config->m_L1I_config, m_cgra_core_id,
-                              get_shader_instruction_cache_id(), m_icnt,
-                              IN_L1I_MISS_QUEUE);
-  
+  if (m_shared_l1b != NULL) {
+    m_L1B = m_shared_l1b;
+  } else {
+    snprintf(name, STRSIZE, "L1B_%03d", m_cgra_core_id);
+    m_L1B = new read_only_cache(name, m_config->m_L1I_config, m_cgra_core_id,
+                                get_shader_instruction_cache_id(), m_icnt,
+                                IN_L1I_MISS_QUEUE);
+  }
 }
 
 void cgra_core_ctx::create_dispatcher(){
@@ -671,8 +743,20 @@ void cgra_core_ctx::create_execution_unit(){
     fflush(stdout);
   }
   m_cgra_unit = new cgra_unit(m_config, this, &(m_cgra_block_state[DP_CGRA]));
-  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, &(m_cgra_block_state[DP_CGRA]), m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc);
+  m_ldst_unit = new ldst_unit(m_icnt, m_mem_fetch_allocator, this, m_dispatcher_rfu, &(m_cgra_block_state[DP_CGRA]), m_scoreboard ,m_config, m_memory_config, m_stats, m_cgra_core_id, m_tpc, m_shared_l1d);
   m_block_commit_table = new block_commit_table(m_gpu, this);
+}
+
+// Cluster uses this to capture CP 0's L1D (which it allocated as the
+// shared instance when dice_shared_l1d=1) and feed the same pointer to
+// the remaining CPs.
+l1_cache *cgra_core_ctx::get_ldst_l1d() const {
+  return m_ldst_unit ? m_ldst_unit->get_L1D() : NULL;
+}
+
+bool cgra_core_ctx::ldst_l1_slot0_pending(unsigned bank) const {
+  return m_ldst_unit ? m_ldst_unit->l1_latency_queue_slot0_pending(bank)
+                     : false;
 }
 
 //hardware simulation
@@ -760,8 +844,17 @@ void cgra_core_ctx::issue_next_metadata_prefetch(address_type current_addr,
 
 void cgra_core_ctx::fetch_metadata(){
   if (!m_metadata_fetch_buffer.m_valid) { //if there is no metadata in the buffer
-    if (m_L1I->access_ready()) { //if the instruction cache is ready to be accessed (i.e. there are data responses)
-      mem_fetch *mf = m_L1I->next_access(); //get response from the instruction cache
+    // When the L1I is shared across CPs in the cluster, the MSHR holds mfs
+    // from multiple originators; poll only for mfs whose sid matches us.
+    // Drive this off the cluster-wide config — CP 0 (which allocates the
+    // shared instance) sees m_shared_l1i == NULL even though the cache is
+    // shared, so checking the pointer would miss the demux on the owner.
+    bool shared = (m_config->dice_shared_il1 != 0);
+    bool ready = shared ? m_L1I->access_ready_for(m_cgra_core_id)
+                        : m_L1I->access_ready();
+    if (ready) {
+      mem_fetch *mf = shared ? m_L1I->next_access_for(m_cgra_core_id)
+                             : m_L1I->next_access();
       if(m_cgra_block_state[MF_DE]->dummy() || m_cgra_block_state[MF_DE]->get_metadata_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         //Note: it's possible that when addresses dont match but the current one is still a prefetch block from other CTAs.
         //assert(!m_cgra_block_state[MF_DE]->is_prefetch_block());  // Verify that we got the instruction we were expecting.
@@ -975,10 +1068,15 @@ void cgra_core_ctx::register_cta_thread_exit(unsigned cta_num, kernel_info_t *ke
 }
 
 void cgra_core_ctx::get_L1I_sub_stats(struct cache_sub_stats &css) const {
+  // Cluster-shared L1I: only the owner CP reports, otherwise the cluster
+  // aggregation loop would sum the shared counters n_cores_per_cluster
+  // times. Borrowers return zeros.
+  if (m_shared_l1i != NULL) { css.clear(); return; }
   if (m_L1I) m_L1I->get_sub_stats(css);
 }
 
 void cgra_core_ctx::get_L1B_sub_stats(struct cache_sub_stats &css) const {
+  if (m_shared_l1b != NULL) { css.clear(); return; }
   if (m_L1B) m_L1B->get_sub_stats(css);
 }
 
@@ -1113,8 +1211,14 @@ void cgra_core_ctx::issue_next_bitstream_prefetch(address_type current_addr,
 void cgra_core_ctx::fetch_bitstream(){
   if(m_cgra_block_state[MF_DE]->dummy()) return;
   if (!m_bitstream_fetch_buffer.m_valid) { //if there is no bitstream in the buffer
-    if (m_L1B->access_ready()) { //if the bitstream cache is ready to be accessed (i.e. there are data responses)
-      mem_fetch *mf = m_L1B->next_access(); //get response from the instruction cache
+    // Shared-L1B mode: demux the MSHR by originator sid (see fetch_metadata).
+    // Use cluster config rather than the pointer so the owner CP also demuxes.
+    bool shared = (m_config->dice_shared_l1b != 0);
+    bool ready = shared ? m_L1B->access_ready_for(m_cgra_core_id)
+                        : m_L1B->access_ready();
+    if (ready) {
+      mem_fetch *mf = shared ? m_L1B->next_access_for(m_cgra_core_id)
+                             : m_L1B->next_access();
       //when previous kernel mis predict and still have outstanding bitstream fetch request
       if(m_cgra_block_state[MF_DE]->decode_done()==false || m_cgra_block_state[MF_DE]->get_bitstream_pc() !=(mf->get_addr()-PROGRAM_MEM_START)){
         if(g_debug_execution >= 3 && m_cgra_core_id == get_dice_trace_sampling_core()){
@@ -2481,11 +2585,18 @@ void ldst_unit::writeback_cgra(){
         }
         break;
       case 4:
-        if (m_L1D && m_L1D->access_ready()) {
-          mem_fetch *mf = m_L1D->next_access();
-          m_next_cgra_writeback = mf;
-          //delete mf;
-          serviced_client = next_client;
+        if (m_L1D) {
+          // Shared-L1D mode: demux MSHR by originator sid.
+          bool ready = m_dice_shared_l1d
+                           ? m_L1D->access_ready_for(m_cgra_core_id)
+                           : m_L1D->access_ready();
+          if (ready) {
+            mem_fetch *mf = m_dice_shared_l1d
+                                ? m_L1D->next_access_for(m_cgra_core_id)
+                                : m_L1D->next_access();
+            m_next_cgra_writeback = mf;
+            serviced_client = next_client;
+          }
         }
         break;
       default:
@@ -2826,7 +2937,17 @@ mem_stage_stall_type ldst_unit::process_memory_access_queue_l1cache_cgra(l1_cach
 
 void ldst_unit::L1_latency_queue_cycle_cgra() {
   for (int j = 0; j < m_config->m_L1D_config.l1_banks; j++) {
-    if ((l1_latency_queue[j][0]) != NULL) {
+    // Phase E cluster-level L1D bank arbiter: when the L1D is shared, only
+    // the winning CP for this bank gets to submit its slot[0] to L1D this
+    // cycle. Losers leave slot[0] populated; the outer shift below still
+    // advances later stages.
+    bool phase_e_stall = false;
+    if (m_dice_shared_l1d && m_cgra_core && l1_latency_queue[j][0] != NULL &&
+        !m_cgra_core->get_cluster()->is_l1d_bank_winner(m_cgra_core_id,
+                                                       (unsigned)j)) {
+      phase_e_stall = true;
+    }
+    if (!phase_e_stall && (l1_latency_queue[j][0]) != NULL) {
       mem_fetch *mf_next = l1_latency_queue[j][0];
       const std::set<unsigned> &tids = mf_next->get_tids();
       const std::set<unsigned> &writeback_regs = mf_next->get_regs_num();

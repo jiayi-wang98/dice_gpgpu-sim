@@ -1266,7 +1266,8 @@ class ldst_unit : public pipelined_simd_unit {
             cgra_core_ctx *cgra_core, class dispatcher_rfu_t *dispatcher_rfu, class cgra_block_state_t **cgra_block,
             Scoreboard *scoreboard, const shader_core_config *config,
             const memory_config *mem_config, class shader_core_stats *stats,
-            unsigned cgra_core_id, unsigned tpc);
+            unsigned cgra_core_id, unsigned tpc,
+            class l1_cache *shared_l1d = NULL);
 
   // modifiers
   virtual void issue(register_set &inst);
@@ -1347,6 +1348,10 @@ class ldst_unit : public pipelined_simd_unit {
     return m_cgra_core;
   }
 
+  // Used by the cluster to capture CP 0's L1D and share it with the
+  // remaining CPs when dice_shared_l1d=1.
+  class l1_cache *get_L1D() const { return m_L1D; }
+
  protected:
   ldst_unit(mem_fetch_interface *icnt,
             shader_core_mem_fetch_allocator *mf_allocator,
@@ -1414,6 +1419,14 @@ class ldst_unit : public pipelined_simd_unit {
   tex_cache *m_L1T;        // texture cache
   read_only_cache *m_L1C;  // constant cache
   l1_cache *m_L1D;         // data cache
+  // True when this cluster's L1D is shared across the n_cores_per_cluster
+  // CPs (dice_shared_l1d != 0). Drives sid-aware MSHR polling in DICE
+  // writeback_cgra so each CP only pops its own mfs.
+  bool m_dice_shared_l1d;
+  // True for the CP that allocated the (possibly shared) L1D instance.
+  // Borrowers must skip cache_stats accumulation, otherwise the same
+  // counters would be summed n_cores_per_cluster times.
+  bool m_l1d_owner;
   std::map<unsigned /*warp_id*/,
            std::map<unsigned /*regnum*/, unsigned /*count*/>>
       m_pending_writes;
@@ -1454,6 +1467,15 @@ class ldst_unit : public pipelined_simd_unit {
   std::vector<std::vector<mem_fetch *>> l1_latency_queue;
   void L1_latency_queue_cycle();
   void L1_latency_queue_cycle_cgra();
+ public:
+  // For cluster-level L1D bank arbitration (Phase E): the cluster peeks at
+  // each CP's head-of-latency-queue per bank to pick a winner, then only
+  // the winning CP issues an m_L1D->access for that bank this cycle.
+  bool l1_latency_queue_slot0_pending(unsigned bank) const {
+    if (bank >= l1_latency_queue.size()) return false;
+    if (l1_latency_queue[bank].empty()) return false;
+    return l1_latency_queue[bank][0] != NULL;
+  }
 };
 
 enum pipeline_stage_name_t {
@@ -1709,6 +1731,19 @@ class shader_core_config : public core_config {
   bool perfect_bitstream_cache;
   int dice_enable_metadata_prefetcher;
   int dice_enable_bitstream_prefetcher;
+
+  // When set to 1, the 4 CPs in each CGRA cluster share a single L1D
+  // (matching the per-SM L1 sharing in a real GPU); the cluster allocates
+  // one l1_cache and hands the pointer to each CP's ldst_unit. When 0
+  // (default), each CP allocates its own private L1D — DICE's legacy
+  // behaviour. See doc/shared_l1d_plan.md.
+  unsigned dice_shared_l1d;
+  // Cluster-level sharing of L1I (instruction-metadata cache) and L1B
+  // (bitstream cache). Same pattern as dice_shared_l1d: CP 0 allocates,
+  // cluster captures pointer and feeds remaining CPs. MSHR polling on
+  // any shared cache uses the per-CP demux (access_ready_for/next_access_for).
+  unsigned dice_shared_il1;
+  unsigned dice_shared_l1b;
 };
 
 struct shader_core_stats_pod {
@@ -2480,6 +2515,21 @@ class simt_core_cluster {
     m_response_fifo.push_back(mf);
   }
 
+  // Phase E: cluster-level L1D bank arbiter (only active when
+  // dice_shared_l1d). Once per cluster cycle, walks each of the shared
+  // L1D's banks round-robin across CPs and picks the one whose ldst
+  // latency-queue head is pending for that bank. Losers stall their
+  // L1_latency_queue_cycle_cgra's slot[0] submission for one cycle.
+  void pick_l1d_bank_winners();
+  // sid is the global cgra_core_id; the arbiter stores LOCAL CP indices
+  // (0 .. n_cores_per_cluster-1), so map sid → local cid before comparing.
+  bool is_l1d_bank_winner(unsigned sid, unsigned bank) const {
+    if (!m_config->dice_shared_l1d) return true;
+    if (bank >= m_l1d_bank_winner.size()) return true;
+    unsigned local_cp = m_config->sid_to_cid(sid);
+    return m_l1d_bank_winner[bank] == local_cp;
+  }
+
   void get_pdom_stack_top_info(unsigned sid, unsigned tid, unsigned *pc,
                                unsigned *rpc) const;
   unsigned max_cta(const kernel_info_t &kernel);
@@ -2521,6 +2571,21 @@ class simt_core_cluster {
   unsigned m_cta_issue_next_core;
   std::list<unsigned> m_core_sim_order;
   std::list<mem_fetch *> m_response_fifo;
+
+  // Shared-cache instances captured from CP 0 after construction (NULL
+  // when the corresponding dice_shared_* knob is 0). CPs 1..N-1 receive
+  // these pointers and reuse them instead of allocating their own.
+  class l1_cache *m_shared_l1d;
+  class read_only_cache *m_shared_l1i;
+  class read_only_cache *m_shared_l1b;
+
+  // Phase E: per-bank L1D arbiter state. m_l1d_bank_winner is the CP id
+  // (or unsigned(-1) if none) that gets to issue an m_L1D->access on bank
+  // b THIS cycle. m_last_l1d_bank_owner persists across cycles so we walk
+  // CPs round-robin from (last+1) % N. Sized to m_L1D_config.l1_banks
+  // when shared mode is enabled.
+  std::vector<unsigned> m_l1d_bank_winner;
+  std::vector<unsigned> m_last_l1d_bank_owner;
 };
 
 class exec_simt_core_cluster : public simt_core_cluster {

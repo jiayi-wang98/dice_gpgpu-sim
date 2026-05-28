@@ -576,6 +576,42 @@ mem_fetch *mshr_table::next_access() {
   return result;
 }
 
+bool mshr_table::access_ready_for(unsigned sid) const {
+  for (std::list<new_addr_type>::const_iterator it = m_current_response.begin();
+       it != m_current_response.end(); ++it) {
+    table::const_iterator a = m_data.find(*it);
+    if (a == m_data.end()) continue;
+    for (std::list<mem_fetch *>::const_iterator mit = a->second.m_list.begin();
+         mit != a->second.m_list.end(); ++mit) {
+      if (*mit && (*mit)->get_sid() == sid) return true;
+    }
+  }
+  return false;
+}
+
+mem_fetch *mshr_table::next_access_for(unsigned sid) {
+  for (std::list<new_addr_type>::iterator it = m_current_response.begin();
+       it != m_current_response.end(); ++it) {
+    new_addr_type block_addr = *it;
+    table::iterator a = m_data.find(block_addr);
+    if (a == m_data.end()) continue;
+    std::list<mem_fetch *> &mlist = a->second.m_list;
+    for (std::list<mem_fetch *>::iterator mit = mlist.begin();
+         mit != mlist.end(); ++mit) {
+      if (*mit && (*mit)->get_sid() == sid) {
+        mem_fetch *result = *mit;
+        mlist.erase(mit);
+        if (mlist.empty()) {
+          m_data.erase(block_addr);
+          m_current_response.erase(it);
+        }
+        return result;
+      }
+    }
+  }
+  return NULL;
+}
+
 void mshr_table::display(FILE *fp) const {
   fprintf(fp, "MSHR contents\n");
   for (table::const_iterator e = m_data.begin(); e != m_data.end(); ++e) {

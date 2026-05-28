@@ -284,6 +284,26 @@ void shader_core_config::reg_options(class OptionParser *opp) {
     "DICE thread unrolling support","1");
 
   option_parser_register(
+    opp, "-dice_shared_l1d", OPT_UINT32,
+    &dice_shared_l1d,
+    "Share one L1D across the n_cores_per_cluster CPs of a CGRA cluster "
+    "(1=shared per-cluster, 0=per-CP private L1D legacy DICE behaviour). "
+    "When 1, the cluster's `gpgpu_cache:dl1` and `gpgpu_l1_banks` are "
+    "interpreted as the per-cluster L1, not per-CP.","0");
+  option_parser_register(
+    opp, "-dice_shared_il1", OPT_UINT32,
+    &dice_shared_il1,
+    "Share one L1I (instruction/metadata cache) across the CPs of a "
+    "CGRA cluster (1=shared, 0=per-CP private). When 1, `gpgpu_cache:il1` "
+    "is interpreted as per-cluster.","0");
+  option_parser_register(
+    opp, "-dice_shared_l1b", OPT_UINT32,
+    &dice_shared_l1b,
+    "Share one L1B (bitstream cache) across the CPs of a CGRA cluster "
+    "(1=shared, 0=per-CP private). The bitstream cache uses the same "
+    "geometry as `gpgpu_cache:il1`.","0");
+
+  option_parser_register(
     opp, "-dice_cgra_core_num_ld_ports", OPT_UINT32,
     &dice_cgra_core_num_ld_ports,
     "DICE cgra core LDST unit number of load ports, i.e.,","1,2,4,8,16");

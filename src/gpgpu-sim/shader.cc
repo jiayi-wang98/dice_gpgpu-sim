@@ -1791,13 +1791,18 @@ void ldst_unit::print_cache_stats(FILE *fp, unsigned &dl1_accesses,
 }
 
 void ldst_unit::get_cache_stats(cache_stats &cs) {
-  // Adds stats to 'cs' from each cache
-  if (m_L1D) cs += m_L1D->get_stats();
+  // Adds stats to 'cs' from each cache. The L1D may be cluster-shared
+  // (DICE shared_l1d mode); in that case only the owner CP accumulates,
+  // otherwise the shared counters would be summed once per CP in the
+  // cluster. L1C/L1T are always per-CP.
+  if (m_L1D && m_l1d_owner) cs += m_L1D->get_stats();
   if (m_L1C) cs += m_L1C->get_stats();
   if (m_L1T) cs += m_L1T->get_stats();
 }
 
 void ldst_unit::get_L1D_sub_stats(struct cache_sub_stats &css) const {
+  // Cluster-shared L1D: only the owner CP reports (see get_cache_stats).
+  if (!m_l1d_owner) { css.clear(); return; }
   if (m_L1D) m_L1D->get_sub_stats(css);
 }
 void ldst_unit::get_L1C_sub_stats(struct cache_sub_stats &css) const {
@@ -2464,6 +2469,8 @@ void ldst_unit::init(mem_fetch_interface *icnt,
                               get_shader_constant_cache_id(), icnt,
                               IN_L1C_MISS_QUEUE);
   m_L1D = NULL;
+  m_dice_shared_l1d = false;
+  m_l1d_owner = true;
   m_mem_rc = NO_RC_FAIL;
   m_num_writeback_clients =
       5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
@@ -2504,6 +2511,8 @@ void ldst_unit::init_cgra(mem_fetch_interface *icnt,
              get_shader_constant_cache_id(), icnt,
              IN_L1C_MISS_QUEUE);
   m_L1D = NULL;
+  m_dice_shared_l1d = false;
+  m_l1d_owner = true;
   m_mem_rc = NO_RC_FAIL;
   m_num_writeback_clients =
   5;  // = shared memory, global/local (uncached), L1D, L1T, L1C
@@ -2550,17 +2559,37 @@ ldst_unit::ldst_unit(mem_fetch_interface *icnt,
                      cgra_core_ctx *cgra_core, dispatcher_rfu_t *dispatcher_rfu, cgra_block_state_t **cgra_block,
                      Scoreboard *scoreboard, const shader_core_config *config,
                      const memory_config *mem_config, shader_core_stats *stats,
-                     unsigned cgra_core_id, unsigned tpc)
+                     unsigned cgra_core_id, unsigned tpc,
+                     l1_cache *shared_l1d)
       : pipelined_simd_unit(NULL, config, config->smem_latency, m_cgra_core) {
   assert(config->smem_latency > 1);
   init_cgra(icnt, mf_allocator, cgra_core, dispatcher_rfu, cgra_block, scoreboard, config,
        mem_config, stats,cgra_core_id, tpc);
+  // m_dice_shared_l1d means "this cluster's L1D is shared", which is true
+  // on ALL CPs in the cluster when the knob is set — including the owner
+  // (CP 0). Don't infer it from `shared_l1d != NULL`: CP 0 receives NULL
+  // because it allocates the instance itself, but still needs the sid-aware
+  // MSHR polling. Read the cluster-wide config instead.
+  m_dice_shared_l1d = (config->dice_shared_l1d != 0);
+  // The CP that allocates the L1D (receives shared_l1d == NULL) is the
+  // owner; borrowers must skip cache_stats accumulation to avoid double-
+  // counting the shared instance across all n_cores_per_cluster CPs.
+  m_l1d_owner = (shared_l1d == NULL);
   if (!m_config->m_L1D_config.disabled()) {
-    char L1D_name[STRSIZE];
-    snprintf(L1D_name, STRSIZE, "L1D_%03d", cgra_core_id);
-    m_L1D = new l1_cache(L1D_name, m_config->m_L1D_config, cgra_core_id,
-                         get_shader_normal_cache_id(), m_icnt, m_mf_allocator,
-                         IN_L1D_MISS_QUEUE, cgra_core->get_gpu());
+    if (shared_l1d != NULL) {
+      // dice_shared_l1d=1: cluster has pre-allocated one shared L1D for all
+      // CPs in the cluster. Reuse the pointer; per-CP l1_latency_queue
+      // stays local. Polls into the shared MSHR use sid-aware demux
+      // (access_ready_for / next_access_for in writeback_cgra) so each
+      // CP only pops its own mfs out of the now-shared ready list.
+      m_L1D = shared_l1d;
+    } else {
+      char L1D_name[STRSIZE];
+      snprintf(L1D_name, STRSIZE, "L1D_%03d", cgra_core_id);
+      m_L1D = new l1_cache(L1D_name, m_config->m_L1D_config, cgra_core_id,
+                           get_shader_normal_cache_id(), m_icnt, m_mf_allocator,
+                           IN_L1D_MISS_QUEUE, cgra_core->get_gpu());
+    }
 
     l1_latency_queue.resize(m_config->m_L1D_config.l1_banks);
     assert(m_config->m_L1D_config.l1_latency > 0);
@@ -4346,9 +4375,16 @@ simt_core_cluster::simt_core_cluster(class gpgpu_sim *gpu, unsigned cluster_id,
   m_stats = stats;
   m_memory_stats = mstats;
   m_mem_config = mem_config;
+  m_shared_l1d = NULL;
+  m_shared_l1i = NULL;
+  m_shared_l1b = NULL;
 }
 
 void simt_core_cluster::core_cycle() {
+  // Phase E: in shared-L1D mode, decide which CP wins each L1D bank for
+  // this cycle BEFORE the CPs run their cycles. Each CP's L1_latency
+  // queue head will be gated on this arbitration result.
+  pick_l1d_bank_winners();
   for (std::list<unsigned>::iterator it = m_core_sim_order.begin();
        it != m_core_sim_order.end(); ++it) {
     //DICE-support
@@ -4366,6 +4402,7 @@ void simt_core_cluster::core_cycle() {
 }
 
 void simt_core_cluster::cgra_cycle() {
+  pick_l1d_bank_winners();
   for (std::list<unsigned>::iterator it = m_core_sim_order.begin();
        it != m_core_sim_order.end(); ++it) {
     m_cgra_core[*it]->cycle();
@@ -4374,6 +4411,28 @@ void simt_core_cluster::cgra_cycle() {
   if (m_config->simt_core_sim_order == 1) {
     m_core_sim_order.splice(m_core_sim_order.end(), m_core_sim_order,
                             m_core_sim_order.begin());
+  }
+}
+
+void simt_core_cluster::pick_l1d_bank_winners() {
+  if (!m_config->dice_shared_l1d) return;
+  if (!m_gpu->gpgpu_ctx->g_dice_enabled) return;
+  unsigned n_banks = m_config->m_L1D_config.l1_banks;
+  unsigned n_cps = m_config->n_simt_cores_per_cluster;
+  if (m_l1d_bank_winner.size() != n_banks) {
+    m_l1d_bank_winner.assign(n_banks, unsigned(-1));
+    m_last_l1d_bank_owner.assign(n_banks, n_cps - 1);
+  }
+  for (unsigned b = 0; b < n_banks; b++) {
+    m_l1d_bank_winner[b] = unsigned(-1);
+    for (unsigned step = 0; step < n_cps; step++) {
+      unsigned cp = (m_last_l1d_bank_owner[b] + 1 + step) % n_cps;
+      if (m_cgra_core[cp] && m_cgra_core[cp]->ldst_l1_slot0_pending(b)) {
+        m_l1d_bank_winner[b] = cp;
+        m_last_l1d_bank_owner[b] = cp;
+        break;
+      }
+    }
   }
 }
 

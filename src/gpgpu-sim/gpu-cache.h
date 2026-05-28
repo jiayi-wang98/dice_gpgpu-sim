@@ -656,6 +656,14 @@ class cache_config {
       case 'L':
         m_set_index_function = LINEAR_SET_FUNCTION;
         break;
+      case 'X':
+        // BITWISE_XORING_FUNCTION: ported parser dispatch from upstream
+        // gpgpu-sim to support Ampere/A100 L2 configs (cfg uses `X`).
+        // The enum value, hashing function (bitwise_hash_function in
+        // hashing.cc), and dispatch case in gpu-cache.cc were already
+        // present in this DICE fork — only the parser case was missing.
+        m_set_index_function = BITWISE_XORING_FUNCTION;
+        break;
       default:
         exit_parse_error();
     }
@@ -911,6 +919,12 @@ class mshr_table {
   bool access_ready() const { return !m_current_response.empty(); }
   /// Returns next ready access
   mem_fetch *next_access();
+  // DICE shared-L1: per-CP demux. Walk ready responses and return only mfs
+  // whose mem_fetch::get_sid() matches `sid`. Needed when multiple CPs share
+  // one cache instance, because the global FIFO ordering can otherwise hand
+  // CP B an mf that belongs to CP A.
+  bool access_ready_for(unsigned sid) const;
+  mem_fetch *next_access_for(unsigned sid);
   void display(FILE *fp) const;
   // Returns true if there is a pending read after write
   bool is_read_after_write_pending(new_addr_type block_addr);
@@ -1175,6 +1189,13 @@ class baseline_cache : public cache_t {
   bool access_ready() const { return m_mshrs.access_ready(); }
   /// Pop next ready access (does not include accesses that "HIT")
   mem_fetch *next_access() { return m_mshrs.next_access(); }
+  // Per-CP demux for shared caches (see mshr_table comment above).
+  bool access_ready_for(unsigned sid) const {
+    return m_mshrs.access_ready_for(sid);
+  }
+  mem_fetch *next_access_for(unsigned sid) {
+    return m_mshrs.next_access_for(sid);
+  }
   // flash invalidate all entries in cache
   void flush() { m_tag_array->flush(); }
   void invalidate() { m_tag_array->invalidate(); }
