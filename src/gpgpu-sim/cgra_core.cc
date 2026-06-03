@@ -261,7 +261,7 @@ void cgra_core_ctx::execute_bmma_collective(cgra_block_state_t* cgra_block, unsi
   unsigned cta_start = get_cta_start_tid(cta_id);
   ptx_thread_info* rep = m_thread[cta_start];   // representative for scalar operands
 
-  const operand_info& accop = bmma->operand_lookup(0);
+  dice_metadata* metadata = cfg_block->get_metadata();
   // read a source operand as u32 — register value or immediate literal
   auto rdval = [&](unsigned idx)->unsigned {
     const operand_info& op = bmma->operand_lookup(idx);
@@ -275,25 +275,40 @@ void cgra_core_ctx::execute_bmma_collective(cgra_block_state_t* cgra_block, unsi
   unsigned M     = rdval(5);
   unsigned N     = rdval(6);
   unsigned K     = rdval(7);
-  const symbol* accsym = accop.get_symbol();
   memory_space* smem = rep->m_shared_mem;
 
-  for(unsigned i=0;i<M;i++){
-    for(unsigned j=0;j<N;j++){
-      unsigned owner_local = i*N + j;
-      if(!cfg_block->active(owner_local)) continue;
-      float acc = 0.0f;
-      for(unsigned k=0;k<K;k++){
-        unsigned short ra=0, rb=0;
-        smem->read(baseA + (addr_t)(i*lda + k)*2, 2, &ra);
-        smem->read(baseB + (addr_t)(k*ldb + j)*2, 2, &rb);
-        acc += dice_half_bits_to_float(ra) * dice_half_bits_to_float(rb);
-      }
-      unsigned owner = cta_start + owner_local;
-      ptx_reg_t c = m_thread[owner]->get_reg(accsym);
-      ptx_reg_t d; d.f32 = c.f32 + acc;
-      m_thread[owner]->set_reg(accsym, d);
+  // Accumulator register block: out_regs lists R registers per thread (each both
+  // C-in and D-out, in place). Output element elem = i*N + j is owned by thread
+  // (elem % BLOCK) in accumulator register out_regs[elem / BLOCK], where
+  // BLOCK = M*N / R. R=1 is the one-element-per-thread case; R>1 lets one CTA
+  // own an output tile larger than its thread count (e.g. m64n64 on 256 threads
+  // -> R=16). The .pptx epilogue must store with the matching layout: thread t's
+  // register r -> global element (r*BLOCK + t).
+  std::vector<const symbol*> accsyms;
+  for(std::list<operand_info>::iterator it = metadata->out_regs.begin();
+      it != metadata->out_regs.end(); ++it)
+    accsyms.push_back((*it).get_symbol());
+  unsigned R = accsyms.empty() ? 1 : (unsigned)accsyms.size();
+  unsigned MN = M*N;
+  assert((R == 1 || (MN % R) == 0) && "bmma: M*N must be divisible by #accumulator regs");
+  unsigned BLOCK = MN / R;
+  for(unsigned elem=0; elem<MN; elem++){
+    unsigned i = elem / N, j = elem % N;
+    float acc = 0.0f;
+    for(unsigned k=0;k<K;k++){
+      unsigned short ra=0, rb=0;
+      smem->read(baseA + (addr_t)(i*lda + k)*2, 2, &ra);
+      smem->read(baseB + (addr_t)(k*ldb + j)*2, 2, &rb);
+      acc += dice_half_bits_to_float(ra) * dice_half_bits_to_float(rb);
     }
+    unsigned t = elem % BLOCK;        // owner thread (CTA-local)
+    unsigned r = elem / BLOCK;        // accumulator register index
+    if(!cfg_block->active(t)) continue;
+    const symbol* reg = (R == 1) ? bmma->operand_lookup(0).get_symbol() : accsyms[r];
+    ptx_thread_info* ot = m_thread[cta_start + t];
+    ptx_reg_t c = ot->get_reg(reg);
+    ptx_reg_t d; d.f32 = c.f32 + acc;
+    ot->set_reg(reg, d);
   }
   // Advance each active thread's metadata PC and update completion, mirroring
   // the parameter_load collective path. dice_exec_block runs the (no-op) bmma
