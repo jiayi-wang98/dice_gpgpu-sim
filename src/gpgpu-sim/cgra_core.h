@@ -765,6 +765,7 @@ class fetch_scheduler{
      bool decode_done() const { return m_decoded; }
 
      bool is_parameter_load();
+     bool is_mma();  // DBB is a block-MMA (bmma) tensor-core op
 
      bool barrier_reached();
 

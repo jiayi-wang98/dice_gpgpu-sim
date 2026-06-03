@@ -35,6 +35,7 @@ class dice_metadata {
       is_ret = false;
       is_entry = false;
       is_parameter_load = false;
+      is_mma = false;
       barrier = false;
       m_dicemeta_mem_index = 0;
       m_PC = 0;
@@ -84,6 +85,7 @@ class dice_metadata {
     bool is_ret;
     bool is_entry;
     bool is_parameter_load;
+    bool is_mma;  // DBB is a block-MMA (bmma) tensor-core op; routes to the TCU
     dice_block_t *dice_block;
 
     unsigned m_dicemeta_mem_index;
@@ -157,6 +159,9 @@ class dice_metadata_parser {
   }
   void set_is_parameter_load(){
     g_current_dbb->is_parameter_load = true;
+  }
+  void set_is_mma(){
+    g_current_dbb->is_mma = true;
   }
   void set_bitstream_label(const char* label){
     g_current_dbb->bitstream_label = std::string(label);

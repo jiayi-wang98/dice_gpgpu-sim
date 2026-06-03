@@ -68,6 +68,7 @@ and	TC; yylval->int_value = AND_OP; return OPCODE;
 andn	TC; yylval->int_value = ANDN_OP; return OPCODE;
 atom	TC; yylval->int_value = ATOM_OP; return OPCODE;
 acc	TC; yylval->int_value = ATOM_OP; return OPCODE;
+bmma	TC; yylval->int_value = BMMA_OP; return OPCODE;
 bar.warp 	TC; yylval->int_value = NOP_OP; return OPCODE;
 bar 	TC; yylval->int_value = BAR_OP; return OPCODE;
 bfe     TC; yylval->int_value = BFE_OP; return OPCODE;

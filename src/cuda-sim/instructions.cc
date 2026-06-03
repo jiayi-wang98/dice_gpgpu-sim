@@ -1919,6 +1919,14 @@ void mapping(int thread, int wmma_type, int wmma_layout, int type, int index,
   }
 }
 
+// DICE block-MMA (bmma): the matrix multiply is CTA-collective and is computed
+// once in cgra_core (cgra_core_ctx::execute_bmma_collective), not per-thread.
+// This per-thread entry exists only so the opcode dispatches cleanly; it is a
+// no-op. Operand format: bmma %acc, [%rA], %lda, [%rB], %ldb, M, N, K;
+void bmma_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  // intentionally empty — see cgra_core.cc collective MMA execution
+}
+
 void mma_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   int i, j, k, thrd;
   int row, col, offset;

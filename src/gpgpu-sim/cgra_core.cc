@@ -1108,6 +1108,10 @@ bool cgra_block_state_t::is_parameter_load(){
   return get_current_metadata()->is_parameter_load;
 }
 
+bool cgra_block_state_t::is_mma(){
+  return get_current_metadata()->is_mma;
+}
+
 unsigned cgra_block_state_t::get_unrolling_factor(){
   unsigned unrolling_factor = get_current_metadata()->unrolling_factor;
   if(m_cgra_core->get_config()->dice_enable_unrolling!=1) {
@@ -1566,7 +1570,7 @@ void cgra_core_ctx::cgra_execute_block(){
   if(m_cgra_block_state[DP_CGRA]->dispatch_done()) {
     //set total number of execute
     unsigned cta_id = m_cgra_block_state[DP_CGRA]->get_cta_id();
-    unsigned total_need_exec = m_cgra_block_state[DP_CGRA]->is_parameter_load()? 1 : m_cgra_block_state[DP_CGRA]->active_count();
+    unsigned total_need_exec = (m_cgra_block_state[DP_CGRA]->is_parameter_load() || m_cgra_block_state[DP_CGRA]->is_mma())? 1 : m_cgra_block_state[DP_CGRA]->active_count();
     //printf("DICE Sim uArch [CGRA_EXECU_START]: Cycle %d, hw_cta=%d, Block=%d, total need exec=%d\n",m_gpu->gpu_sim_cycle+m_gpu->gpu_tot_sim_cycle, cta_id,m_cgra_block_state[DP_CGRA]->get_current_metadata()->meta_id, total_need_exec);
     //printf("m_cgra_unit->get_num_executed_thread() = %d\n", m_cgra_unit->get_num_executed_thread());
     if((m_cgra_unit->get_num_executed_thread()==total_need_exec) && !m_cgra_block_state[DP_CGRA]->cgra_fabric_done()){
@@ -1999,8 +2003,8 @@ void dispatcher_rfu_t::dispatch(){
     //unsigned max_coalesce = m_cgra_core->get_config()->dice_ldst_unit_temporal_coalescing_interval;
     unsigned max_coalesce = 32;
     //number of dispatch, if parameter load, just dispatch 1 thread.
-    unsigned total_need_dispatch = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->active_count();
-    unsigned unrolling_factor = (*m_dispatching_block)->is_parameter_load()? 1:(*m_dispatching_block)->get_unrolling_factor();
+    unsigned total_need_dispatch = ((*m_dispatching_block)->is_parameter_load() || (*m_dispatching_block)->is_mma())? 1:(*m_dispatching_block)->active_count();
+    unsigned unrolling_factor = ((*m_dispatching_block)->is_parameter_load() || (*m_dispatching_block)->is_mma())? 1:(*m_dispatching_block)->get_unrolling_factor();
     //calculating current dispatched thread count
     unsigned real_dispatched_count = get_actual_dispatched_count();
     if(real_dispatched_count < total_need_dispatch){

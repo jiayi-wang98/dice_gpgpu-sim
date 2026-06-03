@@ -160,6 +160,7 @@ void dice_metadata::dump(){
   printf("Is Ret: %d\n", is_ret);
   printf("Is Entry: %d\n", is_entry);
   printf("Is_parameter_load: %d\n", is_parameter_load);
+  printf("Is_mma: %d\n", is_mma);
   printf("\n\n");
   fflush(stdout);
 }
