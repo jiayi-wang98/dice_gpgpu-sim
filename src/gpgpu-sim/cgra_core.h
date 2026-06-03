@@ -116,6 +116,7 @@ class cgra_core_ctx {
     void execute_CFGBlock(cgra_block_state_t* cfg_block);
     void dicewattch_count_ops(cgra_block_state_t* cgra_block);
     void execute_1thread_CFGBlock(cgra_block_state_t* cgra_block,unsigned tid, unsigned lane_id);
+    void execute_bmma_collective(cgra_block_state_t* cgra_block, unsigned tid);
     void checkExecutionStatusAndUpdate(cgra_block_state_t* cfg_block, unsigned tid);
 
     //hardware simulation

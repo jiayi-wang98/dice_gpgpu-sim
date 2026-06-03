@@ -216,9 +216,106 @@ bool cgra_core_ctx::ldst_unit_response_buffer_full() const{
   return m_ldst_unit->response_buffer_full();
 }
 
+// IEEE-754 binary16 (half) bit pattern -> float. Self-contained (no fp16
+// header dependency). Normal + zero are exact; subnormals best-effort (the
+// MMA test inputs are normal-range).
+static float dice_half_bits_to_float(unsigned short h){
+  unsigned sign = (unsigned)(h >> 15) & 0x1u;
+  unsigned exp  = (unsigned)(h >> 10) & 0x1fu;
+  unsigned mant = (unsigned)h & 0x3ffu;
+  unsigned f;
+  if(exp == 0){
+    if(mant == 0){ f = sign << 31; }
+    else {
+      int e = 0;
+      while((mant & 0x400u) == 0){ mant <<= 1; e++; }
+      mant &= 0x3ffu;
+      f = (sign<<31) | (((unsigned)(127 - 15 - e))<<23) | (mant<<13);
+    }
+  } else if(exp == 0x1fu){
+    f = (sign<<31) | (0xffu<<23) | (mant<<13);
+  } else {
+    f = (sign<<31) | ((exp - 15 + 127)<<23) | (mant<<13);
+  }
+  union { unsigned u; float fl; } cvt; cvt.u = f; return cvt.fl;
+}
+
+// CTA-collective block-MMA (bmma). The whole CTA performs one D = A.B + C:
+//   A[M x K], B[K x N]  : row-major fp16 tiles in shared memory (SMEM base
+//                         addresses in regs %rA/%rB, leading dims lda/ldb)
+//   C, D                : fp32 accumulator in the per-thread RF; output element
+//                         D[i][j] is owned by CTA-local thread (i*N + j) in the
+//                         %acc register named by the instruction (C in / D out).
+// Computed once per CTA (dispatch/exec are dispatched-once like parameter_load).
+// Operand order: bmma %acc, %rA, %rB, lda, ldb, M, N, K;
+void cgra_core_ctx::execute_bmma_collective(cgra_block_state_t* cgra_block, unsigned tid) {
+  dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
+  ptx_instruction* bmma = NULL;
+  std::vector<ptx_instruction*>& insns = cfg_block->get_diceblock()->ptx_instructions;
+  for(unsigned i=0;i<insns.size();i++){
+    if(insns[i]->get_opcode() == BMMA_OP){ bmma = insns[i]; break; }
+  }
+  assert(bmma && "is_mma DBB contains no bmma instruction");
+
+  unsigned cta_id    = cgra_block->get_cta_id();
+  unsigned cta_start = get_cta_start_tid(cta_id);
+  ptx_thread_info* rep = m_thread[cta_start];   // representative for scalar operands
+
+  const operand_info& accop = bmma->operand_lookup(0);
+  // read a source operand as u32 — register value or immediate literal
+  auto rdval = [&](unsigned idx)->unsigned {
+    const operand_info& op = bmma->operand_lookup(idx);
+    if(op.is_literal()) return op.get_literal_value().u32;
+    return rep->get_reg(op.get_symbol()).u32;
+  };
+  addr_t   baseA = rdval(1);   // A SMEM base (byte offset)
+  addr_t   baseB = rdval(2);   // B SMEM base
+  unsigned lda   = rdval(3);
+  unsigned ldb   = rdval(4);
+  unsigned M     = rdval(5);
+  unsigned N     = rdval(6);
+  unsigned K     = rdval(7);
+  const symbol* accsym = accop.get_symbol();
+  memory_space* smem = rep->m_shared_mem;
+
+  for(unsigned i=0;i<M;i++){
+    for(unsigned j=0;j<N;j++){
+      unsigned owner_local = i*N + j;
+      if(!cfg_block->active(owner_local)) continue;
+      float acc = 0.0f;
+      for(unsigned k=0;k<K;k++){
+        unsigned short ra=0, rb=0;
+        smem->read(baseA + (addr_t)(i*lda + k)*2, 2, &ra);
+        smem->read(baseB + (addr_t)(k*ldb + j)*2, 2, &rb);
+        acc += dice_half_bits_to_float(ra) * dice_half_bits_to_float(rb);
+      }
+      unsigned owner = cta_start + owner_local;
+      ptx_reg_t c = m_thread[owner]->get_reg(accsym);
+      ptx_reg_t d; d.f32 = c.f32 + acc;
+      m_thread[owner]->set_reg(accsym, d);
+    }
+  }
+  // Advance each active thread's metadata PC and update completion, mirroring
+  // the parameter_load collective path. dice_exec_block runs the (no-op) bmma
+  // per thread and, crucially, calls set_next_meta_pc — without it the thread
+  // metadata_pc never advances past this DBB and the functional/timing PC-sync
+  // assert fires on the next block. (The matmul above already wrote %acc; the
+  // no-op bmma_impl leaves it untouched.)
+  for(unsigned t=0;t<m_kernel_block_size;t++){
+    if(cfg_block->active(t)){
+      m_thread[t+cta_start]->dice_exec_block(cfg_block, t);
+      checkExecutionStatusAndUpdate(cgra_block, t+cta_start);
+    }
+  }
+}
+
 void cgra_core_ctx::execute_1thread_CFGBlock(cgra_block_state_t* cgra_block, unsigned tid, unsigned lane_id) {
   dice_cfg_block_t* cfg_block = cgra_block->get_current_cfg_block();
   unsigned unrolling_factor = cgra_block->get_unrolling_factor();
+  if(cgra_block->is_mma()){
+    execute_bmma_collective(cgra_block, tid);
+    return;
+  }
   if(cgra_block->is_parameter_load()){
     for (unsigned t = 0; t < m_kernel_block_size; t++) {
       unsigned core_tid=t+get_cta_start_tid(cgra_block->get_cta_id());
@@ -2113,7 +2210,7 @@ void dispatcher_rfu_t::dispatch(){
             actual_dispatch_count++;
             core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
             read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
-            if((*m_dispatching_block)->is_parameter_load()){
+            if((*m_dispatching_block)->is_parameter_load() || (*m_dispatching_block)->is_mma()){
               //check active mask
               unsigned cta_id = (*m_dispatching_block)->get_cta_id();
               for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
@@ -2200,6 +2297,30 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
   //check each output register in the metadata
   dice_metadata* metadata = block->get_current_metadata();
   unsigned num_writeback = 0;
+  if(block->is_mma()){
+    // Collective block-MMA: the accumulator (out_regs) was reserved for every
+    // active thread at dispatch (see dispatch()), and the matmul wrote each
+    // owner thread's RF in execute_bmma_collective(). This is called once for
+    // the block; release + writeback the accumulator across all active threads.
+    unsigned cta_id    = block->get_cta_id();
+    unsigned cta_start = m_cgra_core->get_cta_start_tid(cta_id);
+    for(std::list<operand_info>::iterator it = metadata->out_regs.begin(); it != metadata->out_regs.end(); ++it){
+      unsigned reg_num = (*it).reg_num();
+      for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
+        if(!block->active(t)) continue;
+        unsigned core_tid = t + cta_start;
+        unsigned bank_id = reg_number_to_bank_mapping(reg_num, core_tid, 32);
+        if(bank_id < 32 && !m_rf_bank_controller[bank_id]->wb_buffer_full()){
+          m_rf_bank_controller[bank_id]->push_to_cgra_wb_buffer(core_tid, block);
+        }
+        m_scoreboard->releaseRegister(core_tid, reg_num);
+        num_writeback++;
+        m_cgra_core->incregfile_writes(1);
+      }
+    }
+    m_num_write_access += num_writeback;
+    return;
+  }
   // Look up the per-tid invalid-register set by reference (the map is keyed by
   // tid; when no entry exists, all output regs are valid). Avoids copying the
   // entire map and the per-tid set on every cgra writeback.
