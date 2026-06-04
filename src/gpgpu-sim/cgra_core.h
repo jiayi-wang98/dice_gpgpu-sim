@@ -148,6 +148,10 @@ class cgra_core_ctx {
     void decode();
     void execute();
     void exec(unsigned tid, unsigned lane_id);
+    // True while a block-MMA occupies the fabric (TCU compute in flight). The
+    // dispatcher must not inject tokens/nops into the frozen fabric during this
+    // window or it would clobber the in-flight MMA token at the (stalled) head.
+    bool fabric_tc_busy() const;
     //inner pipeline in execute();
     void dispatch();
     void cgra_execute_block();
@@ -853,6 +857,7 @@ class fetch_scheduler{
      virtual address_type get_bitstream_pc(); 
      unsigned get_bitstream_size();
      unsigned get_block_latency();
+     unsigned get_tc_busy_cycles();  // TCU compute cycles for an is_mma block
      
      bool imiss_pending() const { return m_imiss_pending; }
      void set_imiss_pending() { m_imiss_pending = true; }
@@ -956,6 +961,7 @@ class cgra_unit {
       is_busy = false;
       stalled_by_ldst_unit_queue_full = false;
       stalled_by_wb_buffer_full = false;
+      m_tc_busy_remaining = 0;
       for(unsigned lane_id=0;lane_id<4;lane_id++){
         for(unsigned i=0; i<MAX_CGRA_FABRIC_LATENCY; i++){
           shift_registers[lane_id][i] = unsigned(-1);
@@ -998,7 +1004,13 @@ class cgra_unit {
    void clear_stalled_by_wb_buffer_full() { stalled_by_wb_buffer_full = false; }
    void set_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = true; }
    void clear_stalled_by_ldst_unit_queue_full() { stalled_by_ldst_unit_queue_full = false; }
-   bool stalled() const { return stalled_by_ldst_unit_queue_full || stalled_by_wb_buffer_full; }
+   // TCU (tensor-core) busy countdown: a block-MMA occupies the fabric for the
+   // systolic compute time (16x16 MAC array @ 256 MAC/cycle). While the counter
+   // is non-zero the fabric is stalled (frozen), modeling the MMA latency.
+   void set_tc_busy(unsigned n) { m_tc_busy_remaining = n; }
+   void dec_tc_busy() { if(m_tc_busy_remaining > 0) m_tc_busy_remaining--; }
+   bool is_tc_busy() const { return m_tc_busy_remaining > 0; }
+   bool stalled() const { return stalled_by_ldst_unit_queue_full || stalled_by_wb_buffer_full || (m_tc_busy_remaining > 0); }
    void inc_num_executed_thread() { m_num_executed_thread++; }
    unsigned get_num_executed_thread() { return m_num_executed_thread; }
 
@@ -1013,6 +1025,7 @@ class cgra_unit {
    cgra_block_state_t **m_executing_block;
    bool stalled_by_wb_buffer_full;
    bool stalled_by_ldst_unit_queue_full;
+   unsigned m_tc_busy_remaining;  // TCU compute cycles left for an in-flight block-MMA
    unsigned m_num_executed_thread;
  };
 

@@ -1224,6 +1224,10 @@ bool cgra_block_state_t::is_mma(){
   return get_current_metadata()->is_mma;
 }
 
+bool cgra_core_ctx::fabric_tc_busy() const {
+  return m_cgra_unit->is_tc_busy();
+}
+
 unsigned cgra_block_state_t::get_unrolling_factor(){
   unsigned unrolling_factor = get_current_metadata()->unrolling_factor;
   if(m_cgra_core->get_config()->dice_enable_unrolling!=1) {
@@ -1266,8 +1270,38 @@ unsigned cgra_block_state_t::get_bitstream_size(){
   return get_current_metadata()->bitstream_length;
 }
 
+// Pipeline fill/drain depth for a block-MMA (fabric token flow); the bulk of the
+// MMA latency is modeled separately by the TCU busy counter (get_tc_busy_cycles).
+#define DICE_TCU_FILL_LATENCY 8
+
 unsigned cgra_block_state_t::get_block_latency(){
+  // A block-MMA's real occupancy is the TCU compute time (set as the fabric
+  // busy countdown via get_tc_busy_cycles); the fabric latency itself is just a
+  // small fill/drain. Must stay < MAX_CGRA_FABRIC_LATENCY (the shift-register
+  // depth), which is why the long compute time cannot live here.
+  if(get_current_metadata()->is_mma) return DICE_TCU_FILL_LATENCY;
   return get_current_metadata()->latency;
+}
+
+// TCU compute cycles for an is_mma block: a 16x16 MAC array at 256 FP16 FMA/cycle
+// produces a 16x16 output sub-tile by streaming K cycles (one k-step/cycle), so
+// (ceil(M/16) * ceil(N/16)) sub-tiles take (M/16)*(N/16)*K cycles. M,N,K are
+// bmma operands 5,6,7. Matches the A100 rate (a 16x16x16 tile = 16 cycles).
+unsigned cgra_block_state_t::get_tc_busy_cycles(){
+  if(!get_current_metadata()->is_mma) return 0;
+  dice_block_t* db = get_current_metadata()->get_diceblock();
+  for(unsigned i=0;i<db->ptx_instructions.size();i++){
+    ptx_instruction* pI = db->ptx_instructions[i];
+    if(pI->get_opcode() == BMMA_OP){
+      unsigned M = pI->operand_lookup(5).get_literal_value().u32;
+      unsigned N = pI->operand_lookup(6).get_literal_value().u32;
+      unsigned K = pI->operand_lookup(7).get_literal_value().u32;
+      unsigned mt = (M + 15) / 16;
+      unsigned nt = (N + 15) / 16;
+      return mt * nt * K;   // 256 MAC/cycle systolic array
+    }
+  }
+  return 0;
 }
 
 void cgra_block_state_t::metadata_buffer_fill(dice_cfg_block_t *cfg_block) {
@@ -1652,6 +1686,10 @@ void cgra_core_ctx::dispatch(){
       }
       m_cgra_block_state[DP_CGRA] = m_cgra_block_state[MF_DE];
       m_cgra_unit->set_latency(m_cgra_block_state[DP_CGRA]->get_block_latency());
+      // Block-MMA: hold the fabric busy for the TCU systolic compute time, on
+      // top of the small fill/drain fabric latency above.
+      if(m_cgra_block_state[DP_CGRA]->is_mma())
+        m_cgra_unit->set_tc_busy(m_cgra_block_state[DP_CGRA]->get_tc_busy_cycles());
       m_cgra_block_state[MF_DE] = new cgra_block_state_t(this, m_kernel_block_size);
       //m_cgra_block_state[MF_DE]->init(unsigned(-1), m_cgra_block_state[DP_CGRA]->get_cta_id(), m_cgra_block_state[DP_CGRA]->get_active_threads());
       //m_cgra_block_state[MF_DE] = m_fetch_scheduler->next_fetch_block();
@@ -1913,6 +1951,9 @@ void cgra_unit::cycle(){
   // position. The original kept slot[0] unchanged (shift only modifies
   // slots [1..]); preserve that invariant by copying old logical-0 into the
   // new head slot. One word per lane instead of MAX-1.
+  // Tick down the TCU compute countdown for an in-flight block-MMA. Done before
+  // the stall check so the fabric unfreezes the cycle the count reaches 0.
+  dec_tc_busy();
   if(stalled()){
     is_busy = true;
     return;
@@ -1951,6 +1992,7 @@ cgra_unit::cgra_unit(const shader_core_config *config, cgra_core_ctx *cgra_core,
     }
   }
   m_head = 0;
+  m_tc_busy_remaining = 0;
   m_latency = MAX_CGRA_FABRIC_LATENCY-1;
   stalled_by_ldst_unit_queue_full = false;
   stalled_by_wb_buffer_full = false;
@@ -2045,10 +2087,16 @@ bool dispatcher_rfu_t::writeback_buffer_full(dice_metadata* metadata) const {
 }
 
 void dispatcher_rfu_t::dispatch(){
+  // While a block-MMA occupies the fabric (TCU compute in flight, head frozen),
+  // the dispatcher must do nothing: injecting a nop/token would clobber the
+  // in-flight MMA token at the stalled head, and re-running the dispatch logic
+  // would re-push it. Resume once the TCU compute finishes (tc_busy clears).
+  if(m_cgra_core->fabric_tc_busy()) return;
   //send to execute in ready buffer
+  bool tc_busy = m_cgra_core->fabric_tc_busy();
   for(unsigned lane_id = 0; lane_id < 4; lane_id++){
     if(m_ready_threads[lane_id].size() > 0){
-      if(!exec_stalled()){
+      if(!exec_stalled() && !tc_busy){
         unsigned tid = m_ready_threads[lane_id].front();
         if(tid!=unsigned(-1) && g_debug_execution==3 && m_cgra_core->get_id()== m_cgra_core->get_dice_trace_sampling_core()){
           printf("DICE Sim uArch [DISPATCHER]: cycle %d, hw_cta=%d, lane_id= %d, operands ready of thread %d for dice block id = %d\n",m_cgra_core->get_gpu()->gpu_sim_cycle +  m_cgra_core->get_gpu()->gpu_tot_sim_cycle , (*m_dispatching_block)->get_cta_id(), lane_id, tid ,(*m_dispatching_block)->get_current_metadata()->meta_id);
@@ -2058,9 +2106,9 @@ void dispatcher_rfu_t::dispatch(){
         m_cgra_core->exec(tid,lane_id);//issue thread to cgra unit
         m_dispatched_thread++;
         m_cgra_core->inc_dispatched_threads(1);
-      } 
+      }
     } else {
-      if(!exec_stalled()) {
+      if(!exec_stalled() && !tc_busy) {
         m_cgra_core->exec(unsigned(-1),lane_id);//issue nop to cgra unit
       }
     }
