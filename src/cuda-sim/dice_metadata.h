@@ -25,6 +25,7 @@ class dice_metadata {
       bitstream_label = "";
       bitstream_length = 0;
       num_store = 0;
+      num_smem_direct = 0;
       branch = false;
       uni_bra = false;
       branch_pred = NULL;
@@ -72,6 +73,7 @@ class dice_metadata {
     // analysis predicts the SRF reads must serialize.  Default 1 (no stall).
     int dispatch_ii;
     int num_store;
+    int num_smem_direct;  // Tier-1: count of in-fabric direct SMEM reads (ld.shared->wire) in this DBB
     bool branch;
     bool uni_bra;
     operand_info* branch_pred;
@@ -138,6 +140,9 @@ class dice_metadata_parser {
   }
   //void add_operand(...)
   void commit_dbb();
+  void set_num_smem_direct(int num){
+    g_current_dbb->num_smem_direct = num;
+  }
   void set_num_store(int num){
     g_current_dbb->num_store = num;
   }
@@ -228,6 +233,7 @@ class dice_cfg_block_t{
     bool active(unsigned tid) const { return m_block_active_mask->test(tid); }
     unsigned active_count() const { return m_block_active_mask->count(); }
     unsigned get_num_stores();
+    unsigned get_num_smem_direct();
     unsigned get_num_loads();
     simt_mask_t get_active_mask() const { return *m_block_active_mask; }
     void set_active(const active_mask_t &active);

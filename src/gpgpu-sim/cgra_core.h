@@ -313,6 +313,12 @@ class cgra_core_ctx {
       m_stats->m_write_regfile_acesses[m_cgra_core_id] =
           m_stats->m_write_regfile_acesses[m_cgra_core_id] + active_count;
     }
+    // Tier-1: charge in-fabric direct SMEM reads (ld.shared->wire) as real
+    // shared-memory bank accesses (SHRDP), even though they bypass the LDST
+    // queue and never write the RF.
+    void inc_shmem_bank_access(unsigned n) {
+      m_stats->gpgpu_n_shmem_bank_access[m_cgra_core_id] += n;
+    }
     class block_commit_table *get_block_commit_table() {
       return m_block_commit_table;
     }
@@ -1100,7 +1106,7 @@ class cgra_unit {
     void rf_cycle();
     void dispatch();
     void writeback_cgra(cgra_block_state_t* block,unsigned tid);
-    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, const std::set<unsigned> &tids);
+    bool writeback_ldst(cgra_block_state_t* block,unsigned reg_num, const std::set<unsigned> &tids, bool smem_direct=false);
     unsigned next_active_thread(unsigned unrolling_factor, unsigned unrolling_index, unsigned max_coalesce);
     bool idle() { return m_dispatching_block == NULL; }
     cgra_block_state_t *get_dispatching_block() { return (*m_dispatching_block); }

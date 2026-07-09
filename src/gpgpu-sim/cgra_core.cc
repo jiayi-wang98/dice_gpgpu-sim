@@ -2273,6 +2273,11 @@ void dispatcher_rfu_t::dispatch(){
             actual_dispatch_count++;
             core_tid = tid+m_cgra_core->get_cta_start_tid((*m_dispatching_block)->get_cta_id());
             read_operands((*m_dispatching_block)->get_current_metadata(), core_tid);
+            // Tier-1: each dispatched thread performs num_smem_direct in-fabric
+            // SMEM reads (ld.shared->wire); charge them as real shared-bank
+            // accesses so SHRDP reflects the retained SMEM traffic.
+            if((*m_dispatching_block)->get_current_metadata()->num_smem_direct > 0)
+              m_cgra_core->inc_shmem_bank_access((*m_dispatching_block)->get_current_metadata()->num_smem_direct);
             if((*m_dispatching_block)->is_parameter_load() || (*m_dispatching_block)->is_mma()){
               //check active mask
               unsigned cta_id = (*m_dispatching_block)->get_cta_id();
@@ -2308,6 +2313,19 @@ void dispatcher_rfu_t::dispatch(){
         // Arm DISPATCH_II stall: skip (ii-1) cycles before next chunk to model
         // bank conflicts / structural hazards declared in metadata.
         unsigned ii = (*m_dispatching_block)->get_current_metadata()->dispatch_ii;
+        // Tier-1: in-fabric direct SMEM reads (ld.shared->wire) each consume one
+        // LD port for the cycle.  The port budget is a COMPILE-TIME p-graph
+        // partition constraint, NOT a runtime II throttle: a p-graph may hold at
+        // most n_ld_ports direct reads; the compiler splits at the port boundary
+        // (RF-staging only the values that cross) so every p-graph runs at II=1.
+        // Enforce the invariant here so a mis-built bundle is caught early.
+        unsigned n_direct = (*m_dispatching_block)->get_current_metadata()->num_smem_direct;
+        if (n_direct > 0) {
+          unsigned n_ld_ports = (*m_dispatching_block)->get_current_cfg_block()->get_ldst_port_num()/2;
+          assert(n_direct <= n_ld_ports &&
+                 "Tier-1: p-graph has more direct SMEM reads than LD ports; "
+                 "compiler must split it into multiple p-graphs.");
+        }
         if (ii > 1) {
           m_ii_stall_remaining = ii - 1;
         }
@@ -2437,7 +2455,14 @@ void dispatcher_rfu_t::writeback_cgra(cgra_block_state_t* block, unsigned tid){
   m_num_write_access += num_writeback;
 }
 
-bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, const std::set<unsigned> &tids){
+bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_num, const std::set<unsigned> &tids, bool smem_direct){
+  // Tier-1 "SMEM-direct-to-fabric" read: the shared value is consumed as a
+  // fabric operand (destination is an intra-DBB wire), so it is NOT staged
+  // through the RF.  We still release the scoreboard and count the load done
+  // for correctness/progress, but skip the RF write (no incregfile_writes)
+  // and the RF writeback-buffer push.  The SMEM bank access itself is still
+  // charged by the caller (gpgpu_n_shmem_bank_access), so SHRDP is retained
+  // while the consumer-side RF staging is eliminated.
   for(std::set<unsigned>::const_iterator it = tids.begin(); it != tids.end(); ++it){
     unsigned tid = *it;
     unsigned bank_id = reg_number_to_bank_mapping(reg_num,tid,32);
@@ -2448,11 +2473,11 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
         // scoreboards without RF writeback traffic.
         unsigned cta_id = block->get_cta_id();
         for(unsigned t=0;t<m_cgra_core->get_cta_size(cta_id);t++){
-          if(block->active(t) == true) 
+          if(block->active(t) == true)
           {
             unsigned cta_start_tid = m_cgra_core->get_cta_start_tid(cta_id);
             m_scoreboard->releaseRegisterFromLoad(t+cta_start_tid, reg_num);
-            m_cgra_core->incregfile_writes(1);
+            if(!smem_direct) m_cgra_core->incregfile_writes(1);
           }
         }
       } else {
@@ -2460,9 +2485,9 @@ bool dispatcher_rfu_t::writeback_ldst(cgra_block_state_t* block, unsigned reg_nu
         // normal per-thread writeback behavior.
         unsigned hw_tid_offset = m_cgra_core->get_cta_start_tid(block->get_cta_id());
         m_scoreboard->releaseRegisterFromLoad(hw_tid_offset+tid, reg_num);
-        m_cgra_core->incregfile_writes(1);
+        if(!smem_direct) m_cgra_core->incregfile_writes(1);
       }
-      if(bank_id < 32){
+      if(bank_id < 32 && !smem_direct){
         //push to writeback buffer
         m_rf_bank_controller[bank_id]->push_to_ldst_wb_buffer(tid,block);
       }

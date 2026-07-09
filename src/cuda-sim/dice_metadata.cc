@@ -398,6 +398,11 @@ void dice_cfg_block_t::set_active(const active_mask_t &active) {
   //}
 }
 
+unsigned dice_cfg_block_t::get_num_smem_direct(){
+  // Tier-1 in-fabric direct SMEM reads: charged once per read per active thread.
+  return (m_metadata->num_smem_direct) * m_active_count;
+}
+
 unsigned dice_cfg_block_t::get_num_stores(){
   if(get_metadata()->is_parameter_load) return 0;
   return (m_metadata->num_store)*m_active_count - dec_stores_num;
@@ -560,11 +565,13 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
             if(it->reg_num() == ld_dest_reg){
               unsigned port_index = i;
               port_index += ldst_port_shift;
-              assert(port_index < (get_ldst_port_num()/2));
-              //if(port_index >= (get_ldst_port_num()/2)){
-              //  assert(get_metadata()->is_parameter_load);
-              //  port_index = port_index % (get_ldst_port_num()/2);
-              //}
+              // Wrap oversubscribed shared-load ports onto the available set
+              // (models port/bank contention: co-mapped loads serialize).
+              // Replaces a hard assert that stale bundles built for an
+              // 8-LD-port config would trip on the 4-port RTX2060S config.
+              if(port_index >= (get_ldst_port_num()/2)){
+                port_index = port_index % (get_ldst_port_num()/2);
+              }
               std::set<unsigned> ld_dest_regs;
               ld_dest_regs.insert(ld_dest_reg);
               std::set<unsigned> tids;
