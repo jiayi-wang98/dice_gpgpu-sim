@@ -166,6 +166,7 @@ void dice_metadata::dump(){
 }
 
 void dice_metadata_parser::add_operand(const char *identifier) {
+  if (g_skip_function) return;
   //DICE_PARSE_DPRINTF("add_operand");
   if (g_debug_dicemeta_generation) {
     printf("DICE Metadata Parser: add operand %s\n", identifier);
@@ -186,6 +187,7 @@ void dice_metadata_parser::add_operand(const char *identifier) {
 }
 
 void dice_metadata_parser::add_operand_pole(bool positive){
+  if (g_skip_function) return;
   assert(gpgpu_ctx != NULL);
   fflush(stdout);
   g_operand_poles.push_back(positive);
@@ -202,6 +204,7 @@ void dice_metadata_parser::read_parser_environment_variables() {
 }
 
 void dice_metadata_parser::commit_dbb(){
+  if (g_skip_function) { delete g_current_dbb; g_current_dbb = NULL; return; }
   //printf("g_debug_dicemeta_generation = %d\n", g_debug_dicemeta_generation); fflush(stdout); 
   //DICE_PARSE_DPRINTF("commit_dbb");
   // check if the current dbb is empty
@@ -239,6 +242,7 @@ void dice_metadata_parser::set_ld_dest_regs(){
 }
 
 void dice_metadata_parser::set_branch_pred(){
+  if (g_skip_function) return;
   printf("DICE Metadata Parser: Set Branch Predication\n"); fflush(stdout); 
   int num_operands = 0;
   for (std::list<operand_info>::iterator it = g_operands.begin(); it != g_operands.end(); ++it){
@@ -266,10 +270,40 @@ void dice_metadata_parser::add_builtin_operand(int builtin, int dim_modifier) {
 void dice_metadata_parser::set_function_name(const char *name){
   if(g_debug_dicemeta_generation)  printf("DICE Metadata Parser: Set Function Name\n"); 
   g_current_function_name = name;
-  g_current_function_info = gpgpu_ctx->ptx_parser->g_global_symbol_table->lookup_function(g_current_function_name);
+  symbol *s = gpgpu_ctx->ptx_parser->g_global_symbol_table->lookup(name);
+  g_current_function_info = s ? s->get_pc() : NULL;
+  if (g_current_function_info == NULL) {
+    // Multi-module binaries: metadata files load once (deduplicated), and
+    // the registering module's scope chain may not include the kernel's
+    // module (b+tree's findRangeK). Search every symbol table parsed so
+    // far -- the pptx of the owning module has always been parsed before
+    // its meta loads.
+    extern std::vector<symbol_table *> g_dice_all_symtabs;
+    for (symbol_table *st : g_dice_all_symtabs) {
+      if (st == NULL) continue;
+      symbol *cand = st->lookup(name);
+      if (cand != NULL && cand->get_pc() != NULL) {
+        g_current_function_info = cand->get_pc();
+        printf("DICE Metadata Parser: '%s' resolved from another module's "
+               "table\n", name);
+        break;
+      }
+    }
+  }
+  g_skip_function = (g_current_function_info == NULL);
+  if (g_skip_function)
+    printf("DICE Metadata Parser: '%s' not in any parsed module; skipping "
+           "its metadata\n", name);
 }
 
 void dice_metadata_parser::commit_function(){
+  if (g_skip_function) {
+    g_skip_function = false;
+    g_current_function_info = NULL;
+    g_current_dbb = NULL;
+    g_current_function_name = "";
+    return;
+  }
   g_current_function_info->link_block_in_dicemeta();
   dice_metadata_assemble(g_current_function_name, g_current_function_info);
   if (g_debug_dicemeta_generation) {
@@ -456,6 +490,12 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
     unsigned num_stores=0;
     new_addr_type cache_block_size = 0;  // in bytes
     bool is_shared_space = false;
+    // Tier-1: banks touched by this p-graph's ld.shared->wire direct reads.
+    // These reads are served combinationally at II=1, so they must map to
+    // distinct SMEM banks. A repeated bank is a genuine bank conflict that
+    // the II=1 model cannot honor -> flag it as a compiler error (the
+    // compiler must lay out / pad the tile, or split the p-graph).
+    std::set<unsigned> direct_read_banks;
     for(unsigned i=0; i<m_per_scalar_thread[tid].count; i++){
       if(m_per_scalar_thread[tid].enable[i] == 0){
         //enable is 0 means this access is masked out
@@ -561,8 +601,10 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
         if(!is_write){
           //use iterator to find the ld_dest_reg
           unsigned i=0;
+          bool matched_rf_load = false;
           for(std::list<operand_info>::iterator it = m_metadata->load_destination_regs.begin(); it != m_metadata->load_destination_regs.end(); ++it){
             if(it->reg_num() == ld_dest_reg){
+              matched_rf_load = true;
               unsigned port_index = i;
               port_index += ldst_port_shift;
               // Wrap oversubscribed shared-load ports onto the available set
@@ -582,6 +624,32 @@ void dice_cfg_block_t::generate_mem_accesses(unsigned tid, std::vector<unsigned>
               break;
             }
             i++;
+          }
+          // Tier-1 direct SMEM read: a shared load whose destination is an
+          // intra-DBB wire (%w) is NOT in load_destination_regs, so it never
+          // matched above and never enters the LDST queue -- it is served as a
+          // combinational fabric operand at II=1. That is only valid if all of
+          // a p-graph's direct reads hit distinct SMEM banks. Enforce it: a
+          // repeated bank is a real bank conflict the II=1 model cannot serve.
+          if(!matched_rf_load){
+            unsigned bank = m_config->shmem_bank_func(addr);
+            if(direct_read_banks.count(bank)){
+              printf("DICE-Sim [Tier-1 BANK CONFLICT]: p-graph (DBB %u) has two "
+                     "ld.shared->wire direct reads mapping to SMEM bank %u "
+                     "(tid=%u, addr=0x%llx). Direct reads are served at II=1 and "
+                     "must be conflict-free; the compiler must lay out/pad the "
+                     "tile so the direct reads hit distinct banks (or split the "
+                     "p-graph).\n", m_metadata->meta_id, bank, tid,
+                     (unsigned long long)addr);
+              fflush(stdout);
+              // Default: hard error (compiler must produce conflict-free bundles).
+              // Set DICE_ALLOW_BANK_CONFLICT=1 to warn-and-continue -- used ONLY
+              // to measure legacy/unpadded bundles whose reads are known to
+              // conflict (results are optimistic; not a valid design point).
+              if(!getenv("DICE_ALLOW_BANK_CONFLICT"))
+                assert(0 && "Tier-1 direct SMEM read bank conflict (compiler must resolve)");
+            }
+            direct_read_banks.insert(bank);
           }
         } else {
           //put them in different ports(4-7)

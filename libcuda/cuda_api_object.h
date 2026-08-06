@@ -79,7 +79,16 @@ struct CUctx_st {
   void add_ptxinfo(const char *deviceFun,
                    const struct gpgpu_ptx_sim_info &info) {
     symbol *s = m_code[m_last_fat_cubin_handle]->lookup(deviceFun);
-    assert(s != NULL);
+    if (s == NULL) {
+      // ptxas info files are concatenated across modules, so a record can
+      // name a kernel from ANOTHER module of a multi-module binary
+      // (b+tree). The info only feeds occupancy; skipping beats aborting.
+      printf(
+          "GPGPU-Sim PTX: WARNING ** ptxinfo names '%s', not in this "
+          "module; occupancy info skipped\n",
+          deviceFun);
+      return;
+    }
     function_info *f = s->get_pc();
     assert(f != NULL);
     f->set_kernel_info(info);
@@ -100,6 +109,7 @@ struct CUctx_st {
       } else {
         printf("Warning: cannot find deviceFun %s\n", deviceFun);
         m_kernel_lookup[hostFun] = NULL;
+        m_pending_kernel[hostFun] = deviceFun;
       }
       //		assert( s != NULL );
       //		function_info *f = s->get_pc();
@@ -107,6 +117,7 @@ struct CUctx_st {
       //		m_kernel_lookup[hostFun] = f;
     } else {
       m_kernel_lookup[hostFun] = NULL;
+      m_pending_kernel[hostFun] = deviceFun;
     }
   }
 
@@ -117,13 +128,46 @@ struct CUctx_st {
   function_info *get_kernel(const char *hostFun) {
     std::map<const void *, function_info *>::iterator i =
         m_kernel_lookup.find(hostFun);
+    fprintf(stderr, "GETK this=%p host=%p found=%d val=%p pend=%zu\n",
+            (void*)this, (const void*)hostFun,
+            (int)(i != m_kernel_lookup.end()),
+            i != m_kernel_lookup.end() ? (void*)i->second : (void*)0,
+            m_pending_kernel.size());
     assert(i != m_kernel_lookup.end());
+    // Registration order can outrun module parsing (a fatbin registered
+    // before its module's symbols exist maps to NULL above). Resolve
+    // lazily: by launch time every module is parsed, so search them all.
+    if (i->second == NULL) {
+      auto pending = m_pending_kernel.find(hostFun);
+      if (pending == m_pending_kernel.end())
+        printf("GPGPU-Sim PTX: late-bind: no pending name for %p\n", hostFun); fflush(stdout);
+      if (pending != m_pending_kernel.end()) {
+        extern std::vector<symbol_table *> g_dice_all_symtabs;
+        std::vector<symbol_table *> cands;
+        for (auto &hs : m_code) cands.push_back(hs.second);
+        for (auto *st : g_dice_all_symtabs) cands.push_back(st);
+        fprintf(stderr, "GPGPU-Sim PTX: late-bind '%s': %zu tables\n",
+                pending->second.c_str(), cands.size());
+        for (auto *st : cands) {
+          if (st == NULL) continue;
+          symbol *s = st->lookup(pending->second.c_str());
+          if (s != NULL && s->get_pc() != NULL) {
+            i->second = s->get_pc();
+            fprintf(stderr, "GPGPU-Sim PTX: late-bound kernel '%s'\n",
+                    pending->second.c_str());
+            break;
+          }
+        }
+      }
+    }
     return i->second;
   }
 
   int no_of_ptx;
 
  private:
+  // deviceFun names whose registration preceded their module's parse.
+  std::map<const void *, std::string> m_pending_kernel;
   _cuda_device_id *m_gpu;  // selected gpu
   std::map<unsigned, symbol_table *>
       m_code;  // fat binary handle => global symbol table

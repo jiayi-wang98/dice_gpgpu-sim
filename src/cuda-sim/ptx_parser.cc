@@ -395,6 +395,29 @@ void ptx_recognizer::add_identifier(const char *identifier, int array_dim,
       if (strcmp(identifier, "%sp") == 0) {
         arch_regnum = 0;
       }
+      // DICE artifacts: canonical fixed-layout numbering derived from the
+      // register's own class and index, so the bank mapping
+      // (reg_number_to_bank_mapping: 1..32 const, 33..64 GPR, >64 other)
+      // holds regardless of the declared counts. The .pptx header may then
+      // declare actual use (%c<7>) and stay a readable pressure report.
+      // Everything else (%SPL, %SP, ...) lands above the canonical space so
+      // scoreboard keys stay unique.
+      {
+        const char *fn = gpgpu_ctx->g_filename;
+        size_t fl = fn ? strlen(fn) : 0;
+        if (fl > 5 && strcmp(fn + fl - 5, ".pptx") == 0 &&
+            identifier[0] == '%' && arch_regnum >= 0) {
+          switch (identifier[1]) {
+            case 'c': regnum = 1 + arch_regnum; break;   // 1..32
+            case 'r': regnum = 33 + arch_regnum; break;  // 33..64
+            case 'p': regnum = 65 + arch_regnum; break;  // 65..96
+            case 'w': regnum = 97 + arch_regnum; break;  // 97..128
+            default: regnum = 256 + regnum; break;
+          }
+        } else if (fl > 5 && strcmp(fn + fl - 5, ".pptx") == 0) {
+          regnum = 256 + regnum;
+        }
+      }
       g_last_symbol->set_regno(regnum, arch_regnum);
     } break;
     case shared_space:

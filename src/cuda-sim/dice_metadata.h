@@ -99,6 +99,13 @@ class dice_metadata {
 };
 
 class dice_metadata_parser {
+  // True while parsing a FUNCTION block whose kernel is not in the module
+  // being registered. Metadata files are (re)loaded on EVERY module
+  // registration once cuobjdump has extracted the whole binary, so a
+  // multi-module binary (b+tree) sees other modules' functions here; the
+  // registration whose module owns the kernel commits it.
+  bool g_skip_function = false;
+
  private:
   bool g_debug_dicemeta_generation;
   dice_metadata* g_current_dbb;
@@ -321,7 +328,24 @@ class dice_cfg_block_t{
       m_per_scalar_thread[n].count+=num_addrs;
     }
     dice_metadata *get_metadata() { return m_metadata; }
-    void generate_mem_accesses(unsigned tid, std::vector<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
+    // The .local spill accesses the DICE compiler now emits are recorded in
+  // THIS block's per-scalar array; the ptx_instruction's own array is never
+  // populated in DICE mode, so local->shared-space translation for the
+  // timing model must edit these records (accessors for cgra_core).
+  unsigned per_scalar_count(unsigned tid) const {
+    return m_per_scalar_thread_valid ? m_per_scalar_thread[tid].count : 0;
+  }
+  bool per_scalar_is_local(unsigned tid, unsigned i) const {
+    auto ty = m_per_scalar_thread[tid].space[i].get_type();
+    return ty == local_space || ty == param_space_local;
+  }
+  new_addr_type &per_scalar_addr(unsigned tid, unsigned i) {
+    return m_per_scalar_thread[tid].memreqaddr[i];
+  }
+  unsigned per_scalar_size(unsigned tid, unsigned i) const {
+    return m_per_scalar_thread[tid].size[i];
+  }
+  void generate_mem_accesses(unsigned tid, std::vector<unsigned> &masked_ops_reg, unsigned unrolling_factor, unsigned lane_id);
 
     bool accessq_empty(){
       for(unsigned i=0; i<get_ldst_port_num(); i++){

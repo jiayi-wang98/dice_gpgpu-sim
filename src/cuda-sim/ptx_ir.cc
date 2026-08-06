@@ -260,10 +260,26 @@ bool symbol_table::add_function_decl(const char *name, int entry_point,
 
 function_info *symbol_table::lookup_function(std::string name) {
   std::string key = std::string(name);
-  std::map<std::string, function_info *>::iterator it =
-      m_function_info_lookup.find(key);
-  assert(it != m_function_info_lookup.end());
-  return it->second;
+  // Walk out through enclosing scopes before giving up.
+  //
+  // A multi-.cu program has one fatbinary per translation unit. init_parser puts
+  // the FIRST module's functions in `g_global_allfiles_symbol_table` and gives
+  // every later module a fresh child table, so after parsing them all
+  // `g_global_symbol_table` points at the last module. Looking up a kernel that
+  // lives in an earlier module then asserted here, which is what made DICE mode
+  // abort on streamcluster, huffman, b+tree and lud while GPU mode ran fine.
+  // The child's parent chain reaches the shared root, so the function is
+  // findable; only the search was too narrow.
+  for (symbol_table *scope = this; scope != NULL; scope = scope->m_parent) {
+    std::map<std::string, function_info *>::iterator it =
+        scope->m_function_info_lookup.find(key);
+    if (it != scope->m_function_info_lookup.end()) return it->second;
+  }
+  printf("GPGPU-Sim PTX: ERROR ** function '%s' not found in any scope\n",
+         key.c_str());
+  fflush(stdout);
+  assert(0 && "lookup_function: name not present in this scope or any parent");
+  return NULL;
 }
 
 type_info *symbol_table::add_type(memory_space_t space_spec,

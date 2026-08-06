@@ -3485,6 +3485,11 @@ void cuda_runtime_api::cuobjdumpInit() {
   }
 }
 
+// Every per-file symbol table ever parsed: kernel registration can precede
+// or miss a module's parse session, and launch-time late binding needs to
+// search them all (b+tree's findRangeK).
+std::vector<symbol_table *> g_dice_all_symtabs;
+
 //! Either submit PTX for simulation or convert SASS to PTXPlus and submit it
 void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   CUctx_st *context = GPGPUSim_Context(this);
@@ -3492,12 +3497,28 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
   api->fatbin_registered[handle] = true;
   std::string fname = api->fatbinmap[handle];
 
+  // Memoize per (file, handle), not per file: a multi-module binary
+  // registers several fatbins under the SAME fname, and the per-file key
+  // bound every later handle to the FIRST module's symbol table --
+  // b+tree's findRangeK (module 2) then resolved to a NULL function_info
+  // and the launch segfaulted in timing mode.
   if (api->name_symtab.find(fname) != api->name_symtab.end()) {
     symbol_table *symtab = api->name_symtab[fname];
     context->add_binary(symtab, handle);
     return;
   }
-  symbol_table *symtab;
+  symbol_table *symtab = NULL;
+
+  // The version_filename list accumulates across registrations, and a
+  // registration session parses EVERYTHING in it. A second session (the
+  // timing config reaches one where the functional config's per-file memo
+  // short-circuits) must not re-parse: duplicate function_infos collide in
+  // the global PC map (dice_block_assemble assert). Parse each ptx once,
+  // globally; a session that parsed nothing binds the first session's
+  // symbol scope, which spans all modules.
+  static std::set<std::string> dice_parsed_ptx;
+  static symbol_table *dice_first_session_symtab = NULL;
+  extern std::vector<symbol_table *> g_dice_all_symtabs;
 
 #if (CUDART_VERSION >= 6000)
   // loops through all ptx files from smallest sm version to largest
@@ -3507,12 +3528,15 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     std::set<std::string>::iterator itr_s;
     for (itr_s = itr_m->second.begin(); itr_s != itr_m->second.end(); itr_s++) {
       std::string ptx_filename = *itr_s;
+      if (!dice_parsed_ptx.insert(ptx_filename).second)
+        continue;
       //DICE read pptx
       //replace the last ".ptx" with ".pptx"
       if (g_dice_enabled) {
         std::string pptx_filename = ptx_filename.substr(0, ptx_filename.size() - 3) + "pptx"; //replace ".ptx" with ".meta"
         printf("DICE PPTX: Parsing %s\n", pptx_filename.c_str());
-        symtab = dice_pptx_load_from_filename(pptx_filename.c_str()); 
+        symtab = dice_pptx_load_from_filename(pptx_filename.c_str());
+        g_dice_all_symtabs.push_back(symtab);
         //Jiayi Test
         printf("DICE PPTX: dump symbol table\n");
         symtab->dump();
@@ -3520,6 +3544,7 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       } else {
         printf("GPGPU-Sim PTX: Parsing %s\n", ptx_filename.c_str());
         symtab = gpgpu_ptx_sim_load_ptx_from_filename(ptx_filename.c_str());
+        g_dice_all_symtabs.push_back(symtab);
         //Jiayi Test
         printf("[Jiayi Test] dump symbol table\n");
         symtab->dump();
@@ -3527,6 +3552,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
       }
     }
   }
+  if (symtab == NULL)
+    symtab = dice_first_session_symtab;
+  if (dice_first_session_symtab == NULL)
+    dice_first_session_symtab = symtab;
   api->name_symtab[fname] = symtab;
   context->add_binary(symtab, handle);
   api->load_static_globals(symtab, STATIC_ALLOC_LIMIT, 0xFFFFFFFF,
@@ -3538,6 +3567,11 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
     std::set<std::string>::iterator itr_s;
     for (itr_s = itr_m->second.begin(); itr_s != itr_m->second.end(); itr_s++) {
       std::string ptx_filename = *itr_s;
+      // Same accumulation problem as the parse loop: re-loading a module's
+      // .meta in a later session appends duplicate metadata records.
+      static std::set<std::string> dice_loaded_meta;
+      if (!dice_loaded_meta.insert(ptx_filename).second)
+        continue;
       printf("GPGPU-Sim PTX: Loading PTXInfo from %s\n", ptx_filename.c_str());
       gpgpu_ptx_info_load_from_filename(ptx_filename.c_str(), itr_m->first);
       //DICE-support
@@ -3610,6 +3644,10 @@ void gpgpu_context::cuobjdumpParseBinary(unsigned int handle) {
                            context->get_device()->get_gpgpu());
   api->load_constants(symtab, STATIC_ALLOC_LIMIT,
                       context->get_device()->get_gpgpu());
+  if (symtab == NULL)
+    symtab = dice_first_session_symtab;
+  if (dice_first_session_symtab == NULL)
+    dice_first_session_symtab = symtab;
   api->name_symtab[fname] = symtab;
 
   // TODO: Remove temporarily files as per configurations

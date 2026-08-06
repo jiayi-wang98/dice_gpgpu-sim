@@ -1057,7 +1057,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
   assert(m_stack.size() > 0);
 
   assert(next_pc.size() == m_warp_size);
-  if (m_warp_id == 0) printf("[Jiayi Test Stack]  simt_stack::update_sid");
+  if (0 && m_warp_id == 0) printf("[Jiayi Test Stack]  simt_stack::update_sid");
   fflush(stdout);
 
   simt_mask_t top_active_mask = m_stack.back().m_active_mask;
@@ -1144,7 +1144,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
           m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
       new_stack_entry.m_type = STACK_ENTRY_TYPE_CALL;
       m_stack.push_back(new_stack_entry);
-      if (m_warp_id == 0) printf("[Jiayi Test Stack] call OP");
+      if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] call OP");
       return;
     } else if (next_inst_op == RET_OPS && top_type == STACK_ENTRY_TYPE_CALL) {
       // pop the CALL Entry
@@ -1160,7 +1160,7 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
         assert(m_stack.back().m_type == STACK_ENTRY_TYPE_NORMAL);
         m_stack.pop_back();
       }
-      if (m_warp_id == 0) printf("[Jiayi Test Stack] return OP");
+      if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] return OP");
       return;
     }
 
@@ -1184,12 +1184,12 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
       // stack
       new_recvg_pc = recvg_pc;
       if (new_recvg_pc != top_recvg_pc) {
-        if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to new_recvg_pc 0x%04x\n", new_recvg_pc);
+        if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to new_recvg_pc 0x%04x\n", new_recvg_pc);
         m_stack.back().m_pc = new_recvg_pc;
         m_stack.back().m_branch_div_cycle =
             m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle;
         if (m_warp_id == 0) print(stdout);
-        if (m_warp_id == 0) printf("[Jiayi Test Stack] push new entry because of diverged\n");
+        if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] push new entry because of diverged\n");
         m_stack.push_back(simt_stack_entry(m_warp_size));
       }
     }
@@ -1204,23 +1204,23 @@ void simt_stack::update_sid(simt_mask_t &thread_done, addr_vector_t &next_pc,
         continue;
       }
     // update the current top of pdom stack
-    if (m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to tmp_next_pc 0x%04x\n", tmp_next_pc);
+    if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] update back m_pc to tmp_next_pc 0x%04x\n", tmp_next_pc);
     m_stack.back().m_pc = tmp_next_pc;
     m_stack.back().m_active_mask = tmp_active_mask;
     if (m_warp_id == 0) print(stdout);
     if (warp_diverged) {
       m_stack.back().m_calldepth = 0;
-      if (m_warp_id == 0) printf("[Jiayi Test Stack] update rpc to new_recvg_pc 0x%04x\n", new_recvg_pc);
+      if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] update rpc to new_recvg_pc 0x%04x\n", new_recvg_pc);
       m_stack.back().m_recvg_pc = new_recvg_pc;
     } else {
       m_stack.back().m_recvg_pc = top_recvg_pc;
     }
     if (m_warp_id == 0) print(stdout);
-    if (m_warp_id == 0) printf("[Jiayi Test Stack] push new entry\n");
+    if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] push new entry\n");
     m_stack.push_back(simt_stack_entry(m_warp_size));
   }
   assert(m_stack.size() > 0);
-  if (m_warp_id == 0) printf("[Jiayi Test Stack] pop back \n");
+  if (0 && m_warp_id == 0) printf("[Jiayi Test Stack] pop back \n");
   m_stack.pop_back();
 
   if (warp_diverged) {

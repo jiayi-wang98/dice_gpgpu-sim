@@ -5876,6 +5876,21 @@ void st_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
 
   if (!vector_spec) {
     data = thread->get_operand_value(src1, dst, type, thread, 1);
+    // DICE_TRACE_ST=<tid>: dump every scalar store this thread performs.
+    // Stores are the observable semantics and are independent of register
+    // naming, so a DICE-mode trace and a GPU-mode trace can be diffed directly
+    // -- the first differing store localises where the two diverge.
+    {
+      static const char *st_env = getenv("DICE_TRACE_ST");
+      if (st_env && (!strcmp(st_env, "all") ||
+                     (unsigned)atoi(st_env) == thread->get_hw_tid())) {
+        printf("DICE-ST tid=%u addr=0x%llx sz=%u val=%lld src=%s\n",
+               thread->get_hw_tid(), (unsigned long long)addr,
+               (unsigned)(size / 8), (long long)data.s64,
+               pI->source_file() ? pI->get_source() : "?");
+        fflush(stdout);
+      }
+    }
     mem->write(addr, size / 8, &data.s64, thread, pI);
   } else {
     if (vector_spec == V2_TYPE) {

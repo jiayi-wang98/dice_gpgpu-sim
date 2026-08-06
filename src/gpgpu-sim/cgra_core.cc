@@ -394,14 +394,25 @@ void cgra_core_ctx::checkExecutionStatusAndUpdate(cgra_block_state_t* cgra_block
     // the atomic mem_fetch is allocated and pushed to icnt, not here.
     // Keeping the count tied to "in-flight on the wire" rather than
     // "functionally issued" — decrement happens when the mf returns.
-    if (pI->space.is_local() && (pI->is_load() || pI->is_store())) {
-      new_addr_type localaddrs[MAX_ACCESSES_PER_INSN_PER_THREAD];
-      unsigned num_addrs;
-      num_addrs = translate_local_memaddr(
-        pI->get_addr(tid), tid,
-        m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster,
-      pI->data_size, (new_addr_type *)localaddrs);
-      pI->set_addr(tid, (new_addr_type *)localaddrs, num_addrs);
+    (void)pI;
+  }
+  // .local spill accesses: translate the per-thread local address into the
+  // shared timing address space IN THE CFG BLOCK's records -- the
+  // ptx_instruction's per-scalar array is never populated in DICE mode
+  // (asserted on lud, the first spilled kernel). An 8-byte access keeps its
+  // first translated word: a timing approximation only, the functional
+  // value was already read/written correctly.
+  {
+    unsigned ltid = tid - get_cta_start_tid(cgra_block->get_cta_id());
+    for (unsigned i = 0; i < cfg_block->per_scalar_count(ltid); ++i) {
+      if (!cfg_block->per_scalar_is_local(ltid, i))
+        continue;
+      new_addr_type xl[MAX_ACCESSES_PER_INSN_PER_THREAD];
+      translate_local_memaddr(
+          cfg_block->per_scalar_addr(ltid, i), tid,
+          m_config->n_simt_clusters * m_config->n_simt_cores_per_cluster,
+          cfg_block->per_scalar_size(ltid, i), xl);
+      cfg_block->per_scalar_addr(ltid, i) = xl[0];
     }
   }
   if (ptx_thread_done(tid)) {
@@ -1960,8 +1971,16 @@ void cgra_unit::cycle(){
   }
   const unsigned old_head = m_head;
   const unsigned new_head = (old_head + MAX_CGRA_FABRIC_LATENCY - 1) % MAX_CGRA_FABRIC_LATENCY;
+  // A BUBBLE enters at the head each cycle; the dispatcher overwrites it
+  // when it actually issues (a tid or an explicit nop). This replaces the
+  // original shift model's slot-0 replication. Verified timing-equivalent
+  // (the dispatcher writes the head on every unstalled cycle, and rotation
+  // freezes during stalls, so the replicated value was always dead), but
+  // the bubble makes that invariant structural instead of coincidental: a
+  // future dispatcher path that skips a cycle can no longer silently
+  // re-inject and re-execute the last dispatched thread.
   for(unsigned lane_id = 0; lane_id < 4; lane_id++){
-    shift_registers[lane_id][new_head] = shift_registers[lane_id][old_head];
+    shift_registers[lane_id][new_head] = unsigned(-1);
   }
   m_head = new_head;
   // Recompute is_busy by scanning logical slots [0..m_latency].

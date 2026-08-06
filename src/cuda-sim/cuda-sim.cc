@@ -3511,8 +3511,20 @@ void DICEfunctionalCoreSim::dice_checkExecutionStatusAndUpdate(unsigned tid) {
 
 //DICE-support
 void ptx_thread_info::dice_exec_block(dice_cfg_block_t* CFGBlock, unsigned tid) {
-  //printf("DICE: tid %d executing block %d\n", tid, CFGBlock->get_metadata()->meta_id);
-  //fflush(stdout);
+  // Debug aid: DICE_TRACE_BLOCKS=<tid> prints the p-graph sequence that one
+  // thread actually executes. Functional mode runs a p-graph's instructions in
+  // program order, so a functional mismatch is about WHICH p-graph runs next --
+  // that is, the branch metadata -- not about dataflow ordering inside one.
+  {
+    static const char *trace_env = getenv("DICE_TRACE_BLOCKS");
+    if (trace_env && (unsigned)atoi(trace_env) == tid) {
+      printf("DICE-TRACE cyc=%llu core=%u tid=%u dbb=%d\n",
+             (unsigned long long)(m_gpu->gpu_sim_cycle + m_gpu->gpu_tot_sim_cycle),
+             get_cgra_core() ? get_cgra_core()->get_id() : 999u,
+             tid, CFGBlock->get_metadata()->meta_id);
+      fflush(stdout);
+    }
+  }
   int op_classification = 0;
   addr_t metadata_pc = next_metadata();
   //if(m_cgra_core->get_id()==0)

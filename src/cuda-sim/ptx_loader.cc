@@ -350,6 +350,28 @@ char *get_app_binary_name() {
   return self_exe_path;
 }
 
+// A ptxas failure is not fatal: ptxas is only run for its register/smem
+// usage report, which feeds the occupancy calculation. PTX that ptxas
+// rejects (custom DICE instructions, renamed .pptx register sets) still
+// executes fine functionally. Surface ptxas's complaint, then hand the
+// parser an empty info file so the kernel proceeds with zero usage info.
+static void ptxas_failed_keep_going(const char *ptx_file,
+                                    const char *info_file, int result) {
+  printf("GPGPU-Sim PTX: WARNING ** ptxas failed on %s (exit %d):\n", ptx_file,
+         result);
+  fflush(stdout);
+  char cmd[1200];
+  snprintf(cmd, sizeof(cmd), "sed 's/^/GPGPU-Sim PTX:   ptxas: /' %s",
+           info_file);
+  if (system(cmd) != 0)
+    printf("GPGPU-Sim PTX:   (could not read %s)\n", info_file);
+  printf(
+      "GPGPU-Sim PTX: WARNING ** continuing without ptxas register usage "
+      "info; occupancy for kernels in this file assumes 0 registers\n");
+  FILE *empty = fopen(info_file, "w");
+  if (empty) fclose(empty);
+}
+
 void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
                                                       unsigned sm_version) {
   std::string ptxas_filename(std::string(filename) + "as");
@@ -364,11 +386,8 @@ void gpgpu_context::gpgpu_ptx_info_load_from_filename(const char *filename,
       "$CUDA_INSTALL_PATH/bin/ptxas %s -v %s --output-file  /dev/null 2> %s",
       extra_flags, filename, ptxas_filename.c_str());
   int result = system(buff);
-  if (result != 0) {
-    printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-    printf("               Ensure ptxas is in your path.\n");
-    exit(1);
-  }
+  if (result != 0)
+    ptxas_failed_keep_going(filename, ptxas_filename.c_str(), result);
 
   FILE *ptxinfo_in;
   ptxinfo->g_ptxinfo_filename = strdup(ptxas_filename.c_str());
@@ -474,11 +493,8 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
                commandline);
         result = system(commandline);
       }
-      if (result != 0) {
-        printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-        printf("               Ensure ptxas is in your path.\n");
-        exit(1);
-      }
+      if (result != 0)
+        ptxas_failed_keep_going(ptx_file, tempfile_ptxinfo, result);
     }
   }
 
@@ -536,11 +552,7 @@ void gpgpu_context::gpgpu_ptxinfo_load_from_string(const char *p_for_info,
     printf("GPGPU-Sim PTX: generating ptxinfo using \"%s\"\n", commandline);
     fflush(stdout);
     result = system(commandline);
-    if (result != 0) {
-      printf("GPGPU-Sim PTX: ERROR ** while loading PTX (b) %d\n", result);
-      printf("               Ensure ptxas is in your path.\n");
-      exit(1);
-    }
+    if (result != 0) ptxas_failed_keep_going(fname2, tempfile_ptxinfo, result);
   }
 
   // Now that we got resource usage per kernel in a ptx file, we dump all into
