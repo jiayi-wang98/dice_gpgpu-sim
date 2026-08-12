@@ -1,10 +1,53 @@
 # Sharing the L1D across the 4 CPs of a CGRA cluster
 
+> ## STATUS: IMPLEMENTED (Phases A–C), except Phase D. Verified 2026-08-12.
+>
+> **This is no longer a pending plan.** The mechanism below is in the tree. What
+> shipped, and where:
+>
+> | Plan item | Status | Where it lives now |
+> |---|---|---|
+> | `-dice_shared_l1d` knob, **default 0** | **shipped** | `src/gpgpu-sim/gpu-sim.cc:286-292`; field `shader_core_config::dice_shared_l1d` at `src/gpgpu-sim/shader.h:1740` |
+> | Phase A — one L1D per cluster, wired into every CP's `ldst_unit` | **shipped** | `exec_simt_core_cluster::create_cgra_core_ctx()`, `src/gpgpu-sim/cgra_core.cc:698-744` |
+> | Phase A — `ldst_unit` no longer unconditionally owns the L1D | **shipped**, as `bool m_l1d_owner` (not `m_owns_l1d`) | `src/gpgpu-sim/shader.h:1429`; set at `shader.cc:2577`; DICE ctor takes `l1_cache *shared_l1d` at `shader.cc:2557-2585` |
+> | Phase B — cross-CP bank arbitration | **shipped**, and called **Phase E** in the code | `simt_core_cluster::pick_l1d_bank_winners()`, `src/gpgpu-sim/shader.cc:4417-4438`; gate in `ldst_unit::L1_latency_queue_cycle_cgra`, `cgra_core.cc:3170-3182` |
+> | Phase C — don't double-count shared-L1D stats | **shipped** | `ldst_unit::get_cache_stats` / `get_L1D_sub_stats` gate on `m_l1d_owner`, `src/gpgpu-sim/shader.cc:1793-1807` |
+> | Phase D — A100 configs (`gpgpusim_dice_a100_*.config`) | **NOT DONE** | No A100 config, no `gpgpusim_dice_*.config`, and no `accelwattch_dice_sim.xml` exists anywhere in this repository. `sim/configs/` holds only the upstream GPGPU-Sim `tested-cfgs/` and `deprecated-cfgs/` trees. |
+>
+> **Two ways the shipped design differs from the plan below, deliberately:**
+>
+> 1. **Who allocates.** The plan says the cluster allocates one `l1_cache`
+>    *before* the CP loop. What shipped instead: **CP 0 allocates as usual**, the
+>    cluster captures `m_cgra_core[0]->get_ldst_l1d()` right after CP 0 is
+>    constructed, and passes that pointer to CPs 1..N-1. So the "owner" is CP 0,
+>    identified by having received `shared_l1d == NULL`, and CP 0 frees it.
+> 2. **Scope grew.** The same pattern was extended to two more caches the plan
+>    never mentions: `-dice_shared_il1` (L1I / metadata cache) and
+>    `-dice_shared_l1b` (bitstream cache), both also default 0
+>    (`src/gpgpu-sim/gpu-sim.cc:293-302`, `shader.h:1745-1746`). SMEM stayed
+>    per-CP, as §"Open questions" recommended.
+>
+> **What was NOT verified for this note:** whether the Phase-A/B/C *validation
+> runs* described at the bottom of this document were ever performed. There is no
+> recorded result for them in this repository, and Phase D (the A100 config the
+> validation is written against) does not exist, so treat the "Validation plan"
+> and "Acceptance criteria" sections as still-unmet.
+>
+> The rest of this document is the **original plan text**, kept for its rationale.
+> Its line-number citations are the pre-implementation ones and no longer point
+> where they say; use the table above.
+
 ## Background — why this matters
 
 DICE decomposes one "SM-equivalent" into a **CGRA cluster** containing
-`n_cores_per_cluster` (default = 4) **CPs / sub-cores**, each running an
-independent 4×5 CGRA fabric. In gpgpu-sim terms, each CP is a separate
+`n_cores_per_cluster` **CPs / sub-cores**, each running an
+independent CGRA fabric. (Naming note: the actual config field is
+`shader_core_config::n_simt_cores_per_cluster`, set by
+`-gpgpu_n_cores_per_cluster`, whose built-in default is **3**, not 4 — the "4"
+below is the intended DICE cluster width, and there is no DICE `gpgpusim.config`
+in this repository that pins it. The simulator has no fabric-geometry knob at
+all, so the "4×5" fabric shape is a property of `device/dice_v2.yaml`, not of
+this code.) In gpgpu-sim terms, each CP is a separate
 `shader_core_ctx` (subclassed as `cgra_core_ctx`), and each one owns its
 own `ldst_unit`, which in turn owns its own `m_L1D`.
 
@@ -50,6 +93,16 @@ memory and the arbitration of L1 ports.
 
 Everything is in `src/gpgpu-sim/`. Concretely:
 
+> **The line numbers in this table are the pre-implementation ones (2026-08-05-ish)
+> and have all moved.** The shipped locations are in the STATUS table at the top of
+> this file. Two entries are also wrong about *names*: the class is
+> `exec_simt_core_cluster` (derived from `simt_core_cluster`) — there is no
+> `cgra_simt_core_cluster` in the tree — and the cluster creation loop is
+> `exec_simt_core_cluster::create_cgra_core_ctx()` at `cgra_core.cc:698`, not
+> `cgra_core.cc:554` (which is `cgra_core_ctx::issue_block2core`). The flag shipped
+> as `m_l1d_owner`, spelled the other way round from the plan's `m_owns_L1D`: it is
+> **true** for the CP that allocated the cache.
+
 | File / line | What it does today | What it needs to do |
 |---|---|---|
 | `shader.h:1416` (`l1_cache *m_L1D;` inside `ldst_unit`) | Each `ldst_unit` owns one L1D | Replace with `l1_cache *m_L1D` *reference* set by the cluster at construction time |
@@ -74,7 +127,12 @@ branch:
 -dice_shared_l1d 1
 ```
 
-`shader.h` config parser registers it; `cgra_simt_core_cluster::create_cgra_core_ctx` branches on it.
+**As shipped:** the knob is registered in
+`gpgpu_sim_config::reg_options` (`src/gpgpu-sim/gpu-sim.cc:286-292`) — not by a
+`shader.h` parser — with default `"0"`, and
+`exec_simt_core_cluster::create_cgra_core_ctx` (`cgra_core.cc:698`) branches on
+it. Its help text also records the reinterpretation of `gpgpu_cache:dl1` and
+`gpgpu_l1_banks` as per-cluster.
 
 When `dice_shared_l1d=1`, the **per-CP** L1D size in the config string
 (`gpgpu_cache:dl1`) is interpreted as the **per-cluster** L1D size — i.e.
@@ -83,7 +141,8 @@ config we already wrote, `S:3:128:128 = 48 KB` per CP would need to become
 `S:12:128:128 = 192 KB` for the cluster (matching A100 per-SM L1).
 
 We'll document this clearly in `gpgpusim_dice_a100.config` and probably
-ship two variants:
+ship two variants — **neither of which exists; none of these three config files
+is in this repository (Phase D, not done):**
 - `gpgpusim_dice_a100_private_l1.config` — 48 KB per CP × 4 = 192 KB
   partitioned (the current "DICE legacy" behaviour)
 - `gpgpusim_dice_a100_shared_l1.config` — 192 KB unified shared (the new
@@ -105,10 +164,16 @@ all 4 CPs**, with each request mapped to a bank by the existing
 A simple **round-robin per cycle** arbiter is the first implementation;
 LRR or oldest-first refinements are follow-ups.
 
-The arbiter lives in `cgra_simt_core_cluster::cycle()` (or a new
-`cluster_l1d_cycle()` called there) — it iterates the 4 CPs in
-round-robin starting from a stride, draining each CP's
-`l1_latency_queue` heads into the shared L1D.
+**As shipped:** the arbiter is `simt_core_cluster::pick_l1d_bank_winners()`
+(`shader.cc:4417`), called at the top of both `core_cycle()` and `cgra_cycle()`
+*before* the CPs run, and it publishes a per-bank winner rather than draining
+queues itself. Each CP's `L1_latency_queue_cycle_cgra` then consults
+`is_l1d_bank_winner(sid, bank)` (`shader.h:2526`) and stalls its `slot[0]`
+submission for one cycle if it lost (`cgra_core.cc:3170-3182`). Round-robin state
+is `m_last_l1d_bank_owner[bank]`, and the pending-work probe is
+`cgra_core_ctx::ldst_l1_slot0_pending()` (`cgra_core.cc:880`) →
+`ldst_unit::l1_latency_queue_slot0_pending()` (`shader.h:1474`). There is no
+`cluster_l1d_cycle()`.
 
 ## Power-model implications
 
@@ -129,7 +194,7 @@ and should reduce miss traffic — that's the win.
 
 ## Implementation phases
 
-1. **Phase A — wiring (no behaviour change with shared_l1d=0).**
+1. **Phase A — wiring (no behaviour change with shared_l1d=0).** — **DONE.**
    - Add `dice_shared_l1d` config knob, default 0.
    - Add a `bool m_owns_l1d` flag to `ldst_unit`; constructor takes an
      optional `l1_cache *shared_l1d`. If non-null, store it as
@@ -140,7 +205,9 @@ and should reduce miss traffic — that's the win.
    - **Build, run the existing test suite at `dice_shared_l1d=0`** —
      numbers must be identical to the current branch (no regression).
 
-2. **Phase B — bank arbitration.**
+2. **Phase B — bank arbitration.** — **DONE, but differently: the code calls it
+   "Phase E", and `L1_latency_queue_cycle_cgra` stayed per-`ldst_unit`.** Only the
+   *winner selection* moved to the cluster; the queue cycling did not.
    - Move `L1_latency_queue_cycle_cgra` from per-`ldst_unit` to a
      cluster-level helper.
    - Implement round-robin arbiter across the 4 CPs' head requests,
@@ -151,12 +218,16 @@ and should reduce miss traffic — that's the win.
      micro-benchmark (e.g., two CPs reading the same line) should
      improve under shared mode.
 
-3. **Phase C — bookkeeping cleanup.**
+3. **Phase C — bookkeeping cleanup.** — **DONE for the stats half** (owner-CP
+   gating in `ldst_unit::get_cache_stats` / `get_L1D_sub_stats`,
+   `shader.cc:1793-1807`). The `accelwattch_dice_sim.xml` half is **moot**: no such
+   file exists in this repository.
    - Aggregate per-CP L1 stats into one per-cluster stat when shared.
    - Update `accelwattch_dice_sim.xml` access-counter aggregation if
      needed.
 
-4. **Phase D — A100 config update.**
+4. **Phase D — A100 config update.** — **NOT DONE.** No `gpgpusim_dice_a100*.config`
+   (or any DICE `gpgpusim.config`) exists in this repository.
    - Ship `gpgpusim_dice_a100_shared_l1.config` with `dice_shared_l1d=1`
      and a per-cluster `dl1` size of 192 KB (4× the per-CP variant).
    - Re-run the Table V state-PE benchmarks under the shared-L1 model

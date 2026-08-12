@@ -1,5 +1,22 @@
 # checkpoint documentation #
 
+> **Verified 2026-08-12.** All nine options named below are still registered and
+> still spelled this way — they live in `src/abstract_hardware_model.cc:146-165`
+> (not in `gpu-sim.cc`), plus `-gpgpu_ptx_sim_mode` in
+> `src/gpgpu-sim/gpu-sim.cc:715`.
+>
+> **This applies to DICE mode too.** The DICE core carries its own copy of the
+> checkpoint/resume logic, mirroring the SIMT path:
+> `src/gpgpu-sim/cgra_core.cc:593-624` (per-thread registers, per-thread local
+> memory, per-CTA shared memory) and `cgra_core.cc:678-690` (SIMT-stack resume).
+> One difference worth knowing: the DICE core writes and reads its SIMT-stack
+> checkpoint as `checkpoint_files/warp_0_<ctaid>_simt.txt` — always index 0,
+> because a DICE CTA has one stack rather than one per warp — whereas the SIMT
+> path uses `warp_<n>_<ctaid>_simt.txt` (`src/gpgpu-sim/shader.cc:532-536`).
+>
+> The `samples/0_Simple/vectorAdd` example referenced at the bottom is from the
+> **NVIDIA CUDA SDK**, which is not vendored here; there is no `sim/samples/`.
+
 The following diagram shows the how checkpoiting works and different variables which can be user defined
 
 ![Checkpoint](doc/checkpoint.png)

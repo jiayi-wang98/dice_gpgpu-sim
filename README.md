@@ -1,3 +1,41 @@
+# This tree is `dice_gpgpu-sim`, a DICE fork of GPGPU-Sim 4.0
+
+**Read this first.** Everything below the next heading is the **upstream GPGPU-Sim
+README**, kept as-is because the build and run instructions still apply. It does
+not mention DICE anywhere, so orient yourself here:
+
+- This directory is a **git submodule** of DICE-IDE (`.git` is a gitlink to
+  `../.git/modules/sim`; branch `dice-ide` of `jiayi-wang98/dice_gpgpu-sim`, pinned
+  in DICE-IDE's `deps/pins.ini` under `[gpgpu-sim]`).
+- The DICE additions live beside the upstream SIMT model, not instead of it. DICE
+  mode is selected at runtime (`gpgpu_ctx->g_dice_enabled`); the SIMT path is
+  untouched and is what the GPU baselines run on.
+- New source, all in `src/`:
+  - `src/gpgpu-sim/cgra_core.{h,cc}` — `cgra_core_ctx` (the DICE "CP", a sibling of
+    `shader_core_ctx`), its dispatcher/RF, and the DICE `ldst_unit` methods
+    (`*_cgra`).
+  - `src/cuda-sim/dice_metadata.{h,cc}` — the `.meta` p-graph records and
+    `dice_cfg_block_t`.
+  - `src/cuda-sim/cuda-sim.cc` — `dice_exec_inst_light`, the DICE functional step.
+  - `src/gpuwattch/` — carries the DICE energy terms (`m_dice_params`,
+    `dice_acc_op_e`) on top of GPUWattch.
+- DICE options are the `-dice_*` family, registered in
+  `src/gpgpu-sim/gpu-sim.cc` (`-dice_cgra_core_*`, `-dice_shared_l1d`,
+  `-dice_shared_il1`, `-dice_shared_l1b`, `-dice_enable_unrolling`, …).
+- **There is no DICE `gpgpusim.config` in this repository.** `configs/` contains
+  only the upstream device configs (`configs/tested-cfgs/`,
+  `configs/deprecated-cfgs/`). A DICE run supplies its own config.
+
+DICE-specific documentation in this tree:
+
+| file | what it is |
+|---|---|
+| [`doc/atomic_implementation.md`](doc/atomic_implementation.md) | how `atom.global` (L1D-bypass, RMW at L2 pop) and `atom.shared` (the accumulator-PE intrinsic) are modelled. Describes shipped code. |
+| [`doc/shared_l1d_plan.md`](doc/shared_l1d_plan.md) | sharing one L1D across the CPs of a cluster. Implemented (default off); Phase D not done. |
+| [`checkpoint.md`](checkpoint.md) | the inherited checkpoint/resume flow, which the DICE core also implements. |
+
+---
+
 Welcome to GPGPU-Sim, a cycle-level simulator modeling contemporary graphics
 processing units (GPUs) running GPU computing workloads written in CUDA or
 OpenCL. Also included in GPGPU-Sim is a performance visualization tool called
@@ -288,9 +326,14 @@ If running applications which use cuDNN or cuBLAS:
    (the number 61 refers to the SM version. You would need to set it based 
    on the GPGPU-Sim config `-gpgpu-ptx-force-max-capability` you use)
 
-Copy the contents of configs/QuadroFX5800/ or configs/GTX480/ to your
+Copy the contents of one of the config directories under `configs/` to your
 application's working directory. These files configure the microarchitecture
-models to resemble the respective GPGPU architectures.
+models to resemble the respective GPGPU architectures. In this tree they are
+split two ways (verified 2026-08-12): the maintained ones are
+`configs/tested-cfgs/` — `SM2_GTX480`, `SM3_KEPLER_TITAN`, `SM6_TITANX`,
+`SM7_TITANV`, `SM7_QV100`, `SM75_RTX2060` — and the unmaintained ones are
+`configs/deprecated-cfgs/`, which is where `QuadroFX5800/` and `GTX480/` now
+live. There is no bare `configs/QuadroFX5800/` or `configs/GTX480/` any more.
 
 To use ptxplus (native ISA) change the following options in the configuration
 file to "1" (Note: you need CUDA version 4.0) as follows:
@@ -317,8 +360,13 @@ The following GPGPU-Sim configuration options are used to enable GPUWattch
 	-gpuwattch_xml_file <filename>.xml
 
 
-The GPUWattch XML configuration file name is set to gpuwattch.xml by default and
-currently only supplied for GTX480 (default=gpuwattch_gtx480.xml). Please refer to
+The `-gpuwattch_xml_file` option defaults to the literal name `gpuwattch.xml`
+(`src/gpgpu-sim/gpu-sim.cc:99`), so each config directory names its own file
+explicitly. As of 2026-08-12 the shipped power XMLs are
+`configs/tested-cfgs/SM2_GTX480/gpuwattch_gtx480.xml` plus four under
+`configs/deprecated-cfgs/` (GTX480, GeForceGTX750Ti, QuadroFX5600, SM6_GTX1080,
+and copies of the GTX480 file under SM6_P100 / SM6_TITANX); the other
+`tested-cfgs` directories ship no power XML. Please refer to
 <http://gpgpu-sim.org/gpuwattch/> for more information.
 
 Running OpenCL applications is identical to running CUDA applications. However,

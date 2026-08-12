@@ -1,5 +1,35 @@
 # Atomic operations in dice_gpgpu-sim
 
+> **This is a description of SHIPPED CODE, not a proposal.** Every mechanism below
+> was re-verified against the tree on **2026-08-12**: the dispatch-time fork, the
+> `atom.shared` synchronous fire, the `g_dice_acc_op_count` → `dice_acc_op_e`
+> energy term, the `atom.global` L1D bypass, the coalescer's `is_atomic` merge key,
+> `mem_fetch::do_atomic()` at L2 pop, and the response-FIFO → `m_next_global_cgra`
+> routing are all present and wired. Two caveats, both recorded rather than
+> silently "fixed":
+>
+> 1. **All `file:line` citations below were stale and have been corrected to the
+>    2026-08-12 line numbers.** Several were off by 10–350 lines.
+> 2. **Two in-code comments contradict §2.4 and should be reconciled by a code
+>    owner.** `src/gpgpu-sim/mem_fetch.cc:154-157` and
+>    `src/cuda-sim/dice_metadata.h:302-304` both say the per-tid deferred-callback
+>    path is *"Currently unused — DICE atomics run synchronously in
+>    `dice_exec_inst_light`"*. Reading the code, that is true only of
+>    `atom.shared`: `atom.global` really does register the callback
+>    (`cuda-sim.cc:2349`), the mf really is flagged atomic, and
+>    `memory_sub_partition::pop()` really does call `mf->do_atomic()`
+>    (`l2cache.cc:819`), so the path looks live for global atomics. **Not verified
+>    by execution** — no DICE atomics run is recorded in this repository — so this
+>    document keeps the §2 description and flags the comments as suspect rather
+>    than asserting either way.
+> 3. **The worked example in §4 is not in this repository.** Neither
+>    `cuda/reduce_large_acc/reduce_large_acc.cu` nor `cuda/dice_test/dice_atomics.h`
+>    (nor any file defining `dice_cta_acc_add` / `__dice_acc_slots`) exists in
+>    DICE-IDE; they live in the separate benchmark tree the DICEwattch work used.
+>    §4 is therefore an illustration, not something you can run from here. Likewise
+>    "Table V of the paper" and "the 13 state-PE benchmarks" are external
+>    references.
+
 This document describes how the DICE simulator implements two distinct atomic
 flavors:
 
@@ -30,7 +60,7 @@ The shared front-end is in `src/cuda-sim/instructions.cc`.
 ### 1.1 `atom_impl` — captures the address, defers the RMW
 
 ```cpp
-// src/cuda-sim/instructions.cc:1472
+// src/cuda-sim/instructions.cc:1483   (the callback store is at :1524)
 void atom_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
     // ...
     thread->m_last_effective_address = effective_address_final;
@@ -95,10 +125,10 @@ if (pI->get_opcode() == ATOM_OP && !skip) {
         // ── Shared path: fire synchronously, charge PIPE_A ─────────────────
         m_last_dram_callback.function(m_last_dram_callback.instruction, this);
         m_last_dram_callback.function = NULL;
-        extern unsigned long long g_dice_acc_op_count;
+        extern unsigned long long g_dice_acc_op_count;   // :2343-2344
         g_dice_acc_op_count++;
     } else {
-        // ── Global path: defer; register callback on the cfg_block ────────
+        // ── Global path: defer; register callback on the cfg_block ──── :2349
         CFGBlock->add_callback(tid,
                                m_last_dram_callback.function,
                                m_last_dram_callback.instruction,
@@ -179,11 +209,12 @@ SM-level atomics directly to the L2 atomic unit. DICE mirrors this: any
 straight to the NoC.
 
 The relevant L1D-bypass logic lives in
-`src/gpgpu-sim/cgra_core.cc:2767` inside
-`ldst_unit::process_memory_access_queue_l1cache_cgra`:
+`src/gpgpu-sim/cgra_core.cc:3110` inside
+`ldst_unit::process_memory_access_queue_l1cache_cgra` (function starts at
+`cgra_core.cc:3098`):
 
 ```cpp
-// src/gpgpu-sim/cgra_core.cc:2767
+// src/gpgpu-sim/cgra_core.cc:3110
 if (access.is_atomic()) {
     unsigned ctrl_size = access.is_write() ? WRITE_PACKET_SIZE : READ_PACKET_SIZE;
     unsigned size      = access.get_size() + ctrl_size;
@@ -209,9 +240,10 @@ ops) could be merged incorrectly. The coalescer therefore carries
 `is_atomic` as part of its merge key:
 
 ```cpp
-// src/gpgpu-sim/cgra_core.cc:3348
+// src/gpgpu-sim/cgra_core.cc:3701
 new_info.is_atomic = access.is_atomic();
 // ...
+// merge predicate: cgra_core.cc:3722-3728
 if ((m_coalescing_transaction_info_buffer[port].block_addr  == new_info.block_addr) &&
     (m_coalescing_transaction_info_buffer[port].access_type == new_info.access_type) &&
     (m_coalescing_transaction_info_buffer[port].space       == new_info.space) &&
@@ -223,8 +255,8 @@ if ((m_coalescing_transaction_info_buffer[port].block_addr  == new_info.block_ad
 ```
 
 When the coalescer emits the merged transaction it sets
-`access.set_atomic(info.is_atomic)` so the L1D-bypass predicate above sees the
-flag.
+`access.set_atomic(info.is_atomic)` (`cgra_core.cc:3942` and `:3948`, one per
+emit site) so the L1D-bypass predicate above sees the flag.
 
 ### 2.4 The deferred RMW at L2 pop
 
@@ -263,7 +295,9 @@ on the `dice_cfg_block_t` (set up by `add_callback` at dispatch time) and
 invokes `atom_callback(inst, thread)` for each tid in the set:
 
 ```cpp
-// src/cuda-sim/dice_metadata.h:287
+// src/cuda-sim/dice_metadata.h:305   (add_callback is at :283)
+// NOTE: the comment immediately above this function in the source claims it is
+// "Currently unused" — see caveat 2 at the top of this document.
 void do_atomic(const std::set<unsigned> &tids) {
     if (!m_should_do_atomic) return;
     for (auto tid : tids) {
@@ -286,12 +320,12 @@ they would on real hardware where the L2 atomic unit serializes RMWs.
 ### 2.5 Return through the response FIFO
 
 After L2 pop, the atomic mf reaches the originating CGRA-core's
-`m_response_fifo`. The cycle stage at line 2596 of `cgra_core.cc` checks the
-atomic flag and routes the mf to `m_next_global_cgra` so the regular
-load-writeback path can finish the job:
+`m_response_fifo`. The response stage of `ldst_unit::cycle_cgra()`
+(`cgra_core.cc:2849`) checks the atomic flag at `cgra_core.cc:2946` and routes the
+mf to `m_next_global_cgra` so the regular load-writeback path can finish the job:
 
 ```cpp
-// src/gpgpu-sim/cgra_core.cc:2596
+// src/gpgpu-sim/cgra_core.cc:2946
 if (mf->isatomic()) {
     if (m_next_global_cgra == NULL) {
         mf->set_status(IN_SHADER_FETCHED, /*now*/);
@@ -422,7 +456,7 @@ m_dice_params.s.PIPE_A      = 0.0257;        // nJ
 m_dice_params.dice_acc_op_e = 0.0257;        // defaults to PIPE_A
 // ...
 energy_per_kernel +=
-    counters.acc_ops * dice_params.dice_acc_op_e;  // (line 461)
+    counters.acc_ops * dice_params.dice_acc_op_e;  // (line 462)
 ```
 
 DICEwattch reports both the raw op count and the resulting energy:
@@ -450,6 +484,12 @@ residual SHRD_ACC term so the two contributions are auditable per-kernel.
 ---
 
 ## 4. Worked example: `reduce_large_acc.cu`
+
+> **Not in this repository.** `cuda/reduce_large_acc/reduce_large_acc.cu` and the
+> `cuda/dice_test/dice_atomics.h` it includes are in the external DICEwattch
+> benchmark tree, not in DICE-IDE (checked 2026-08-12: nothing here defines
+> `dice_cta_acc_add` or `__dice_acc_slots`). Read this section as an illustration
+> of the two paths, not as a runnable recipe.
 
 The benchmark `cuda/reduce_large_acc/reduce_large_acc.cu` is a clean
 single-kernel demonstration that exercises **both** atomic flavors:
@@ -534,8 +574,9 @@ This is a textbook global atomic. The flow:
    `dice_cfg_block_t::do_atomic(tids)` → the registered `atom_callback`
    fires. The RMW happens here, modifying `*out` in the global
    `memory_space_impl`.
-7. The mf returns through the response FIFO. The cycle stage at line
-   2596 of `cgra_core.cc` routes it into `m_next_global_cgra`.
+7. The mf returns through the response FIFO. The response stage of
+   `ldst_unit::cycle_cgra()`, at `cgra_core.cc:2946`, routes it into
+   `m_next_global_cgra`.
 8. `writeback_cgra_ldst` writes the OLD value of `*out` (captured by
    `atom_callback` at step 6) into the dst register slot listed in
    `LD_DEST_REGS`, releases the scoreboard, and increments
@@ -573,18 +614,24 @@ Energy term         g_dice_acc_op_count          NOC_A + L2CP + (MCP/DRAMP)
 
 ## 5. Quick file/function index
 
+All line numbers re-verified 2026-08-12.
+
 | Concern | File | Symbol |
 |---|---|---|
-| PTX decode of `atom.*` | `src/cuda-sim/instructions.cc` | `atom_impl` (line 1472) |
+| PTX decode of `atom.*` | `src/cuda-sim/instructions.cc` | `atom_impl` (line 1483; stores the callback at 1524) |
 | RMW kernel | `src/cuda-sim/instructions.cc` | `atom_callback` (line 1146) |
-| Dispatch-time fork (shared vs global) | `src/cuda-sim/cuda-sim.cc` | `dice_exec_inst_light` (line 2319) |
-| acc-op counter | `src/cuda-sim/cuda-sim.cc` | `g_dice_acc_op_count` (line 61) |
-| Defer callback to cfg_block | `src/cuda-sim/dice_metadata.h` | `add_callback` (line 265) |
-| Per-tid callback fire | `src/cuda-sim/dice_metadata.h` | `do_atomic(tids)` (line 287) |
-| Atomic flag through coalescer | `src/gpgpu-sim/cgra_core.cc` | `dice_transaction_info::is_atomic` (line 3348) |
-| L1D bypass (atom-as-load) | `src/gpgpu-sim/cgra_core.cc` | `process_memory_access_queue_l1cache_cgra` (line 2767) |
-| Response-FIFO routing for atomic mf | `src/gpgpu-sim/cgra_core.cc` | line 2596 (`if (mf->isatomic())`) |
-| L2 RMW fire | `src/gpgpu-sim/l2cache.cc` | `memory_sub_partition::pop` (line 819) |
+| Dispatch-time fork (shared vs global) | `src/cuda-sim/cuda-sim.cc` | `dice_exec_inst_light` — the `ATOM_OP` block at line 2319, shared branch 2332, global branch 2345 |
+| acc-op counter | `src/cuda-sim/cuda-sim.cc` | `g_dice_acc_op_count` (definition line 61; incremented 2344) |
+| Skip/predicated-off load accounting | `src/cuda-sim/cuda-sim.cc` | line 2197 (`is_smem_atom` guard at 2206) |
+| Defer callback to cfg_block | `src/cuda-sim/dice_metadata.h` | `add_callback` (line 283) |
+| Per-tid callback fire | `src/cuda-sim/dice_metadata.h` | `do_atomic(tids)` (line 305) |
+| Atomic flag through coalescer | `src/gpgpu-sim/cgra_core.cc` | `dice_transaction_info::is_atomic` (set line 3701, merge key 3727, re-applied on emit 3942/3948) |
+| L1D bypass (atom-as-load) | `src/gpgpu-sim/cgra_core.cc` | `process_memory_access_queue_l1cache_cgra` (function line 3098, bypass at 3110) |
+| Response-FIFO routing for atomic mf | `src/gpgpu-sim/cgra_core.cc` | `ldst_unit::cycle_cgra` (line 2849); `if (mf->isatomic())` at line 2946 |
+| `cgra_block_state_t` → cfg_block hop | `src/gpgpu-sim/cgra_core.cc` | `do_atomic_dice` (line 1216) |
+| L2 RMW fire | `src/gpgpu-sim/l2cache.cc` | `memory_sub_partition::pop` (line 816; `mf->do_atomic()` at 819) |
 | mem_fetch dispatch to per-tid callbacks | `src/gpgpu-sim/mem_fetch.cc` | `mem_fetch::do_atomic` (line 150) |
-| DICEwattch acc-op energy | `src/gpuwattch/gpgpu_sim_wrapper.cc` | `dice_acc_op_e` (line 218), `acc_ops × dice_acc_op_e` (line 461) |
+| DICEwattch acc-op energy | `src/gpuwattch/gpgpu_sim_wrapper.cc` | `PIPE_A` (line 215), `dice_acc_op_e` (line 218), `DICE_ACC_OP_E` XML override (262), `acc_ops × dice_acc_op_e` (line 462) |
 | DICEwattch report line | `src/gpuwattch/gpgpu_sim_wrapper.cc` | `"dice_acc_ops = ..."` (line 589) |
+| acc-op counter read-out | `src/gpgpu-sim/power_stat.h` | `g_dice_acc_op_count` (line 230) |
+| `SHRD_ACC` reference coefficient (§3.4) | `src/gpuwattch/gpgpu_sim_wrapper.cc` | `1.313660815` nJ (line 188) — 51× `PIPE_A` |
