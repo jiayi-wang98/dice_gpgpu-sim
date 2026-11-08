@@ -4081,7 +4081,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
           assert(0);
           break;
       }
-      d.f32 = a.f32 * b.f32 + c.f32;
+      d.f32 = fmaf(a.f32, b.f32, c.f32);
       if (pI->saturation_mode()) {
         if (d.f32 < 0)
           d.f32 = 0;
@@ -4105,7 +4105,7 @@ void mad_def(const ptx_instruction *pI, ptx_thread_info *thread,
           assert(0);
           break;
       }
-      d.f64 = a.f64 * b.f64 + c.f64;
+      d.f64 = fma(a.f64, b.f64, c.f64);
       if (pI->saturation_mode()) {
         if (d.f64 < 0)
           d.f64 = 0;
@@ -5052,6 +5052,7 @@ bool CmpOp(int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop) {
         default:
           assert(0);
       }
+      break;
 
     case B32_TYPE:
       switch (cmpop) {
@@ -5064,6 +5065,7 @@ bool CmpOp(int type, ptx_reg_t a, ptx_reg_t b, unsigned cmpop) {
         default:
           assert(0);
       }
+      break;
     case B64_TYPE:
       switch (cmpop) {
         case EQ_OPTION:
