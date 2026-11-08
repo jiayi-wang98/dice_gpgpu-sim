@@ -1354,6 +1354,8 @@ ptx_instruction::ptx_instruction(
   m_neg = false;
   m_to_option = false;
   m_cache_option = 0;
+  m_shf_dir = 0;
+  m_shf_mode = 0;
   m_rounding_mode = RN_OPTION;
   m_compare_op = -1;
   m_saturation_mode = 0;
@@ -1540,6 +1542,14 @@ ptx_instruction::ptx_instruction(
       case PRMT_ECR_MODE:
       case PRMT_RC16_MODE:
         m_prmt_op = last_ptx_inst_option;
+        break;
+      case SHF_L_MODE:
+      case SHF_R_MODE:
+        m_shf_dir = last_ptx_inst_option;
+        break;
+      case SHF_WRAP_MODE:
+      case SHF_CLAMP_MODE:
+        m_shf_mode = last_ptx_inst_option;
         break;
       default:
         assert(0);
