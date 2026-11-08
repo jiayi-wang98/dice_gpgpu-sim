@@ -1143,6 +1143,8 @@ class ptx_instruction : public warp_inst_t {
   unsigned barrier_op() const { return m_barrier_op; }
   unsigned shfl_op() const { return m_shfl_op; }
   unsigned prmt_op() const { return m_prmt_op; }
+  unsigned shf_dir() const { return m_shf_dir; }
+  unsigned shf_mode() const { return m_shf_mode; }
   enum vote_mode_t { vote_any, vote_all, vote_uni, vote_ballot };
   enum vote_mode_t vote_mode() const { return m_vote_mode; }
 
@@ -1219,6 +1221,8 @@ class ptx_instruction : public warp_inst_t {
   unsigned m_barrier_op;
   unsigned m_shfl_op;
   unsigned m_prmt_op;
+  unsigned m_shf_dir;
+  unsigned m_shf_mode;
 
   std::list<int> m_scalar_type;
   memory_space_t m_space_spec;

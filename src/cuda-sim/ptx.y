@@ -221,6 +221,10 @@ class ptx_recognizer;
 %token	PRMT_RC16_MODE;
 %token	PRMT_ECL_MODE;
 %token	PRMT_ECR_MODE;
+%token	SHF_L_MODE;
+%token	SHF_R_MODE;
+%token	SHF_WRAP_MODE;
+%token	SHF_CLAMP_MODE;
 
 %type <int_value> function_decl_header
 %type <ptr_value> function_decl
@@ -472,6 +476,7 @@ option: type_spec
 	| rounding_mode
 	| wmma_spec 
 	| prmt_spec 
+	| shf_spec
 	| SYNC_OPTION { recognizer->add_option(SYNC_OPTION); }
 	| ARRIVE_OPTION { recognizer->add_option(ARRIVE_OPTION); }
 	| RED_OPTION { recognizer->add_option(RED_OPTION); }
@@ -566,6 +571,12 @@ prmt_spec: PRMT_F4E_MODE { recognizer->add_option( PRMT_F4E_MODE); }
 	|  PRMT_RC16_MODE{ recognizer->add_option( PRMT_RC16_MODE);}
 	|  PRMT_ECL_MODE { recognizer->add_option( PRMT_ECL_MODE); }
 	|  PRMT_ECR_MODE { recognizer->add_option( PRMT_ECR_MODE); }
+	;
+
+shf_spec: SHF_L_MODE { recognizer->add_option(SHF_L_MODE); }
+	| SHF_R_MODE { recognizer->add_option(SHF_R_MODE); }
+	| SHF_WRAP_MODE { recognizer->add_option(SHF_WRAP_MODE); }
+	| SHF_CLAMP_MODE { recognizer->add_option(SHF_CLAMP_MODE); }
 	;
 
 wmma_spec: WMMA_DIRECTIVE LAYOUT CONFIGURATION{recognizer->add_space_spec(global_space,0);recognizer->add_ptr_spec(global_space); recognizer->add_wmma_option($1);recognizer->add_wmma_option($2);recognizer->add_wmma_option($3);}

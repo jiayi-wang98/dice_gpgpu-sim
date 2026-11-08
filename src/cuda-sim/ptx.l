@@ -131,6 +131,7 @@ sad     TC; yylval->int_value = SAD_OP; return OPCODE;
 selp	TC; yylval->int_value = SELP_OP; return OPCODE;
 setp    TC; yylval->int_value = SETP_OP; return OPCODE;
 set	TC; yylval->int_value = SET_OP; return OPCODE;
+shf	TC; yylval->int_value = SHF_OP; return OPCODE;
 shfl	TC; yylval->int_value = SHFL_OP; return OPCODE;
 shl     TC; yylval->int_value = SHL_OP; return OPCODE;
 shr     TC; yylval->int_value = SHR_OP; return OPCODE;
@@ -187,6 +188,11 @@ breakaddr  TC; yylval->int_value = BREAKADDR_OP; return OPCODE;
 \.ecl TC;  return PRMT_ECL_MODE;
 \.ecr TC;  return PRMT_ECR_MODE;
 \.rc16 TC; return PRMT_RC16_MODE;
+
+\.l	TC; return SHF_L_MODE;
+\.r	TC; return SHF_R_MODE;
+\.wrap	TC; return SHF_WRAP_MODE;
+\.clamp	TC; return SHF_CLAMP_MODE;
 
 \.align TC; return ALIGN_DIRECTIVE;
 \.branchtargets TC; return BRANCHTARGETS_DIRECTIVE;

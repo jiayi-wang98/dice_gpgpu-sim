@@ -5541,6 +5541,54 @@ void shfl_impl(const ptx_instruction *pI, core_t *core, warp_inst_t inst) {
   }
 }
 
+void shf_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
+  ptx_reg_t a, b, c, d;
+  const operand_info &dst = pI->dst();
+  const operand_info &src1 = pI->src1();
+  const operand_info &src2 = pI->src2();
+  const operand_info &src3 = pI->src3();
+
+  unsigned i_type = pI->get_type();
+  assert(i_type == B32_TYPE);
+  a = thread->get_operand_value(src1, dst, i_type, thread, 1);
+  b = thread->get_operand_value(src2, dst, i_type, thread, 1);
+  c = thread->get_operand_value(src3, dst, i_type, thread, 1);
+
+  // Funnel shift (PTX ISA 9.7.7.7): shift the 64-bit value [b, a] (b holds
+  // bits 63:32, a bits 31:0) by c clamped to 32 (.clamp) or taken mod 32
+  // (.wrap); .l keeps the upper 32 bits, .r the lower 32 bits.
+  unsigned n = 0;
+  switch (pI->shf_mode()) {
+    case SHF_CLAMP_MODE:
+      n = (c.u32 < 32) ? c.u32 : 32;
+      break;
+    case SHF_WRAP_MODE:
+      n = c.u32 & 0x1f;
+      break;
+    default:
+      printf("Execution error: shf needs .wrap or .clamp\n");
+      assert(0);
+      break;
+  }
+  unsigned long long value =
+      ((unsigned long long)b.u32 << 32) | (unsigned long long)a.u32;
+  d.u64 = 0;
+  switch (pI->shf_dir()) {
+    case SHF_L_MODE:
+      d.u32 = (unsigned)((value << n) >> 32);
+      break;
+    case SHF_R_MODE:
+      d.u32 = (unsigned)(value >> n);
+      break;
+    default:
+      printf("Execution error: shf needs .l or .r\n");
+      assert(0);
+      break;
+  }
+
+  thread->set_operand_value(dst, d, i_type, thread, pI);
+}
+
 void shl_impl(const ptx_instruction *pI, ptx_thread_info *thread) {
   ptx_reg_t a, b, d;
   const operand_info &dst = pI->dst();
